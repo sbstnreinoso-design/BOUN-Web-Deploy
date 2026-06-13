@@ -8,9 +8,10 @@ import os
 import time
 import threading
 import secrets
+from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, Depends, Header
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel
 from typing import Optional
 
@@ -530,6 +531,99 @@ def ml_disconnect(user: dict = Depends(_admin)):
 @app.get("/api/stats")
 def stats(user: dict = Depends(_current_user)):
     return db.get_stats()
+
+
+# ── Exportación de inventario (solo lectura, protegida por token) ─────────────
+# Ruta PÚBLICA (sin sesión de usuario) pensada para que un agente externo lea
+# el inventario en tiempo real pasando solo una URL con ?key=...  No toca el
+# login ni las demás rutas: es puramente aditiva.
+
+_EXPORT_CORS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Headers": "*",
+    "Cache-Control": "no-store",
+}
+
+
+def _img_full(thumb: str) -> str:
+    """Sube la miniatura de ML a resolución original (-I.jpg → -O.jpg)."""
+    t = thumb or ""
+    for s in ("-I.jpg", "-I.webp", "-I.png"):
+        if t.endswith(s):
+            return t[: -len(s)] + s.replace("-I", "-O")
+    return t
+
+
+def _permalink_from_mco(mco: str) -> str:
+    """Reconstruye un permalink usable desde el id de publicación (MCO…)."""
+    mco = (mco or "").strip()
+    if mco.startswith("MCO") and mco[3:].isdigit():
+        return "https://articulo.mercadolibre.com.co/MCO-" + mco[3:]
+    return ""
+
+
+@app.options("/api/export/inventario.json")
+def export_inventario_preflight():
+    return Response(status_code=204, headers=_EXPORT_CORS)
+
+
+@app.get("/api/export/inventario.json")
+def export_inventario(key: str = ""):
+    token = os.environ.get("BOUN_EXPORT_TOKEN", "")
+    if not token or key != token:
+        return JSONResponse({"error": "unauthorized"}, status_code=401,
+                            headers=_EXPORT_CORS)
+
+    prods = db.inv_list_products()
+    productos = []
+    for p in prods:
+        pubs = []
+        for l in p.get("links", []):
+            mco = l.get("ml_item_id") or ""
+            thumb = l.get("ml_thumb") or ""
+            imagenes = [_img_full(thumb)] if thumb else []
+            pub = {
+                "mco": mco,
+                "titulo": l.get("ml_title") or "",
+                "permalink": _permalink_from_mco(mco),
+                "imagenes": imagenes,
+            }
+            # Marca de stock compartido (A, B, …) si la app la detectó
+            if l.get("share_group"):
+                pub["comparte_stock_grupo"] = l["share_group"]
+            if l.get("ml_logistic"):
+                pub["logistica"] = l["ml_logistic"]
+            pubs.append(pub)
+
+        mg = float(p.get("avg_margin") or 0)
+        ro = float(p.get("avg_roas") or 0)
+        ac = float(p.get("avg_acos") or 0)
+        productos.append({
+            "codigo": p.get("code") or "",
+            "nombre": p.get("name") or "",
+            # La app no tiene un campo dedicado de SKU Falabella: se toma del
+            # campo "Notas" del producto (queda vacío si no se ha llenado).
+            "sku_falabella": (p.get("notes") or "").strip(),
+            "bodega_bogota": int(p.get("qty_bogota") or 0),
+            "bodega_yopal": int(p.get("qty_yopal") or 0),
+            "ml_full": int(p.get("qty_full") or 0),
+            "en_camino": int(p.get("qty_transit") or 0),
+            "vendidos_60d": int(p.get("sold60_total") or 0),
+            "margen": (f"{mg:.1f}%" if mg else "—"),
+            "roas": (f"{ro:.2f}x" if ro else "—"),
+            "acos": (f"{ac:.1f}%" if ac else "—"),
+            # La app no calcula un sugerido de compra para el inventario.
+            "sugerido_compra": None,
+            "publicaciones": pubs,
+        })
+
+    out = {
+        "generado": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "total": len(productos),
+        "productos": productos,
+    }
+    return JSONResponse(out, headers=_EXPORT_CORS)
 
 
 # ── Frontend estático ────────────────────────────────────────────────────────
