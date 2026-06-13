@@ -1,0 +1,545 @@
+"""
+BOUN Web — backend FastAPI.
+Reutiliza la misma lógica de la app de escritorio (database.py, ml_scraper,
+ml_fees, scoring) y los mismos datos en Supabase. Expone una API REST y
+sirve el frontend carbón.
+"""
+import os
+import time
+import threading
+import secrets
+from fastapi import FastAPI, HTTPException, Depends, Header
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+from typing import Optional
+
+import database as db
+
+app = FastAPI(title="BOUN Análisis ML")
+
+# ── Sesiones simples en memoria (token → user) ───────────────────────────────
+_SESSIONS = {}
+
+
+def _current_user(authorization: Optional[str] = Header(None)) -> dict:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401, "No autenticado")
+    tok = authorization.split(" ", 1)[1]
+    u = _SESSIONS.get(tok)
+    if not u:
+        raise HTTPException(401, "Sesión expirada")
+    return u
+
+
+def _admin(user: dict = Depends(_current_user)) -> dict:
+    if user.get("role") != "admin":
+        raise HTTPException(403, "Solo administradores")
+    return user
+
+
+# ── Auth ─────────────────────────────────────────────────────────────────────
+
+class LoginIn(BaseModel):
+    username: str
+    password: str
+
+
+class PwChangeIn(BaseModel):
+    new_password: str
+
+
+@app.get("/api/health")
+def health():
+    return {"ok": True, "users": db.users_count()}
+
+
+@app.post("/api/login")
+def login(data: LoginIn):
+    r = db.verify_login(data.username, data.password)
+    if not r.get("ok"):
+        raise HTTPException(401, r.get("error", "Credenciales incorrectas"))
+    tok = secrets.token_urlsafe(32)
+    _SESSIONS[tok] = r["user"]
+    return {"token": tok, "user": r["user"]}
+
+
+@app.post("/api/logout")
+def logout(user: dict = Depends(_current_user),
+           authorization: str = Header(None)):
+    _SESSIONS.pop(authorization.split(" ", 1)[1], None)
+    return {"ok": True}
+
+
+@app.post("/api/change-password")
+def change_password(data: PwChangeIn, user: dict = Depends(_current_user)):
+    if len(data.new_password) < 6:
+        raise HTTPException(400, "Mínimo 6 caracteres")
+    r = db.set_password(user["username"], data.new_password, must_change=False)
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("error", "No se pudo actualizar"))
+    return {"ok": True}
+
+
+# ── Colaboradores (admin) ────────────────────────────────────────────────────
+
+class UserIn(BaseModel):
+    username: str
+    password: str
+
+
+@app.get("/api/users")
+def list_users(user: dict = Depends(_admin)):
+    return db.list_users()
+
+
+@app.post("/api/users")
+def create_user(data: UserIn, user: dict = Depends(_admin)):
+    r = db.create_user(data.username, data.password, role="colaborador",
+                       must_change=True)
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("error", "No se pudo crear"))
+    return {"ok": True}
+
+
+@app.delete("/api/users/{username}")
+def delete_user(username: str, user: dict = Depends(_admin)):
+    return {"ok": db.delete_user(username)}
+
+
+class ActiveIn(BaseModel):
+    active: bool
+
+
+@app.patch("/api/users/{username}/active")
+def set_active(username: str, data: ActiveIn, user: dict = Depends(_admin)):
+    return {"ok": db.set_user_active(username, data.active)}
+
+
+class ResetIn(BaseModel):
+    new_password: str
+
+
+@app.post("/api/users/{username}/reset")
+def reset_pw(username: str, data: ResetIn, user: dict = Depends(_admin)):
+    r = db.set_password(username, data.new_password, must_change=True)
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("error", "No se pudo"))
+    return {"ok": True}
+
+
+# ── Inventario ───────────────────────────────────────────────────────────────
+
+@app.get("/api/inventory")
+def inventory(user: dict = Depends(_current_user)):
+    return db.inv_list_products()
+
+
+class InvProductIn(BaseModel):
+    code: str
+    name: str
+    cost_product: float = 0
+    cost_shipping: float = 0
+
+
+@app.post("/api/inventory")
+def inv_create(data: InvProductIn, user: dict = Depends(_current_user)):
+    r = db.inv_create_product(data.code, data.name,
+                              created_by=user.get("username", ""),
+                              cost_product=data.cost_product,
+                              cost_shipping=data.cost_shipping)
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("error", "No se pudo crear"))
+    return r
+
+
+class InvUpdateIn(BaseModel):
+    code: Optional[str] = None
+    name: Optional[str] = None
+    cost_product: Optional[float] = None
+    cost_shipping: Optional[float] = None
+    qty_bogota: Optional[float] = None
+    qty_yopal: Optional[float] = None
+    qty_transit: Optional[float] = None
+
+
+@app.patch("/api/inventory/{pid}")
+def inv_update(pid: int, data: InvUpdateIn,
+               user: dict = Depends(_current_user)):
+    fields = {k: v for k, v in data.dict().items() if v is not None}
+    if not fields:
+        raise HTTPException(400, "Nada que actualizar")
+    return {"ok": db.inv_update_product(pid, fields)}
+
+
+@app.delete("/api/inventory/{pid}")
+def inv_delete(pid: int, user: dict = Depends(_admin)):
+    return {"ok": db.inv_delete_product(pid)}
+
+
+class AssignIn(BaseModel):
+    items: list   # [[item_id,title,thumb,sold,qty,logistic,price,net,
+                  #   margin,roas,acos,sold60,inv_id,upid], …]
+
+
+@app.post("/api/inventory/{pid}/links")
+def inv_assign(pid: int, data: AssignIn, user: dict = Depends(_current_user)):
+    return {"ok": db.inv_set_links(pid, data.items)}
+
+
+@app.get("/api/inventory/items")
+def inventory_items(user: dict = Depends(_current_user)):
+    """Publicaciones de ML (ligero) para asignar, + vínculos actuales."""
+    from ml_scraper import get_my_items_basic
+    r = get_my_items_basic()
+    links = db.inv_get_links()
+    if not r.get("ok"):
+        return {"ok": False, "error": r.get("error"), "links": links}
+    return {"ok": True, "items": r["items"], "links": links}
+
+
+# ── Mis Productos ────────────────────────────────────────────────────────────
+
+# ── Caché en servidor de Mis Productos (refresco cada 20 min) ────────────────
+_MP_CACHE = {}        # days -> {"ts": epoch, "data": result}
+_MP_LOCK = threading.Lock()
+_MP_TTL = 20 * 60     # 20 minutos
+
+
+def _fetch_my_products(days):
+    from ml_scraper import get_my_products
+    r = get_my_products(days=days)
+    if r.get("ok"):
+        try:
+            inv = db.inv_links_map()
+            for pr in r.get("products", []):
+                pr["inv_code"] = inv.get(pr.get("item_id"), "")
+        except Exception:
+            pass
+        # refrescar también el stock/inventory_id de los vínculos del
+        # inventario (igual que el refresco de la app de escritorio)
+        try:
+            sm = {pr.get("item_id"): (
+                pr.get("inventory", 0) or 0, pr.get("logistic_type", "") or "",
+                pr.get("sold_total", 0) or 0, pr.get("price", 0) or 0,
+                pr.get("net_unit", 0) or 0, pr.get("margin_pct", 0) or 0,
+                pr.get("ad_roas", 0) or 0, pr.get("ad_acos", 0) or 0,
+                pr.get("sold_60d", 0) or 0, pr.get("inventory_id", "") or "",
+                pr.get("upid", "") or "")
+                for pr in r.get("products", []) if pr.get("item_id")}
+            db.inv_refresh_link_stock(sm)
+        except Exception:
+            pass
+    return r
+
+
+@app.get("/api/my-products")
+def my_products(days: int = 60, force: bool = False,
+                user: dict = Depends(_current_user)):
+    now = time.time()
+    c = _MP_CACHE.get(days)
+    if c and not force and (now - c["ts"]) < _MP_TTL:
+        out = dict(c["data"])
+        out["cache_age_min"] = int((now - c["ts"]) / 60)
+        return out
+    # refrescar (con lock para no duplicar trabajo en peticiones simultáneas)
+    with _MP_LOCK:
+        c = _MP_CACHE.get(days)
+        if c and not force and (time.time() - c["ts"]) < _MP_TTL:
+            out = dict(c["data"]); out["cache_age_min"] = int((time.time()-c["ts"])/60); return out
+        r = _fetch_my_products(days)
+        if r.get("ok"):
+            _MP_CACHE[days] = {"ts": time.time(), "data": r}
+        out = dict(r); out["cache_age_min"] = 0
+        return out
+
+
+def _mp_background_refresh():
+    """Refresca el periodo de 60 días cada 20 min, en segundo plano,
+    para que la página abra al instante con datos recientes."""
+    while True:
+        try:
+            r = _fetch_my_products(60)
+            if r.get("ok"):
+                _MP_CACHE[60] = {"ts": time.time(), "data": r}
+        except Exception:
+            pass
+        time.sleep(_MP_TTL)
+
+
+@app.on_event("startup")
+def _start_bg():
+    t = threading.Thread(target=_mp_background_refresh, daemon=True)
+    t.start()
+
+
+@app.get("/api/product-trends")
+def product_trends(item_id: str = "", title: str = "", days: int = 60,
+                   user: dict = Depends(_current_user)):
+    """Google Trends + visitas ML de UNA publicación (panel desplegable)."""
+    out = {"trends": [], "visits": {}}
+    try:
+        from ml_scraper import trends_for_name, get_item_visits
+        out["trends"] = trends_for_name(title) or []
+    except Exception:
+        pass
+    try:
+        from ml_scraper import get_item_visits
+        out["visits"] = get_item_visits(item_id, days) or {}
+    except Exception:
+        pass
+    return out
+
+
+# ── Productos para comprar (catálogo guardado) ───────────────────────────────
+
+@app.get("/api/products")
+def products(user: dict = Depends(_current_user)):
+    return db.get_all_products("viability_score DESC")
+
+
+@app.get("/api/products/{pid}")
+def product_get(pid: int, user: dict = Depends(_current_user)):
+    p = db.get_product(pid)
+    if not p:
+        raise HTTPException(404, "No encontrado")
+    return p
+
+
+class ProductPatchIn(BaseModel):
+    purchase_price: Optional[float] = None
+    sale_price: Optional[float] = None
+    shipping_cost: Optional[float] = None
+    ml_commission_total: Optional[float] = None
+    total_costs: Optional[float] = None
+    net_profit: Optional[float] = None
+    profit_margin_pct: Optional[float] = None
+    viability_score: Optional[float] = None
+
+
+@app.patch("/api/products/{pid}")
+def product_patch(pid: int, data: ProductPatchIn,
+                  user: dict = Depends(_current_user)):
+    fields = {k: v for k, v in data.dict().items() if v is not None}
+    if not fields:
+        raise HTTPException(400, "Nada que actualizar")
+    db.update_product(pid, fields)
+    return {"ok": True}
+
+
+@app.delete("/api/products/{pid}")
+def product_delete(pid: int, user: dict = Depends(_admin)):
+    db.delete_product(pid)
+    return {"ok": True}
+
+
+# ── Agregar producto (analizar link ML) ─────────────────────────────────────
+
+class AnalyzeIn(BaseModel):
+    url: str
+    cost: float = 0
+
+
+@app.post("/api/analyze")
+def analyze(data: AnalyzeIn, user: dict = Depends(_current_user)):
+    from ml_scraper import analyze_ml_url
+    r = analyze_ml_url(data.url, data.cost)
+    if not r.get("ok"):
+        raise HTTPException(400, r.get("error", "No se pudo analizar"))
+    return r
+
+
+class RecalcIn(BaseModel):
+    sale_price: float
+    cost: float
+    category: str = "Otro / General"
+    commission_rate: float = 0
+    advertising_pct: float = 0
+    competitor_count: int = 0
+    search_level: int = 0
+
+
+@app.post("/api/recalc")
+def recalc(data: RecalcIn, user: dict = Depends(_current_user)):
+    from ml_fees import calculate_fees
+    from scoring import calculate_score
+    from ml_scraper import _ml_shipping_cost
+    ship = _ml_shipping_cost(data.sale_price)
+    fees = calculate_fees(
+        sale_price=data.sale_price, purchase_price=data.cost,
+        category=data.category, listing_type="Clásica",
+        shipping_cost=ship, advertising_pct=(data.advertising_pct or 0) / 100.0,
+        commission_rate=(data.commission_rate or None))
+    lvl = data.search_level or 0
+    score = calculate_score(
+        profit_margin_pct=fees["profit_margin_pct"],
+        monthly_sales=int(lvl * 5), competitor_count=data.competitor_count,
+        search_volume=int(lvl * 50), avg_rating=4.0)
+    return {"fees": fees, "shipping": ship, "score": score}
+
+
+class SaveProductIn(BaseModel):
+    name: str
+    category: str = "Otro / General"
+    purchase_price: float = 0
+    sale_price: float = 0
+    ml_competitor_count: int = 0
+    ml_category_commission: float = 0
+    ml_monthly_sales: int = 0
+    ml_search_volume: int = 0
+    shipping_cost: float = 0
+    advertising_pct: float = 0
+    ml_commission_total: float = 0
+    total_costs: float = 0
+    viability_score: float = 0
+    profit_margin_pct: float = 0
+    net_profit: float = 0
+    permalink: str = ""
+    image_url: str = ""
+
+
+@app.post("/api/products")
+def product_create(data: SaveProductIn, user: dict = Depends(_current_user)):
+    d = data.dict()
+    d["pdf_filename"] = d.pop("permalink", "") or ""
+    d["image_path"] = d.pop("image_url", "") or ""
+    d["created_by"] = user.get("username", "")
+    pid = db.insert_product(d)
+    return {"ok": True, "id": pid}
+
+
+# ── Configuración / estado ML ────────────────────────────────────────────────
+
+@app.get("/api/ml-status")
+def ml_status(user: dict = Depends(_current_user)):
+    try:
+        from ml_scraper import is_connected, get_connected_username
+        return {"connected": is_connected(),
+                "username": get_connected_username()}
+    except Exception:
+        return {"connected": False, "username": ""}
+
+
+# Información de la empresa + credenciales (admin)
+@app.get("/api/settings")
+def get_settings(user: dict = Depends(_current_user)):
+    g = db.get_setting
+    return {
+        "company_name": g("company_name", "BOUN"),
+        "company_nit": g("company_nit", ""),
+        "default_user": g("default_user", "Admin"),
+        "currency": g("currency", "COP"),
+        "ml_app_id": g("ml_app_id", ""),
+        "ml_redirect_uri": g("ml_redirect_uri", "https://boun.com.co/oauth"),
+        "has_secret": bool(g("ml_client_secret", "")),
+    }
+
+
+class SettingsIn(BaseModel):
+    company_name: Optional[str] = None
+    company_nit: Optional[str] = None
+    default_user: Optional[str] = None
+    currency: Optional[str] = None
+
+
+@app.post("/api/settings")
+def save_settings(data: SettingsIn, user: dict = Depends(_admin)):
+    for k, v in data.dict().items():
+        if v is not None:
+            db.set_setting(k, str(v))
+    return {"ok": True}
+
+
+class CredsIn(BaseModel):
+    ml_app_id: str = ""
+    ml_client_secret: str = ""
+    ml_redirect_uri: str = ""
+
+
+@app.post("/api/ml/credentials")
+def ml_creds(data: CredsIn, user: dict = Depends(_admin)):
+    if data.ml_app_id:
+        db.set_setting("ml_app_id", data.ml_app_id.strip())
+    if data.ml_client_secret:
+        db.set_setting("ml_client_secret", data.ml_client_secret.strip())
+    if data.ml_redirect_uri:
+        db.set_setting("ml_redirect_uri", data.ml_redirect_uri.strip())
+    return {"ok": True}
+
+
+@app.get("/api/ml/auth-url")
+def ml_auth_url(user: dict = Depends(_admin)):
+    import urllib.parse
+    from ml_scraper import ML_AUTH_URL, OAUTH_REDIRECT_URI
+    app_id = db.get_setting("ml_app_id", "").strip()
+    secret = db.get_setting("ml_client_secret", "").strip()
+    if not app_id or not secret:
+        raise HTTPException(400, "Configura primero el APP ID y Client Secret.")
+    redirect = db.get_setting("ml_redirect_uri", OAUTH_REDIRECT_URI).strip() or OAUTH_REDIRECT_URI
+    url = (ML_AUTH_URL + "?response_type=code&client_id="
+           + urllib.parse.quote(app_id) + "&redirect_uri="
+           + urllib.parse.quote(redirect))
+    return {"url": url}
+
+
+class ExchangeIn(BaseModel):
+    code: str
+
+
+@app.post("/api/ml/exchange")
+def ml_exchange(data: ExchangeIn, user: dict = Depends(_admin)):
+    import time as _t
+    from ml_scraper import (_extract_code, _get_session, get_ml_username,
+                            ML_API, OAUTH_REDIRECT_URI)
+    app_id = db.get_setting("ml_app_id", "").strip()
+    secret = db.get_setting("ml_client_secret", "").strip()
+    redirect = db.get_setting("ml_redirect_uri", OAUTH_REDIRECT_URI).strip() or OAUTH_REDIRECT_URI
+    code = _extract_code(data.code)
+    if not code:
+        raise HTTPException(400, "Código inválido. Copia solo el código de la URL.")
+    try:
+        sx = _get_session()
+        r = sx.post(ML_API + "/oauth/token", data={
+            "grant_type": "authorization_code", "client_id": app_id,
+            "client_secret": secret, "code": code, "redirect_uri": redirect},
+            headers={"Content-Type": "application/x-www-form-urlencoded"}, timeout=15)
+    except Exception as e:
+        raise HTTPException(400, "Error de red: %s" % e)
+    if r.status_code != 200:
+        raise HTTPException(400, "Error al obtener token: %s" % r.text[:200])
+    td = r.json()
+    db.set_setting("ml_access_token", td.get("access_token", ""))
+    db.set_setting("ml_refresh_token", td.get("refresh_token", ""))
+    db.set_setting("ml_token_ts", str(_t.time()))
+    db.set_setting("ml_user_id", str(td.get("user_id", "")))
+    uname = get_ml_username(td.get("access_token", ""), str(td.get("user_id", "")))
+    db.set_setting("ml_username", uname)
+    return {"ok": True, "username": uname}
+
+
+@app.post("/api/ml/disconnect")
+def ml_disconnect(user: dict = Depends(_admin)):
+    for k in ("ml_access_token", "ml_refresh_token", "ml_username",
+              "ml_user_id", "ml_token_ts"):
+        db.set_setting(k, "")
+    return {"ok": True}
+
+
+# ── Dashboard ────────────────────────────────────────────────────────────────
+
+@app.get("/api/stats")
+def stats(user: dict = Depends(_current_user)):
+    return db.get_stats()
+
+
+# ── Frontend estático ────────────────────────────────────────────────────────
+
+_FRONT = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
+
+
+@app.get("/")
+def index():
+    return FileResponse(os.path.join(_FRONT, "index.html"))
+
+
+app.mount("/", StaticFiles(directory=_FRONT), name="static")

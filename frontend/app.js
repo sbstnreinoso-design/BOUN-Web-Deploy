@@ -1,0 +1,905 @@
+// ── BOUN Web — frontend ──────────────────────────────────────────────────────
+let TOKEN = localStorage.getItem("boun_token") || "";
+let USER = JSON.parse(localStorage.getItem("boun_user") || "null");
+
+const GCOLORS = {A:"#7FB3E0",B:"#E0A23C",C:"#C58CE6",D:"#5BC8B0",E:"#E68CA8",F:"#A8C46B"};
+const isAdmin = () => USER && USER.role === "admin";
+const cop = n => "$" + Math.round(n||0).toLocaleString("es-CO");
+
+async function api(path, opts={}){
+  opts.headers = Object.assign({"Content-Type":"application/json"}, opts.headers||{});
+  if(TOKEN) opts.headers["Authorization"] = "Bearer " + TOKEN;
+  const r = await fetch("/api"+path, opts);
+  if(r.status===401){ logoutLocal(); throw new Error("Sesión expirada"); }
+  const j = await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(j.detail || "Error");
+  return j;
+}
+
+// ── Auth ──────────────────────────────────────────────────────────────────
+async function doLogin(){
+  const u=document.getElementById("lu").value, p=document.getElementById("lp").value;
+  const err=document.getElementById("loginErr"); err.textContent="";
+  try{
+    const r=await api("/login",{method:"POST",body:JSON.stringify({username:u,password:p})});
+    TOKEN=r.token; USER=r.user;
+    localStorage.setItem("boun_token",TOKEN);
+    localStorage.setItem("boun_user",JSON.stringify(USER));
+    showApp();
+  }catch(e){ err.textContent = e.message; }
+}
+function logoutLocal(){
+  TOKEN=""; USER=null; localStorage.removeItem("boun_token"); localStorage.removeItem("boun_user");
+  document.getElementById("app").classList.remove("active");
+  document.getElementById("login").style.display="flex";
+}
+async function doLogout(){ try{await api("/logout",{method:"POST"});}catch(e){} logoutLocal(); }
+
+document.addEventListener("keydown",e=>{ if(e.key==="Enter" && document.getElementById("login").style.display!=="none") doLogin(); });
+
+// ── Navegación ─────────────────────────────────────────────────────────────
+const NAV=[
+  ["dashboard","⬛  Dashboard"],
+  ["inventory","▦  Inventario"],
+  ["my_products","★  Mis Productos"],
+  ["products","▤  Productos para comprar"],
+  ["settings","⚙  Configuración"],
+];
+function showApp(){
+  document.getElementById("login").style.display="none";
+  document.getElementById("app").classList.add("active");
+  document.getElementById("uname").textContent=USER.username;
+  document.getElementById("urole").textContent=USER.role==="admin"?"Administrador":"Colaborador";
+  let nav=NAV.slice();
+  if(USER.role==="admin") nav.push(["collaborators","♟  Colaboradores"]);
+  document.getElementById("nav").innerHTML=nav.map(([id,t])=>
+    `<a href="#" data-nav="${id}" onclick="go('${id}');return false">${t}</a>`).join("");
+  go("dashboard");
+}
+function go(id){
+  document.querySelectorAll(".nav a").forEach(a=>a.classList.toggle("active",a.dataset.nav===id));
+  if(id==="dashboard") renderDashboard();
+  else if(id==="inventory") renderInventory();
+  else if(id==="my_products") renderMyProducts();
+  else if(id==="products") renderProducts();
+  else if(id==="settings") renderSettings();
+  else if(id==="collaborators") renderCollaborators();
+}
+
+// ── Modal ───────────────────────────────────────────────────────────────────
+function openModal(html,wide){
+  const m=document.getElementById("modal");
+  m.className="modal"+(wide?" wide":""); m.innerHTML=html;
+  document.getElementById("modalBg").classList.add("open");
+}
+function closeModal(){ document.getElementById("modalBg").classList.remove("open"); }
+
+// ── INVENTARIO ──────────────────────────────────────────────────────────────
+let INV=[];
+async function renderInventory(){
+  const v=document.getElementById("view");
+  v.innerHTML=`<div class="row-between"><div>
+      <div class="page-title">Inventario</div>
+      <div class="page-sub">Productos físicos con su código y publicaciones de MercadoLibre.</div>
+    </div><div style="display:flex;gap:8px">
+      <button class="btn-ghost" onclick="exportInv()">⬇ Exportar inventario</button>
+      <button class="btn-acc" onclick="newProduct()">＋ Nuevo producto</button></div></div>
+    <div id="invKpis" class="kpis"></div>
+    <div id="invList"><div class="loading"><span class="spinner"></span> Cargando inventario…</div></div>`;
+  try{ INV=await api("/inventory"); drawInventory(); }
+  catch(e){ document.getElementById("invList").innerHTML=`<div class="red">${e.message}</div>`; }
+}
+
+function exportInv(){
+  if(!INV.length){ alert("Sin datos de inventario."); return; }
+  const cols=[["code","Código"],["name","Producto"],["n_links","Publicaciones"],
+    ["cost_product","Costo producto"],["cost_shipping","Costo envío"],["__cost_total","Costo total unit"],
+    ["qty_bogota","Bod Bogotá"],["qty_yopal","Bod Yopal"],["qty_full","ML Full"],["qty_transit","En camino"],
+    ["__inv_total","Inventario total"],["__costo_inv","Costo inventario"],["avg_net","Gan/u prom"],
+    ["__gan_esp","Ganancia esperada"],["avg_price","Precio prom"],["__valor_venta","Valor de venta"],
+    ["avg_margin","Margen prom %"],["avg_roas","ROAS prom"],["avg_acos","ACOS prom %"],
+    ["sold60_total","Vendidas 60d"],["__sugerido","Sugerido compra"],["created_by","Creado por"]];
+  const num=v=>(v==null||v==="")?0:Math.round(+v||0);
+  let csv=cols.map(c=>c[1]).join(",")+"\n";
+  INV.forEach(p=>{
+    const u=prodUnits(p), unit=prodCostUnit(p);
+    const sug=Math.max(0,Math.ceil((+p.sold60_total||0)/60*90 - u));
+    const calc={ __cost_total:unit, __inv_total:u, __costo_inv:unit*u,
+      __gan_esp:(+p.avg_net||0)*u, __valor_venta:(+p.avg_price||0)*u, __sugerido:sug };
+    const row=cols.map(([f])=>{
+      let v=f.startsWith("__")?calc[f]:p[f];
+      if(["avg_margin","avg_acos"].includes(f))v=(+v||0).toFixed(1);
+      else if(["avg_roas"].includes(f))v=(+v||0).toFixed(2);
+      else if(["code","name","created_by"].includes(f))v=(""+(v==null?"":v)).replace(/"/g,'""');
+      else v=num(v);
+      return /[",\n]/.test(""+v)?`"${v}"`:v;
+    });
+    csv+=row.join(",")+"\n";
+  });
+  // fila de TOTALES de la marca
+  let tCost=0,tProf=0,tSale=0;
+  INV.forEach(p=>{ const u=prodUnits(p); tCost+=prodCostUnit(p)*u; tProf+=(+p.avg_net||0)*u; tSale+=(+p.avg_price||0)*u; });
+  csv+=`"TOTAL MARCA",,,,,,,,,,,${Math.round(tCost)},,${Math.round(tProf)},,${Math.round(tSale)},,,,,,\n`;
+  const blob=new Blob(["\ufeff"+csv],{type:"text/csv;charset=utf-8"}), a=document.createElement("a");
+  a.href=URL.createObjectURL(blob);
+  a.download="BOUN_inventario_"+new Date().toISOString().slice(0,10)+".csv"; a.click();
+}
+function prodUnits(p){ return (+p.qty_bogota||0)+(+p.qty_yopal||0)+(+p.qty_full||0)+(+p.qty_transit||0); }
+function prodCostUnit(p){ return (+p.cost_product||0)+(+p.cost_shipping||0); }
+
+function drawKpis(){
+  let tCost=0,tProf=0,tSale=0,roas=[],acos=[],marg=[];
+  INV.forEach(p=>{ const u=prodUnits(p);
+    tCost+=prodCostUnit(p)*u; tProf+=(+p.avg_net||0)*u; tSale+=(+p.avg_price||0)*u;
+    if(+p.avg_roas>0)roas.push(+p.avg_roas); if(+p.avg_acos>0)acos.push(+p.avg_acos);
+    if(+p.avg_margin)marg.push(+p.avg_margin);
+  });
+  const avg=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:0;
+  const k=[
+    ["Costo total inventario",cop(tCost),"amber"],
+    ["Ganancia esperada",cop(tProf),"green"],
+    ["Valor de venta",cop(tSale),"acc"],
+    ["Margen promedio",marg.length?avg(marg).toFixed(1)+"%":"—","green"],
+    ["ROAS BOUN",roas.length?avg(roas).toFixed(2)+"x":"—","green"],
+    ["ACOS BOUN",acos.length?avg(acos).toFixed(1)+"%":"—","muted"],
+  ];
+  document.getElementById("invKpis").innerHTML=k.map(([c,vv,cl])=>
+    `<div class="kpi"><div class="cap">${c}</div><div class="val ${cl}">${vv}</div></div>`).join("");
+}
+
+function drawInventory(){
+  drawKpis();
+  const el=document.getElementById("invList");
+  if(!INV.length){ el.innerHTML=`<div class="loading">Sin productos. Crea el primero con «＋ Nuevo producto».</div>`; return; }
+  el.innerHTML=INV.map(p=>invCard(p)).join("");
+}
+
+function invCard(p){
+  const u=prodUnits(p), unit=prodCostUnit(p);
+  const sug=Math.max(0,Math.ceil((+p.sold60_total||0)/60*90 - u));
+  const photo=p.thumb?`<img class="inv-photo" src="${bigImg(p.thumb)}">`:`<div class="inv-photo"></div>`;
+  return `<div class="inv-card" data-pid="${p.id}">
+    <div class="inv-head">
+      <span class="expand" onclick="togglePanel(${p.id})">▸</span>
+      ${photo}
+      <span class="code-chip">📦 ${esc(p.code)}</span>
+      <div style="flex:1">
+        <div class="inv-name">${esc(p.name)}</div>
+        <div class="inv-meta">${p.n_links} publicación${p.n_links!==1?"es":""} asignada${p.n_links!==1?"s":""}${p.created_by?" · creado por "+esc(p.created_by):""}</div>
+      </div>
+      <button class="btn-ghost" onclick="assignDialog(${p.id})">Asignar publicaciones</button>
+      <button class="btn-ghost" onclick="editProduct(${p.id})">✏</button>
+      ${isAdmin()?`<button class="btn-danger" onclick="delProduct(${p.id})">✕</button>`:""}
+    </div>
+    <div class="inv-strip">
+      ${fcol("Costo prod.",inp(p.id,"cost_product",p.cost_product))}
+      ${fcol("Envío",inp(p.id,"cost_shipping",p.cost_shipping))}
+      ${fcolRO("Costo total",cop(unit),unit?"acc":"red")}
+      <div class="vsep"></div>
+      ${fcol("Bod. Bogotá",inp(p.id,"qty_bogota",p.qty_bogota,64))}
+      ${fcol("Bod. Yopal",inp(p.id,"qty_yopal",p.qty_yopal,64))}
+      ${fcolRO("ML Full",p.qty_full||0)}
+      ${fcol("En camino",inp(p.id,"qty_transit",p.qty_transit,64))}
+      ${fcolRO("Inv. total",u,u?"acc":"red")}
+      <div class="vsep"></div>
+      ${fcolRO("Costo inv.",cop(unit*u),"amber")}
+      ${fcolRO("Gan. esperada",cop((+p.avg_net||0)*u),"green")}
+      ${fcolRO("Valor venta",cop((+p.avg_price||0)*u))}
+      ${fcolRO("Margen prom.",(+p.avg_margin)?(+p.avg_margin).toFixed(1)+"%":"—",mgColor(+p.avg_margin))}
+      ${fcolRO("ROAS prom.",(+p.avg_roas)?(+p.avg_roas).toFixed(2)+"x":"—",roasColor(+p.avg_roas))}
+      ${fcolRO("ACOS prom.",(+p.avg_acos)?(+p.avg_acos).toFixed(1)+"%":"—",acosColor(+p.avg_acos))}
+      <div class="vsep"></div>
+      ${fcolRO("Vend. 60d",p.sold60_total||0)}
+      ${fcolRO("Sug. compra",sug?("+"+sug+" u"):"✓ cubierto",sug?"red":"green")}
+    </div>
+    <div class="panel" id="panel-${p.id}"></div>
+  </div>`;
+}
+function mgColor(m){ return m>=20?"green":m>=8?"amber":(m?"red":"muted"); }
+function roasColor(r){ return r>=3?"green":r>=1?"amber":"muted"; }
+function acosColor(a){ return (a>0&&a<=20)?"green":a<=30?"amber":(a>30?"red":"muted"); }
+function fcol(cap,inner){ return `<div class="fcol"><span class="cap">${cap}</span>${inner}</div>`; }
+function fcolRO(cap,val,cl){ return `<div class="fcol"><span class="cap">${cap}</span><span class="ro ${cl||""}">${val}</span></div>`; }
+function inp(pid,field,val,w){ const v=(+val)?Math.round(+val):"";
+  return `<input type="text" value="${v}" style="${w?`width:${w}px`:''}" onchange="saveField(${pid},'${field}',this.value)">`; }
+
+async function saveField(pid,field,val){
+  const num=parseFloat((val||"").replace(/[^0-9.]/g,""))||0;
+  const body={}; body[field]=num;
+  const p=INV.find(x=>x.id===pid); if(p) p[field]=num;
+  drawKpis();
+  // refrescar totales de la tarjeta sin recargar todo
+  const card=document.querySelector(`.inv-card[data-pid="${pid}"]`);
+  if(card){ const fresh=invCard(p); const tmp=document.createElement("div"); tmp.innerHTML=fresh;
+    const wasOpen=document.getElementById("panel-"+pid)?.classList.contains("open");
+    card.replaceWith(tmp.firstElementChild);
+    if(wasOpen) togglePanel(pid);
+  }
+  try{ await api("/inventory/"+pid,{method:"PATCH",body:JSON.stringify(body)}); }catch(e){ alert(e.message); }
+}
+
+function togglePanel(pid){
+  const el=document.getElementById("panel-"+pid); if(!el) return;
+  if(el.classList.contains("open")){ el.classList.remove("open"); setArrow(pid,"▸"); return; }
+  el.classList.add("open"); setArrow(pid,"▾");
+  const p=INV.find(x=>x.id===pid); let links=(p.links||[]).slice();
+  links.sort((a,b)=>{ const ga=a.share_group||"zzz",gb=b.share_group||"zzz";
+    if(ga!==gb)return ga<gb?-1:1; return (+b.ml_sold||0)-(+a.ml_sold||0); });
+  const hasG=links.some(l=>l.share_group);
+  let html = hasG?`<div class="note">● Las marcadas con el mismo punto comparten stock en ML — se cuentan una sola vez.</div>`:"";
+  if(!links.length) html=`<div class="note">Sin publicaciones asignadas.</div>`;
+  html += links.map(l=>{
+    const g=l.share_group, gc=g?GCOLORS[g]||"#3FCB82":"transparent";
+    let title=(l.ml_title||l.ml_item_id||""); if(title.length>60)title=title.slice(0,60)+"…";
+    const bits=[l.ml_item_id]; if(+l.ml_margin)bits.push(`margen ${(+l.ml_margin).toFixed(1)}%`);
+    if(+l.ml_roas)bits.push(`ROAS ${(+l.ml_roas).toFixed(2)}x`); if(+l.ml_acos)bits.push(`ACOS ${(+l.ml_acos).toFixed(1)}%`);
+    const url="https://articulo.mercadolibre.com.co/"+(l.ml_item_id||"").replace("MCO","MCO-");
+    return `<div class="pub" style="border-left-color:${gc}">
+      ${g?`<span style="color:${gc};font-weight:700;width:16px">●${g}</span>`:""}
+      ${l.ml_thumb?`<img src="${l.ml_thumb}">`:`<div style="width:32px;height:32px"></div>`}
+      <div class="ptitle"><a href="${url}" target="_blank" style="text-decoration:none;color:var(--text)" title="${esc(l.ml_title||"")}">${esc(title)}</a>
+        <div class="pmeta">${bits.join("  ·  ")}</div></div>
+      ${(+l.ml_price)?`<span style="font-weight:700">${cop(l.ml_price)}</span>`:""}
+      ${l.ml_logistic==="fulfillment"?`<span class="badge badge-full">FULL</span>`:""}
+      <span class="muted" style="font-size:10px">${Math.round(+l.ml_qty||0)} disp.${g?" (comp.)":""}</span>
+      <span class="green" style="font-size:10px;font-weight:700">${Math.round(+l.ml_sold||0)} vend.</span>
+    </div>`;
+  }).join("");
+  el.innerHTML=html;
+}
+function setArrow(pid,a){ const c=document.querySelector(`.inv-card[data-pid="${pid}"] .expand`); if(c)c.textContent=a; }
+
+// crear / editar / borrar
+function newProduct(){ productForm(null); }
+function editProduct(pid){ productForm(INV.find(x=>x.id===pid)); }
+function productForm(p){
+  const nextCode=()=>{ let mx=0; INV.forEach(x=>{const m=(x.code||"").match(/(\d+)\s*$/); if(m)mx=Math.max(mx,+m[1]);}); return "SKU"+String(mx+1).padStart(3,"0"); };
+  openModal(`<h3>${p?"Editar producto":"Nuevo producto"}</h3>
+    <div class="sub">El código identifica el producto físico (ej. SKU001).</div>
+    <div id="pfErr" class="err"></div>
+    <input id="pfCode" class="field" placeholder="Código" value="${p?esc(p.code):nextCode()}">
+    <input id="pfName" class="field" placeholder="Nombre del producto" value="${p?esc(p.name):""}">
+    <div style="display:flex;gap:8px">
+      <input id="pfCp" class="field" placeholder="Costo producto" value="${p&&+p.cost_product?Math.round(p.cost_product):""}">
+      <input id="pfCs" class="field" placeholder="Costo envío" value="${p&&+p.cost_shipping?Math.round(p.cost_shipping):""}">
+    </div>
+    <button class="btn-primary" onclick="saveProduct(${p?p.id:0})">Guardar</button>`);
+}
+async function saveProduct(pid){
+  const code=val("pfCode"),name=val("pfName"),cp=num("pfCp"),cs=num("pfCs");
+  const err=document.getElementById("pfErr"); err.textContent="";
+  if(code.length<3||!name){ err.textContent="Código (3+) y nombre requeridos."; return; }
+  try{
+    if(pid) await api("/inventory/"+pid,{method:"PATCH",body:JSON.stringify({code,name,cost_product:cp,cost_shipping:cs})});
+    else await api("/inventory",{method:"POST",body:JSON.stringify({code,name,cost_product:cp,cost_shipping:cs})});
+    closeModal(); renderInventory();
+  }catch(e){ err.textContent=e.message; }
+}
+async function delProduct(pid){
+  const p=INV.find(x=>x.id===pid);
+  if(!confirm(`¿Eliminar "${p.code} · ${p.name}" del inventario? Las publicaciones de ML no se tocan.`)) return;
+  try{ await api("/inventory/"+pid,{method:"DELETE"}); renderInventory(); }catch(e){ alert(e.message); }
+}
+
+// asignar publicaciones
+let ASSIGN_ITEMS=[], ASSIGN_SHARE={}, ASSIGN_PID=0;
+async function assignDialog(pid){
+  ASSIGN_PID=pid; const p=INV.find(x=>x.id===pid);
+  openModal(`<h3>Asignar publicaciones — ${esc(p.code)}</h3>
+    <div class="sub">Marca las publicaciones de MercadoLibre que son este producto físico. Las del mismo «●» comparten stock.</div>
+    <input id="asearch" class="field" placeholder="Buscar publicación…" oninput="filterAssign()">
+    <div id="aerr" class="err"></div>
+    <div id="alist"><div class="loading"><span class="spinner"></span> Conectando con MercadoLibre…</div></div>
+    <button class="btn-primary" onclick="saveAssign()">Guardar asignación</button>`,true);
+  try{
+    const r=await api("/inventory/items");
+    if(!r.ok){ document.getElementById("alist").innerHTML=`<div class="red">${r.error||"Sin datos"}</div>`; return; }
+    ASSIGN_ITEMS=r.items;
+    const mine=new Set(), other={};
+    (r.links||[]).forEach(l=>{ if(l.product_id===pid)mine.add(l.ml_item_id); else other[l.ml_item_id]=l.product_id; });
+    // grupos compartidos
+    const byk={}; ASSIGN_ITEMS.forEach(it=>{ const k=it.upid||it.inventory_id; if(k){(byk[k]=byk[k]||[]).push(it);} });
+    ASSIGN_SHARE={}; let li=0; const L="ABCDEFGHIJ";
+    Object.values(byk).forEach(g=>{ if(g.length>1){const lt=L[li++%10]; g.forEach(it=>ASSIGN_SHARE[it.item_id]=lt);} });
+    ASSIGN_ITEMS.forEach(it=>{ it._mine=mine.has(it.item_id); it._other=other[it.item_id]; });
+    ASSIGN_ITEMS.sort((a,b)=>(a.title||"").localeCompare(b.title||""));
+    drawAssign();
+  }catch(e){ document.getElementById("alist").innerHTML=`<div class="red">${e.message}</div>`; }
+}
+function drawAssign(filter=""){
+  const f=filter.toLowerCase();
+  document.getElementById("alist").innerHTML=ASSIGN_ITEMS.filter(it=>
+    !f || (it.title||"").toLowerCase().includes(f) || (it.item_id||"").toLowerCase().includes(f)
+  ).map(it=>{
+    const g=ASSIGN_SHARE[it.item_id], gc=g?GCOLORS[g]||"#3FCB82":"";
+    return `<div class="assign-row">
+      <input type="checkbox" ${it._mine?"checked":""} data-iid="${it.item_id}" style="width:16px;height:16px">
+      ${it.thumbnail?`<img src="${it.thumbnail}">`:`<div style="width:38px;height:38px;background:var(--bg);border-radius:6px"></div>`}
+      <div class="t">${esc(it.title||it.item_id)}
+        <div class="m">${it.item_id} · ${it.catalog?"catálogo":"normal"}</div></div>
+      ${g?`<span style="color:${gc};font-weight:700">●${g}</span>`:""}
+      ${it._other?`<span class="amber" style="font-size:10px;border:1px solid var(--amber);border-radius:6px;padding:2px 7px">en otro SKU</span>`:""}
+    </div>`;
+  }).join("") || `<div class="loading">Sin resultados.</div>`;
+}
+function filterAssign(){ drawAssign(val("asearch")); }
+async function saveAssign(){
+  const sel=[...document.querySelectorAll("#alist input[type=checkbox]:checked")].map(c=>c.dataset.iid);
+  const byId={}; ASSIGN_ITEMS.forEach(it=>byId[it.item_id]=it);
+  const items=sel.map(iid=>{ const it=byId[iid];
+    return [iid,it.title||"",it.thumbnail||"",it.sold_total||0,it.inventory||0,it.logistic_type||"",
+            it.price||0,it.net_unit||0,it.margin_pct||0,it.ad_roas||0,it.ad_acos||0,it.sold_60d||0,
+            it.inventory_id||"",it.upid||""]; });
+  try{ await api(`/inventory/${ASSIGN_PID}/links`,{method:"POST",body:JSON.stringify({items})});
+    closeModal(); renderInventory();
+  }catch(e){ document.getElementById("aerr").textContent=e.message; }
+}
+
+// ── DASHBOARD ────────────────────────────────────────────────────────────────
+async function renderDashboard(){
+  const v=document.getElementById("view");
+  v.innerHTML=`<div class="page-title">Dashboard</div>
+    <div class="page-sub">Resumen del catálogo de productos para comprar.</div>
+    <div id="dashKpis" class="kpis"><div class="loading"><span class="spinner"></span> Cargando…</div></div>
+    <div class="page-title" style="font-size:16px;margin-top:18px">Top productos por viabilidad</div>
+    <div id="dashTop"></div>`;
+  try{
+    const st=await api("/stats"); const pr=await api("/products");
+    document.getElementById("dashKpis").innerHTML=[
+      ["Productos analizados",st.total||0,"acc","de tu catálogo"],
+      ["Score promedio",(st.avg_score||0).toFixed(1)+"/10","blue","viabilidad global"],
+      ["Mejor margen",(st.best_margin||0).toFixed(1)+"%","green","producto estrella"],
+      ["Margen promedio",(st.avg_margin||0).toFixed(1)+"%","amber","de todo el catálogo"],
+    ].map(([c,vv,cl,sub])=>`<div class="kpi"><div class="cap">${c}</div><div class="val ${cl}">${vv}</div><div class="cap">${sub}</div></div>`).join("");
+    const top=pr.slice(0,8);
+    let html=`<table><thead><tr><th></th><th>Producto</th><th>Categoría</th><th>Score</th><th>Margen</th><th>Precio</th><th>Ganancia</th></tr></thead><tbody>`;
+    html+=top.map(p=>{ const sc=+p.viability_score||0,scc=sc>=8?"green":sc>=5?"amber":"red",mg=+p.profit_margin_pct||0,mc=mg>=20?"green":mg>=10?"amber":"red";
+      return `<tr><td>${p.image_path&&p.image_path.startsWith("http")?`<img class="th" src="${p.image_path}">`:`<div class="th"></div>`}</td>
+        <td>${esc((p.name||"").slice(0,32))}</td><td class="muted">${esc((p.category||"").slice(0,20))}</td>
+        <td class="${scc}"><b>${sc.toFixed(1)}</b></td><td class="${mc}">${mg.toFixed(1)}%</td>
+        <td>${cop(p.sale_price)}</td><td class="${(+p.net_profit>=0)?'green':'red'}">${cop(p.net_profit)}</td></tr>`;
+    }).join("");
+    document.getElementById("dashTop").innerHTML=top.length?html+"</tbody></table>":`<div class="loading">Catálogo vacío.</div>`;
+  }catch(e){ document.getElementById("dashKpis").innerHTML=`<div class="red">${e.message}</div>`; }
+}
+
+// ── MIS PRODUCTOS ────────────────────────────────────────────────────────────
+let MP=[], MP_SUM={}, MP_SORT="star_score", MP_DESC=true, MP_DAYS=60;
+let MP_F={q:"",cat:"",camp:"",status:"",star:""}, MP_OPEN=null;
+async function renderMyProducts(){
+  const v=document.getElementById("view");
+  v.innerHTML=`<div class="row-between"><div>
+      <div class="page-title">Mis Productos</div>
+      <div class="page-sub">Tus publicaciones de MercadoLibre con datos reales: ventas, publicidad y rentabilidad.</div>
+    </div><div style="display:flex;gap:8px;align-items:center">
+      <span id="mpAge" class="muted" style="font-size:11px"></span>
+      <button class="btn-ghost" onclick="exportMP()">⬇ Exportar datos</button>
+      <button class="btn-acc" onclick="loadMP(true)">↻ Actualizar</button></div></div>
+    <div id="mpKpis" class="kpis"></div>
+    <div id="mpFilters" class="filters"></div>
+    <div id="mpBody"><div class="loading"><span class="spinner"></span> Cargando datos de MercadoLibre…</div></div>`;
+  loadMP();
+}
+async function loadMP(force){
+  if(force) document.getElementById("mpBody").innerHTML=`<div class="loading"><span class="spinner"></span> Actualizando desde MercadoLibre…</div>`;
+  try{ const r=await api("/my-products?days="+MP_DAYS+(force?"&force=true":""));
+    if(!r.ok){ document.getElementById("mpBody").innerHTML=`<div class="red">${r.error||"Error"}</div>`; return; }
+    MP=r.products; MP_SUM=r.summary; drawMPFilters(); drawMP();
+    const age=r.cache_age_min||0, ageEl=document.getElementById("mpAge");
+    if(ageEl) ageEl.textContent = age<1?"datos al momento":(age<60?`datos de hace ${age} min`:`datos de hace ${Math.floor(age/60)} h`);
+  }catch(e){ document.getElementById("mpBody").innerHTML=`<div class="red">${e.message}</div>`; }
+}
+function drawMPFilters(){
+  const cats=[...new Set(MP.map(p=>p.category_name).filter(Boolean))].sort();
+  document.getElementById("mpFilters").innerHTML=`
+    <input class="field fmini" placeholder="Buscar…" value="${esc(MP_F.q)}" oninput="MP_F.q=this.value;drawMP()">
+    <select class="field fmini" onchange="MP_F.cat=this.value;drawMP()">
+      <option value="">Categoría: todas</option>${cats.map(c=>`<option ${MP_F.cat===c?"selected":""}>${esc(c)}</option>`).join("")}</select>
+    <select class="field fmini" onchange="MP_F.status=this.value;drawMP()">
+      <option value="">Estado: todos</option><option value="active" ${MP_F.status==="active"?"selected":""}>Activos</option><option value="paused" ${MP_F.status==="paused"?"selected":""}>Pausados</option></select>
+    <select class="field fmini" onchange="MP_F.camp=this.value;drawMP()">
+      <option value="">Publicidad: toda</option><option value="con" ${MP_F.camp==="con"?"selected":""}>Con campaña</option><option value="sin" ${MP_F.camp==="sin"?"selected":""}>Sin campaña</option></select>
+    <select class="field fmini" onchange="MP_F.star=this.value;drawMP()">
+      <option value="">Todos</option><option value="star" ${MP_F.star==="star"?"selected":""}>★ Estrella (top 20)</option><option value="restock" ${MP_F.star==="restock"?"selected":""}>A reponer</option></select>
+    <select class="field fmini" onchange="MP_DAYS=+this.value;loadMP()">
+      ${[7,15,30,60].map(d=>`<option value="${d}" ${MP_DAYS===d?"selected":""}>${d} días</option>`).join("")}</select>`;
+}
+function drawMP(){
+  const s=MP_SUM, k=s.ads_kpis||{}, d=MP_DAYS;
+  const fmt=n=>(n||0).toLocaleString("es-CO");
+  // Fila 1: resumen general (igual que escritorio)
+  const row1=[
+    ["Productos",fmt(s.total_products||MP.length),"acc"],
+    [`Vendidos ${d}d`,fmt(s.total_sold_60d||0),"text"],
+    [`Neto ${d}d`,cop(s.total_net_60d||0),(s.total_net_60d>=0?"green":"red")],
+    [`Gasto Ads ${d}d`,cop(s.total_ad_cost||0),"amber"],
+    ["A reponer",fmt(s.need_restock||0),"red"],
+  ];
+  // Fila 2: publicidad (Product Ads)
+  const row2=[
+    ["Ventas por publicidad",fmt(k.ventas_producto||0),"green"],
+    ["Ventas sin publicidad",fmt(k.ventas_sin_prod||0),"muted"],
+    ["ROAS",(k.roas||0)+"x","green"],
+    ["Ingresos Ads",cop(k.ingresos||0),"green"],
+    ["Inversión Ads",cop(k.inversion||0),"amber"],
+    ["ACOS",(k.acos||0)+"%",(k.acos<=20?"green":k.acos<=30?"amber":"red")],
+  ];
+  const card=([c,vv,cl])=>`<div class="kpi"><div class="cap">${c}</div><div class="val ${cl}">${vv}</div></div>`;
+  document.getElementById("mpKpis").innerHTML=
+    `<div class="kpis" style="margin:0 0 6px 0;width:100%">${row1.map(card).join("")}</div>`+
+    `<div class="cap" style="margin:4px 0 4px;color:var(--muted);font-size:11px;width:100%">PUBLICIDAD (Product Ads) — periodo seleccionado</div>`+
+    `<div class="kpis" style="margin:0;width:100%">${row2.map(card).join("")}</div>`;
+  let data=MP.filter(p=>{
+    const f=MP_F;
+    if(f.q && !((p.title||"").toLowerCase().includes(f.q.toLowerCase())))return false;
+    if(f.cat && p.category_name!==f.cat)return false;
+    if(f.status && p.status!==f.status)return false;
+    if(f.camp==="con" && !p.has_campaign)return false;
+    if(f.camp==="sin" && p.has_campaign)return false;
+    if(f.star==="star" && !p.is_star)return false;
+    if(f.star==="restock" && !(p.restock_qty>0))return false;
+    return true;
+  });
+  data.sort((a,b)=>{ let x=a[MP_SORT],y=b[MP_SORT];
+    if(MP_SORT==="title"){x=(x||"").toLowerCase();y=(y||"").toLowerCase(); return MP_DESC?(x<y?1:-1):(x>y?1:-1);}
+    return MP_DESC?(y||0)-(x||0):(x||0)-(y||0); });
+  const cols=[["","#"],["","★"],["","Foto"],["title","Producto"],["price","Precio"],["cost","Costo"],
+    ["inventory","Inv."],["sold_60d","Vend"],["ad_cost","Ads $"],["ad_acos","ACOS"],["ad_roas","ROAS"],
+    ["net_unit","Neto/u"],["margin_pct","Margen"],["net_60d","Neto "+MP_DAYS+"d"],["restock_qty","Reponer"]];
+  let html=`<table class="mp"><thead><tr>${cols.map(([f,t])=>
+    f?`<th onclick="sortMP('${f}')">${t}${MP_SORT===f?(MP_DESC?" ▼":" ▲"):""}</th>`:`<th>${t}</th>`).join("")}</tr></thead><tbody>`;
+  data.forEach((p,i)=>{
+    const m=+p.margin_pct||0, mc=m>=20?"green":m>=8?"amber":"red";
+    const nc=(+p.net_60d>=0)?"green":"red", roas=+p.ad_roas||0;
+    const rc=roas>=3?"green":roas>=1?"amber":(roas===0?"muted":"red");
+    const url=p.permalink||("https://articulo.mercadolibre.com.co/"+(p.item_id||"").replace("MCO","MCO-"));
+    let t=(p.title||""); if(t.length>34)t=t.slice(0,34)+"…";
+    const op=(+p.original_price>+p.price)?`<span class="strike">${cop(p.original_price)}</span>`:"";
+    const sku=p.inv_code?`<span class="sku">📦${esc(p.inv_code)}</span>`:"";
+    html+=`<tr class="mprow" onclick="toggleMP('${p.item_id}')">
+      <td class="${p.is_star?'acc':'muted'}">${(p.rank||i+1)}</td>
+      <td>${p.is_star?'<span class="acc">★</span>':''}</td>
+      <td>${p.thumbnail?`<img class="th" src="${p.thumbnail}">`:`<div class="th"></div>`}</td>
+      <td><a href="${url}" target="_blank" onclick="event.stopPropagation()" style="color:var(--acc);text-decoration:none" title="${esc(p.title)}">${esc(t)}</a> ${sku}
+        <div class="pmeta">${p.item_id}</div></td>
+      <td>${cop(p.price)} ${op}</td>
+      <td class="${p.cost_known?'green':'red'}">${p.cost_known?cop(p.cost):"—"}</td>
+      <td>${p.inventory}</td><td><b>${p.sold_60d}</b></td>
+      <td class="amber">${cop(p.ad_cost)}</td>
+      <td class="muted">${(+p.ad_acos||0).toFixed(1)}%</td>
+      <td class="${rc}">${roas?roas.toFixed(2)+"x":"—"}</td>
+      <td class="${nc}">${cop(p.net_unit)}</td>
+      <td class="${mc}">${m.toFixed(1)}%</td>
+      <td class="${nc}"><b>${cop(p.net_60d)}</b></td>
+      <td class="${p.restock_qty>0?'red':'muted'}">${p.restock_qty>0?"+"+p.restock_qty:"—"}</td></tr>`;
+    if(MP_OPEN===p.item_id){
+      html+=`<tr class="mpdetail"><td colspan="15"><div id="mpd-${p.item_id}">${mpAdsPanel(p)}<div class="note" id="mpt-${p.item_id}"><span class="spinner"></span> Conectando con Google Trends…</div></div></td></tr>`;
+    }
+  });
+  html+="</tbody></table>";
+  if(!data.length) html=`<div class="loading">Sin productos que coincidan.</div>`;
+  document.getElementById("mpBody").innerHTML=html;
+  if(MP_OPEN){ const p=MP.find(x=>x.item_id===MP_OPEN); if(p) loadMPTrends(p); }
+}
+function mpAdsPanel(p){
+  const cards=[["Ventas por publicidad",p.ad_dir_units||0],["Ventas sin publicidad",p.ad_indir_units||0],
+    ["ROAS",(+p.ad_roas||0).toFixed(2)+"x"],["Ingresos Ads",cop(p.ad_sales)],["Inversión Ads",cop(p.ad_cost)],
+    ["ACOS",(+p.ad_acos||0).toFixed(1)+"%"],["Clics",p.ad_clicks||0],["Impresiones",p.ad_prints||0],["CPC",cop(p.ad_cpc)]];
+  return `<div class="kpis" style="margin:4px 0">${cards.map(([c,v])=>`<div class="kpi" style="min-width:110px;padding:8px 12px"><div class="cap">${c}</div><div class="val" style="font-size:14px">${v}</div></div>`).join("")}</div>`;
+}
+async function toggleMP(iid){ MP_OPEN=MP_OPEN===iid?null:iid; drawMP(); }
+async function loadMPTrends(p){
+  try{ const r=await api(`/product-trends?item_id=${encodeURIComponent(p.item_id)}&title=${encodeURIComponent(p.title||"")}&days=${MP_DAYS}`);
+    const el=document.getElementById("mpt-"+p.item_id); if(!el)return;
+    const v=r.visits||{}, pts=r.trends||[];
+    let vis=""; if(v.total!=null) vis=`Visitas ML (${MP_DAYS}d): <b>${(v.total||0).toLocaleString("es-CO")}</b> · prom/día ${v.avg||0} · pico ${v.peak||0}  ·  `;
+    const lvl=pts.length?Math.round(pts.reduce((a,b)=>a+b[1],0)/pts.length):0;
+    const pk=pts.length?Math.max(...pts.map(x=>x[1])):0;
+    el.innerHTML=`${vis}${pts.length?`Google Trends 30d: promedio <b>${lvl}/100</b> · pico ${pk} ${spark(pts)}`:"Google Trends sin respuesta"}`;
+  }catch(e){ const el=document.getElementById("mpt-"+p.item_id); if(el)el.textContent="Trends no disponible"; }
+}
+function spark(pts){ // mini-sparkline SVG
+  const vals=pts.map(x=>x[1]), mx=Math.max(...vals,1), w=160,h=26;
+  const pp=vals.map((v,i)=>`${(i/(vals.length-1)*w).toFixed(1)},${(h-v/mx*h).toFixed(1)}`).join(" ");
+  return `<svg width="${w}" height="${h}" style="vertical-align:middle;margin-left:8px"><polyline points="${pp}" fill="none" stroke="var(--green)" stroke-width="1.5"/></svg>`;
+}
+function sortMP(f){ if(MP_SORT===f)MP_DESC=!MP_DESC; else{MP_SORT=f;MP_DESC=true;} drawMP(); }
+function exportMP(){
+  if(!MP.length){ alert("Primero actualiza los datos."); return; }
+  const cols=["item_id","title","status","category_name","price","original_price","cost","inventory","sold_total","sold_60d","net_unit","margin_pct","net_60d","restock_qty","ad_cost","ad_units","ad_sales","ad_acos","ad_roas","ad_cpc","ad_clicks","ad_prints","campaign_name","has_campaign","permalink"];
+  let csv=cols.join(",")+"\n";
+  MP.forEach(p=>{ csv+=cols.map(c=>{let v=p[c]==null?"":(""+p[c]).replace(/"/g,'""'); return /[",\n]/.test(v)?`"${v}"`:v;}).join(",")+"\n"; });
+  const blob=new Blob([csv],{type:"text/csv"}), a=document.createElement("a");
+  a.href=URL.createObjectURL(blob); a.download="BOUN_export_"+new Date().toISOString().slice(0,10)+".csv"; a.click();
+}
+
+// ── PRODUCTOS PARA COMPRAR ───────────────────────────────────────────────────
+let PROD=[], PR_SORT="viability_score", PR_DESC=true, PR_Q="", PR_USER="", PR_SEL=new Set(), PR_OPEN=null;
+async function renderProducts(){
+  const v=document.getElementById("view");
+  v.innerHTML=`<div class="row-between"><div>
+      <div class="page-title">Productos para comprar</div>
+      <div class="page-sub">Catálogo de productos nuevos analizados por link.</div>
+    </div><button class="btn-acc" onclick="analyzeDialog()">＋ Link de nuevo producto</button></div>
+    <div class="filters" style="justify-content:space-between">
+      <div id="prodFilters" style="display:flex;gap:8px;flex-wrap:wrap"></div>
+      <div id="prodSel" style="display:flex;gap:8px;align-items:center"></div>
+    </div>
+    <div id="prodBody"><div class="loading"><span class="spinner"></span> Cargando…</div></div>`;
+  PR_SEL=new Set();
+  try{ PROD=await api("/products"); drawPFilters(); drawProducts(); }
+  catch(e){ document.getElementById("prodBody").innerHTML=`<div class="red">${e.message}</div>`; }
+}
+function drawPFilters(){
+  const users=[...new Set(PROD.map(p=>p.created_by).filter(Boolean))].sort();
+  document.getElementById("prodFilters").innerHTML=`
+    <span class="muted" style="font-size:11px;align-self:center">Clic en columna: ordenar · ▸ abre el detalle</span>
+    <input class="field fmini" placeholder="Buscar…" value="${esc(PR_Q)}" oninput="PR_Q=this.value;drawProducts()">
+    <select class="field fmini" onchange="PR_USER=this.value;drawProducts()">
+      <option value="">Ingresado por: todos</option>${users.map(u=>`<option ${PR_USER===u?"selected":""}>${esc(u)}</option>`).join("")}</select>`;
+  drawPSel();
+}
+function drawPSel(){
+  const el=document.getElementById("prodSel"); if(!el)return;
+  el.innerHTML=`<span class="muted" style="font-size:12px">${PR_SEL.size} de ${PROD.length} seleccionados</span>
+    <button class="btn-ghost" onclick="selAllPR(true)">Marcar todos</button>
+    <button class="btn-ghost" onclick="selAllPR(false)">Desmarcar</button>
+    ${isAdmin()?`<button class="btn-danger" style="${PR_SEL.size?'':'opacity:.4;pointer-events:none'}" onclick="delSelPR()">Eliminar seleccionados</button>`:""}`;
+}
+function selAllPR(v){ PR_SEL=v?new Set(PROD.map(p=>p.id)):new Set(); drawProducts(); }
+function togglePRSel(id,ev){ ev.stopPropagation(); if(PR_SEL.has(id))PR_SEL.delete(id); else PR_SEL.add(id); drawPSel(); }
+async function delSelPR(){
+  if(!PR_SEL.size)return;
+  if(!confirm(`¿Eliminar ${PR_SEL.size} producto(s) del catálogo?`))return;
+  for(const id of PR_SEL){ try{ await api("/products/"+id,{method:"DELETE"}); }catch(e){} }
+  PR_SEL=new Set(); renderProducts();
+}
+function drawProducts(){
+  let data=PROD.filter(p=>{
+    if(PR_Q && !((p.name||"").toLowerCase().includes(PR_Q.toLowerCase()) || (p.category||"").toLowerCase().includes(PR_Q.toLowerCase())))return false;
+    if(PR_USER && p.created_by!==PR_USER)return false; return true;
+  });
+  data.sort((a,b)=>{ let x=a[PR_SORT],y=b[PR_SORT];
+    if(PR_SORT==="name"||PR_SORT==="category"){x=(x||"").toLowerCase();y=(y||"").toLowerCase();return PR_DESC?(x<y?1:-1):(x>y?1:-1);}
+    return PR_DESC?(y||0)-(x||0):(x||0)-(y||0); });
+  drawPSel();
+  if(!data.length){ document.getElementById("prodBody").innerHTML=`<div class="loading">Sin productos que coincidan.</div>`; return; }
+  const cols=[["",""],["",""],["","Foto"],["name","Producto"],["category","Categoría"],
+    ["viability_score","Score"],["profit_margin_pct","Margen"],["ml_monthly_sales","Ventas/mes"],
+    ["sale_price","Precio"],["net_profit","Ganancia"],["created_by","Por"],["",""]];
+  let html=`<table><thead><tr>${cols.map(([f,t])=>f?`<th onclick="sortPR('${f}')">${t}${PR_SORT===f?(PR_DESC?" ▼":" ▲"):""}</th>`:`<th>${t}</th>`).join("")}</tr></thead><tbody>`;
+  data.forEach(p=>{
+    const sc=+p.viability_score||0, scc=sc>=8?"green":sc>=5?"amber":"red";
+    const mg=+p.profit_margin_pct||0, mc=mg>=20?"green":mg>=10?"amber":"red";
+    const link=p.pdf_filename||""; let nm=(p.name||"").slice(0,30);
+    const img=(p.image_path&&p.image_path.startsWith("http"))?`<img class="th" src="${bigImg(p.image_path)}">`:`<div class="th"></div>`;
+    html+=`<tr class="mprow" onclick="togglePR(${p.id})">
+      <td><span class="expand">${PR_OPEN===p.id?"▾":"▸"}</span></td>
+      <td><input type="checkbox" ${PR_SEL.has(p.id)?"checked":""} onclick="togglePRSel(${p.id},event)" style="width:15px;height:15px"></td>
+      <td>${img}</td>
+      <td>${link.startsWith("http")?`<a href="${link}" target="_blank" onclick="event.stopPropagation()" style="color:var(--acc);text-decoration:none">${esc(nm)}</a>`:esc(nm)}<div class="pmeta">por ${esc(p.created_by||"—")}</div></td>
+      <td class="muted">${esc((p.category||"").slice(0,18))}</td>
+      <td class="${scc}"><b>${sc.toFixed(1)}</b></td>
+      <td class="${mc}">${mg.toFixed(1)}%</td>
+      <td>${(+p.ml_monthly_sales||0).toLocaleString("es-CO")}</td>
+      <td>${cop(p.sale_price)}</td>
+      <td class="${(+p.net_profit>=0)?'green':'red'}"><b>${cop(p.net_profit)}</b></td>
+      <td class="muted" style="font-size:10px">${esc((p.created_by||"—").split("@")[0])}</td>
+      <td onclick="event.stopPropagation()"><button class="btn-ghost" onclick="editCatProd(${p.id})">✏</button>${isAdmin()?` <button class="btn-danger" onclick="delCatProd(${p.id})">✕</button>`:""}</td></tr>`;
+    if(PR_OPEN===p.id) html+=`<tr class="mpdetail"><td colspan="12"><div id="prd-${p.id}"><span class="spinner"></span> Cargando detalle…</div></td></tr>`;
+  });
+  document.getElementById("prodBody").innerHTML=html+"</tbody></table>";
+  if(PR_OPEN){ const p=PROD.find(x=>x.id===PR_OPEN); if(p) fillPRDetail(p); }
+}
+function sortPR(f){ if(PR_SORT===f)PR_DESC=!PR_DESC; else{PR_SORT=f;PR_DESC=true;} drawProducts(); }
+function togglePR(id){ PR_OPEN=PR_OPEN===id?null:id; drawProducts(); }
+async function fillPRDetail(p){
+  const el=document.getElementById("prd-"+p.id); if(!el)return;
+  // desglose recalculado + KPIs + trends
+  let breakHtml="";
+  try{
+    const rc=await api("/recalc",{method:"POST",body:JSON.stringify({
+      sale_price:+p.sale_price||0, cost:+p.purchase_price||0, category:p.category||"Otro / General",
+      commission_rate:p.ml_category_commission||0, advertising_pct:(p.advertising_pct||0)*100,
+      competitor_count:p.ml_competitor_count||0, search_level:Math.round((p.ml_search_volume||0)/50) })});
+    const f=rc.fees, sc=+p.viability_score||0, scc=sc>=8?"green":sc>=5?"amber":"red";
+    const rows=[["Precio de venta (ML)",cop(f.sale_price),""],["Costo del producto","− "+cop(f.purchase_price),"red"],
+      [`Comisión ML (${(f.commission_rate_pct||0).toFixed(0)}%)`,"− "+cop(f.commission_base),"red"],
+      ["IVA sobre comisión (19%)","− "+cop(f.commission_iva),"red"],["Retención en la fuente","− "+cop(f.retencion_fuente),"red"],
+      ["Costo de envío","− "+cop(f.shipping_cost),"red"],["Publicidad","− "+cop(f.advertising_cost),"red"]];
+    breakHtml=`<div style="display:flex;gap:14px;margin-bottom:8px;align-items:center">
+        ${p.image_path&&p.image_path.startsWith("http")?`<img src="${bigImg(p.image_path)}" style="width:60px;height:60px;border-radius:8px;object-fit:cover">`:""}
+        <div class="muted" style="font-size:11px">${(p.ml_competitor_count||0).toLocaleString("es-CO")} competidores · comisión ${((p.ml_category_commission||0)*100).toFixed(0)}% · creado por ${esc(p.created_by||"—")}</div></div>
+      ${rows.map(([a,b,c])=>`<div style="display:flex;justify-content:space-between;font-size:12px;padding:1px 0"><span class="muted">${a}</span><span class="${c}"><b>${b}</b></span></div>`).join("")}
+      <div class="kpis" style="margin-top:8px">
+        <div class="kpi"><div class="cap">Ganancia neta</div><div class="val ${f.net_profit>=0?'green':'red'}">${cop(f.net_profit)}</div></div>
+        <div class="kpi"><div class="cap">Margen</div><div class="val ${f.profit_margin_pct>=20?'green':'amber'}">${(f.profit_margin_pct||0).toFixed(1)}%</div></div>
+        <div class="kpi"><div class="cap">Score viabilidad</div><div class="val ${scc}">${sc.toFixed(1)}/10</div></div></div>`;
+  }catch(e){ breakHtml=`<div class="red">${e.message}</div>`; }
+  el.innerHTML=breakHtml+`<div class="note" id="prt-${p.id}"><span class="spinner"></span> Conectando con Google Trends…</div>`;
+  try{ const t=await api(`/product-trends?title=${encodeURIComponent(p.name||"")}&days=30`); const pts=t.trends||[];
+    const tl=document.getElementById("prt-"+p.id); if(tl) tl.innerHTML=pts.length?`Google Trends 30d: promedio <b>${Math.round(pts.reduce((a,b)=>a+b[1],0)/pts.length)}/100</b> ${spark(pts)}`:"Google Trends sin respuesta";
+  }catch(e){}
+}
+async function editCatProd(pid){
+  let p; try{ p=await api("/products/"+pid); }catch(e){ alert(e.message); return; }
+  openModal(`<h3>Editar producto</h3><div class="sub">${esc(p.name)}</div>
+    <div id="edErr" class="err"></div>
+    <label class="muted" style="font-size:11px">Costo del producto</label>
+    <input id="edCost" class="field" value="${Math.round(p.purchase_price||0)}" oninput="recalcEdit()">
+    <label class="muted" style="font-size:11px">Precio de venta</label>
+    <input id="edPrice" class="field" value="${Math.round(p.sale_price||0)}" oninput="recalcEdit()">
+    <div id="edBreak"></div>
+    <button class="btn-primary" onclick="saveEdit(${pid})">Guardar</button>`,true);
+  window._editP=p; recalcEdit();
+}
+let _editFees=null;
+async function recalcEdit(){
+  const p=window._editP; const cost=num("edCost"), price=num("edPrice");
+  if(price<=0||cost<=0){ document.getElementById("edBreak").innerHTML=""; return; }
+  try{ const rc=await api("/recalc",{method:"POST",body:JSON.stringify({
+      sale_price:price, cost, category:p.category||"Otro / General",
+      commission_rate:p.ml_category_commission||0, advertising_pct:(p.advertising_pct||0)*100,
+      competitor_count:p.ml_competitor_count||0, search_level:Math.round((p.ml_search_volume||0)/50) })});
+    _editFees=rc; const f=rc.fees, sc=rc.score, scc=sc>=8?"green":sc>=5?"amber":"red";
+    document.getElementById("edBreak").innerHTML=`<div style="margin:10px 0">
+      <div class="kpis"><div class="kpi"><div class="cap">Ganancia neta</div><div class="val ${f.net_profit>=0?'green':'red'}">${cop(f.net_profit)}</div></div>
+      <div class="kpi"><div class="cap">Margen</div><div class="val ${f.profit_margin_pct>=20?'green':'amber'}">${(f.profit_margin_pct||0).toFixed(1)}%</div></div>
+      <div class="kpi"><div class="cap">Score</div><div class="val ${scc}">${sc.toFixed(1)}/10</div></div></div></div>`;
+  }catch(e){}
+}
+async function saveEdit(pid){
+  const cost=num("edCost"),price=num("edPrice"),f=_editFees?_editFees.fees:null;
+  if(price<=0||cost<=0){ document.getElementById("edErr").textContent="Precio y costo válidos."; return; }
+  const body={purchase_price:cost, sale_price:price,
+    shipping_cost:_editFees?_editFees.shipping:0, ml_commission_total:f?f.commission_total:0,
+    total_costs:f?f.total_costs:0, net_profit:f?f.net_profit:0,
+    profit_margin_pct:f?f.profit_margin_pct:0, viability_score:_editFees?_editFees.score:0};
+  try{ await api("/products/"+pid,{method:"PATCH",body:JSON.stringify(body)}); closeModal(); renderProducts(); }
+  catch(e){ document.getElementById("edErr").textContent=e.message; }
+}
+async function delCatProd(pid){ if(!confirm("¿Eliminar producto del catálogo?"))return;
+  try{ await api("/products/"+pid,{method:"DELETE"}); renderProducts(); }catch(e){ alert(e.message); } }
+
+let ANA=null;
+function analyzeDialog(){
+  ANA=null;
+  openModal(`<h3>Link de nuevo producto</h3>
+    <div class="sub">Pega el link de la publicación de MercadoLibre y el costo.</div>
+    <div id="anaErr" class="err"></div>
+    <input id="anaUrl" class="field" placeholder="Link de la publicación de MercadoLibre">
+    <input id="anaCost" class="field" placeholder="Costo del producto (COP)">
+    <button class="btn-primary" onclick="doAnalyze()">Analizar publicación</button>
+    <div id="anaRes"></div>`,true);
+}
+async function doAnalyze(){
+  const url=val("anaUrl"),cost=num("anaCost");
+  const err=document.getElementById("anaErr"); err.textContent="";
+  if(!url){ err.textContent="Pega el link."; return; }
+  document.getElementById("anaRes").innerHTML=`<div class="loading"><span class="spinner"></span> Analizando en MercadoLibre…</div>`;
+  try{ const r=await api("/analyze",{method:"POST",body:JSON.stringify({url,cost})});
+    ANA=r; showAnaResult(r,cost);
+  }catch(e){ document.getElementById("anaRes").innerHTML=""; err.textContent=e.message; }
+}
+function showAnaResult(r,cost){
+  const price=r.real_price||0;
+  document.getElementById("anaRes").innerHTML=`
+    <div style="display:flex;gap:12px;margin:14px 0;align-items:center">
+      ${r.image_url?`<img src="${bigImg(r.image_url)}" style="width:72px;height:72px;border-radius:8px;object-fit:cover">`:""}
+      <div><div style="font-weight:700">${esc(r.product_name||"")}</div>
+        <div class="muted" style="font-size:11px">${(r.same_product_listings||0)} publicaciones del mismo producto · ${(r.competitor_count||0).toLocaleString("es-CO")} competidores · ${r.commission_is_real?"comisión real":"comisión estimada"} ${((r.commission_rate||0)*100).toFixed(0)}%</div></div>
+    </div>
+    <label class="muted" style="font-size:11px">Precio de venta en ML ${r.price_unavailable?"(⚠ ML no lo expone — escríbelo)":"(editable)"}</label>
+    <input id="anaPrice" class="field" value="${price||""}" placeholder="Precio de venta" oninput="recalcAna(${cost})">
+    <div id="anaBreak"></div>
+    <div id="anaTrends" class="note"><span class="spinner"></span> Conectando con Google Trends…</div>
+    <button class="btn-primary" onclick="saveAnalyzed(${cost})">Guardar producto</button>`;
+  if(price>0) recalcAna(cost);
+  // Trends
+  api(`/product-trends?title=${encodeURIComponent(r.product_name||"")}&days=30`).then(t=>{
+    const el=document.getElementById("anaTrends"); if(!el)return; const pts=t.trends||[];
+    if(pts.length){ const lvl=Math.round(pts.reduce((a,b)=>a+b[1],0)/pts.length), pk=Math.max(...pts.map(x=>x[1]));
+      ANA._lvl=lvl; el.innerHTML=`Google Trends 30d: promedio <b>${lvl}/100</b> · pico ${pk} ${spark(pts)}`; recalcAna(cost);
+    } else el.textContent="Google Trends sin respuesta";
+  }).catch(()=>{});
+}
+let ANA_FEES=null;
+async function recalcAna(cost){
+  const price=num("anaPrice"); if(price<=0)return; const r=ANA;
+  try{ const rc=await api("/recalc",{method:"POST",body:JSON.stringify({
+      sale_price:price, cost, category:r.category_id||"Otro / General",
+      commission_rate:r.commission_rate||0, advertising_pct:r.advertising_pct||0,
+      competitor_count:r.competitor_count||0, search_level:ANA._lvl||r.search_level||0 })});
+    ANA_FEES=rc; const f=rc.fees;
+    const rows=[["Precio de venta (ML)",cop(f.sale_price),""],["Costo del producto","− "+cop(f.purchase_price),"red"],
+      [`Comisión ML (${(f.commission_rate_pct||0).toFixed(0)}%)`,"− "+cop(f.commission_base),"red"],
+      ["IVA sobre comisión (19%)","− "+cop(f.commission_iva),"red"],["Retención en la fuente","− "+cop(f.retencion_fuente),"red"],
+      ["Costo de envío","− "+cop(f.shipping_cost),"red"],["Publicidad","− "+cop(f.advertising_cost),"red"]];
+    const sc=rc.score||0, scc=sc>=8?"green":sc>=5?"amber":"red";
+    document.getElementById("anaBreak").innerHTML=`<div style="margin:12px 0">
+      ${rows.map(([a,b,c])=>`<div style="display:flex;justify-content:space-between;font-size:12px;padding:2px 0"><span class="muted">${a}</span><span class="${c}"><b>${b}</b></span></div>`).join("")}
+      <div class="kpis" style="margin-top:10px">
+        <div class="kpi"><div class="cap">Ganancia neta</div><div class="val ${f.net_profit>=0?'green':'red'}">${cop(f.net_profit)}</div></div>
+        <div class="kpi"><div class="cap">Margen</div><div class="val ${f.profit_margin_pct>=20?'green':'amber'}">${(f.profit_margin_pct||0).toFixed(1)}%</div></div>
+        <div class="kpi"><div class="cap">Score viabilidad</div><div class="val ${scc}">${sc.toFixed(1)}/10</div></div>
+      </div></div>`;
+  }catch(e){}
+}
+async function saveAnalyzed(cost){
+  const price=num("anaPrice"); const r=ANA, f=ANA_FEES?ANA_FEES.fees:null;
+  if(price<=0||cost<=0){ alert("Precio y costo deben ser válidos."); return; }
+  const body={ name:r.product_name||"Producto ML", category:r.category_id||"Otro / General",
+    purchase_price:cost, sale_price:price, ml_competitor_count:r.competitor_count||0,
+    ml_category_commission:r.commission_rate||0, ml_monthly_sales:(ANA._lvl||0)*5, ml_search_volume:(ANA._lvl||0)*50,
+    shipping_cost:(ANA_FEES?ANA_FEES.shipping:r.shipping_cost)||0, advertising_pct:(r.advertising_pct||0)/100,
+    ml_commission_total:f?f.commission_total:0, total_costs:f?f.total_costs:0,
+    viability_score:ANA_FEES?ANA_FEES.score:0, profit_margin_pct:f?f.profit_margin_pct:0, net_profit:f?f.net_profit:0,
+    permalink:r.permalink||"", image_url:r.image_url||"" };
+  try{ await api("/products",{method:"POST",body:JSON.stringify(body)}); closeModal(); go("products"); }
+  catch(e){ alert(e.message); }
+}
+
+// ── CONFIGURACIÓN ────────────────────────────────────────────────────────────
+async function renderSettings(){
+  const v=document.getElementById("view");
+  v.innerHTML=`<div class="page-title">Configuración</div>
+    <div class="page-sub">Personaliza la aplicación para tu empresa.</div>
+    <div id="setBody"><div class="loading"><span class="spinner"></span> Cargando…</div></div>`;
+  try{
+    const st=await api("/ml-status"); const cf=await api("/settings");
+    const adm=isAdmin(), ro=adm?"":"disabled";
+    document.getElementById("setBody").innerHTML=`
+      <div class="set-sec">INFORMACIÓN DE LA EMPRESA</div>
+      <div class="set-grid">
+        ${setField("Nombre de empresa","s_name",cf.company_name,ro)}
+        ${setField("NIT / RUT","s_nit",cf.company_nit,ro)}
+        ${setField("Usuario por defecto","s_user",cf.default_user,ro)}
+        ${setField("Moneda principal","s_curr",cf.currency,ro)}
+      </div>
+      ${adm?`<button class="btn-acc" style="margin-top:10px" onclick="saveCompany()">Guardar información</button>`:`<div class="muted" style="font-size:11px">Solo el administrador puede editar la información de la empresa.</div>`}
+
+      <div class="set-sec" style="margin-top:24px">MERCADOLIBRE API</div>
+      <div class="muted" style="font-size:12px;margin-bottom:8px">Conecta tu cuenta de MercadoLibre para datos reales: precios, ventas, competidores y envíos. La conexión se comparte con todo el equipo por la nube.</div>
+      <div style="font-size:14px;margin-bottom:10px">${st.connected
+        ? `<span class="green">● Conectado${st.username?" como <b>"+esc(st.username)+"</b>":""}</span>`
+        : `<span class="red">○ No conectado</span>`}</div>
+      ${adm?`<div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn-acc" onclick="mlConnect()">Conectar con MercadoLibre</button>
+        ${st.connected?`<button class="btn-ghost" onclick="mlDisconnect()">Desconectar</button>`:""}
+        <button class="btn-ghost" onclick="mlAdvanced(${cf.has_secret})">Configuración avanzada (APP ID y Secret)</button>
+      </div>`:`<div class="muted" style="font-size:11px">La conexión la administra el administrador.</div>`}
+
+      <div class="set-sec" style="margin-top:24px">TU CUENTA</div>
+      <div style="font-size:13px">Usuario: <b>${esc(USER.username)}</b> · ${adm?"Administrador":"Colaborador"}</div>
+      <button class="btn-ghost" style="margin-top:10px" onclick="changePwDialog()">Cambiar mi contraseña</button>
+
+      <div class="set-sec" style="margin-top:24px">ACERCA DE</div>
+      <div class="inv-card" style="padding:16px;max-width:600px">
+        <div style="font-weight:700">BOUN · Análisis MercadoLibre — Web</div>
+        <div class="muted" style="font-size:12px;margin-top:6px">Herramienta de análisis de rentabilidad para vendedores en MercadoLibre Colombia. Calcula comisiones, impuestos, margen de ganancia y score de viabilidad.</div>
+        <div class="muted" style="font-size:11px;margin-top:6px">Comisiones ML 2024 · Retención en fuente: 2.8% · IVA comisión: 19%</div>
+      </div>`;
+  }catch(e){ document.getElementById("setBody").innerHTML=`<div class="red">${e.message}</div>`; }
+}
+function setField(label,id,val,ro){
+  return `<div class="set-row"><label>${label}</label><input id="${id}" class="field" style="margin:0" value="${esc(val||"")}" ${ro}></div>`;
+}
+async function saveCompany(){
+  try{ await api("/settings",{method:"POST",body:JSON.stringify({
+    company_name:val("s_name"),company_nit:val("s_nit"),default_user:val("s_user"),currency:val("s_curr")})});
+    alert("Información guardada.");
+  }catch(e){ alert(e.message); }
+}
+async function mlConnect(){
+  try{ const r=await api("/ml/auth-url");
+    openModal(`<h3>Conectar con MercadoLibre</h3>
+      <div class="sub">1. Abre el enlace, inicia sesión en MercadoLibre y autoriza BOUN.<br>2. Te redirigirá a una página (puede mostrar 404, es normal).<br>3. Copia la URL completa de la barra del navegador y pégala abajo.</div>
+      <a href="${r.url}" target="_blank" class="btn-acc" style="display:inline-block;text-decoration:none;line-height:40px;margin-bottom:10px">Abrir MercadoLibre →</a>
+      <div id="mlErr" class="err"></div>
+      <input id="mlCode" class="field" placeholder="Pega aquí la URL completa o el código">
+      <button class="btn-primary" onclick="mlExchange()">Conectar</button>`);
+  }catch(e){ alert(e.message); }
+}
+async function mlExchange(){
+  const code=val("mlCode"); const err=document.getElementById("mlErr"); err.textContent="";
+  if(!code){ err.textContent="Pega la URL o el código."; return; }
+  err.innerHTML='<span class="spinner"></span> Procesando…';
+  try{ const r=await api("/ml/exchange",{method:"POST",body:JSON.stringify({code})});
+    closeModal(); alert("✓ Conectado"+(r.username?" como "+r.username:"")); renderSettings();
+  }catch(e){ err.textContent=e.message; }
+}
+async function mlDisconnect(){
+  if(!confirm("¿Desconectar MercadoLibre? El equipo perderá el acceso a datos hasta reconectar."))return;
+  try{ await api("/ml/disconnect",{method:"POST"}); renderSettings(); }catch(e){ alert(e.message); }
+}
+function mlAdvanced(hasSecret){
+  openModal(`<h3>Configuración avanzada</h3>
+    <div class="sub">APP ID y Client Secret de tu app en developers.mercadolibre.com.co. Redirect URI registrada: https://boun.com.co/oauth</div>
+    <div id="advErr" class="err"></div>
+    <input id="advId" class="field" placeholder="APP ID (Client ID)">
+    <input id="advSecret" class="field" type="password" placeholder="${hasSecret?"Client Secret (guardado — escribe para cambiar)":"Client Secret"}">
+    <input id="advRedir" class="field" placeholder="Redirect URI (opcional)" value="https://boun.com.co/oauth">
+    <button class="btn-primary" onclick="saveAdv()">Guardar credenciales</button>`);
+}
+async function saveAdv(){
+  const err=document.getElementById("advErr"); err.textContent="";
+  try{ await api("/ml/credentials",{method:"POST",body:JSON.stringify({
+    ml_app_id:val("advId"),ml_client_secret:val("advSecret"),ml_redirect_uri:val("advRedir")})});
+    closeModal(); alert("Credenciales guardadas."); renderSettings();
+  }catch(e){ err.textContent=e.message; }
+}
+
+function changePwDialog(){
+  openModal(`<h3>Cambiar contraseña</h3><div class="sub">Define tu nueva contraseña.</div>
+    <div id="pwErr" class="err"></div>
+    <input id="pw1" class="field" type="password" placeholder="Nueva contraseña">
+    <input id="pw2" class="field" type="password" placeholder="Repetir contraseña">
+    <button class="btn-primary" onclick="doChangePw()">Guardar</button>`);
+}
+async function doChangePw(){
+  const a=val("pw1"),b=val("pw2"),err=document.getElementById("pwErr"); err.textContent="";
+  if(a.length<6){ err.textContent="Mínimo 6 caracteres."; return; }
+  if(a!==b){ err.textContent="No coinciden."; return; }
+  try{ await api("/change-password",{method:"POST",body:JSON.stringify({new_password:a})}); closeModal(); alert("Contraseña actualizada."); }
+  catch(e){ err.textContent=e.message; }
+}
+
+// ── COLABORADORES// ── COLABORADORES ────────────────────────────────────────────────────────────
+async function renderCollaborators(){
+  const v=document.getElementById("view");
+  v.innerHTML=`<div class="page-title">Colaboradores</div>
+    <div class="page-sub">Crea y administra las cuentas de tu equipo.</div>
+    <div class="inv-card" style="padding:16px;margin-bottom:16px">
+      <div style="font-weight:700;color:var(--acc);margin-bottom:8px">Nuevo colaborador</div>
+      <div id="colErr" class="err"></div>
+      <div style="display:flex;gap:8px">
+        <input id="colUser" class="field" style="margin:0" placeholder="Correo del colaborador">
+        <input id="colPw" class="field" style="margin:0" placeholder="Contraseña temporal">
+        <button class="btn-acc" onclick="createCol()">Crear</button>
+      </div>
+      <div class="muted" style="font-size:11px;margin-top:8px">El colaborador deberá cambiar la contraseña al iniciar sesión.</div>
+    </div>
+    <div id="colList"><div class="loading"><span class="spinner"></span> Cargando…</div></div>`;
+  loadCols();
+}
+async function loadCols(){
+  try{ const us=await api("/users");
+    document.getElementById("colList").innerHTML=us.map(u=>{
+      const adm=u.role==="admin";
+      return `<div class="inv-card" style="padding:13px 16px;display:flex;align-items:center;gap:12px">
+        <div style="flex:1"><b>${esc(u.username)}</b>${u.username===USER.username?' · tú':''}
+          <div style="font-size:11px;color:${u.active?'var(--green)':'var(--red)'}">${adm?"Administrador":"Colaborador"}${u.active?"":" · desactivado"}</div></div>
+        ${adm?"":`
+          <button class="btn-ghost" onclick="resetCol('${esc(u.username)}')">Restablecer</button>
+          <button class="btn-ghost" onclick="toggleCol('${esc(u.username)}',${!u.active})">${u.active?"Desactivar":"Activar"}</button>
+          <button class="btn-danger" onclick="delCol('${esc(u.username)}')">Eliminar</button>`}
+      </div>`;
+    }).join("");
+  }catch(e){ document.getElementById("colList").innerHTML=`<div class="red">${e.message}</div>`; }
+}
+async function createCol(){
+  const u=val("colUser"),p=val("colPw"); const err=document.getElementById("colErr"); err.textContent="";
+  if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(u)){ err.textContent="Correo inválido."; return; }
+  if(p.length<6){ err.textContent="Contraseña mínimo 6 caracteres."; return; }
+  try{ await api("/users",{method:"POST",body:JSON.stringify({username:u,password:p})});
+    alert(`Colaborador creado.\nUsuario: ${u}\nContraseña: ${p}\n\nEnvíaselos para que entre.`);
+    document.getElementById("colUser").value="";document.getElementById("colPw").value="";
+    loadCols();
+  }catch(e){ err.textContent=e.message; }
+}
+async function delCol(u){ if(!confirm(`¿Eliminar a "${u}"?`))return;
+  try{ await api("/users/"+encodeURIComponent(u),{method:"DELETE"}); loadCols(); }catch(e){ alert(e.message); } }
+async function toggleCol(u,a){ try{ await api("/users/"+encodeURIComponent(u)+"/active",{method:"PATCH",body:JSON.stringify({active:a})}); loadCols(); }catch(e){ alert(e.message); } }
+async function resetCol(u){ const p=prompt(`Nueva contraseña temporal para ${u} (mín. 6):`); if(!p)return;
+  if(p.length<6){ alert("Mínimo 6 caracteres."); return; }
+  try{ await api("/users/"+encodeURIComponent(u)+"/reset",{method:"POST",body:JSON.stringify({new_password:p})});
+    alert("Contraseña restablecida. El colaborador deberá cambiarla al entrar."); }catch(e){ alert(e.message); } }
+
+// ── Utils ────────────────────────────────────────────────────────────────────
+const esc=s=>(s==null?"":String(s)).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const val=id=>document.getElementById(id).value.trim();
+const num=id=>parseFloat((document.getElementById(id).value||"").replace(/[^0-9.]/g,""))||0;
+const bigImg=u=>u&&u.replace(/-I(\.[a-z]+)$/i,"-O$1");
+
+// ── Init ─────────────────────────────────────────────────────────────────────
+if(TOKEN && USER){ showApp(); } else { document.getElementById("login").style.display="flex"; }

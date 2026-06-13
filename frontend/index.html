@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BOUN · Análisis ML</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- Login -->
+<div id="login" class="login-wrap">
+  <div class="login-card">
+    <img src="/logo.png" class="login-logo" alt="BOUN">
+    <h2>Iniciar sesión</h2>
+    <div class="sub">Ingresa con tu cuenta del equipo BOUN.</div>
+    <div id="loginErr" class="err"></div>
+    <input id="lu" class="field" placeholder="Correo / usuario" autocomplete="username">
+    <input id="lp" class="field" type="password" placeholder="Contraseña" autocomplete="current-password">
+    <button class="btn-primary" onclick="doLogin()">Entrar</button>
+  </div>
+</div>
+
+<!-- App -->
+<div id="app" class="app">
+  <aside class="sidebar">
+    <div class="logo">
+      <img src="/logo.png" alt="BOUN">
+      <div class="tag">Análisis MercadoLibre</div>
+    </div>
+    <nav class="nav" id="nav"></nav>
+    <div class="userbox">
+      <div class="uname" id="uname">—</div>
+      <div class="urole" id="urole"></div>
+      <button onclick="doLogout()">Cerrar sesión</button>
+    </div>
+  </aside>
+  <main class="main" id="view"></main>
+</div>
+
+<!-- Modal genérico -->
+<div id="modalBg" class="modal-bg" onclick="if(event.target===this)closeModal()">
+  <div id="modal" class="modal"></div>
+</div>
+
+<script src="/app.js"></script>
+</body>
+</html>
