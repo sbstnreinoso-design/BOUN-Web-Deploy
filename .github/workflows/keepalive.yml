@@ -1,0 +1,24 @@
+name: keepalive
+
+# Mantiene despierta la app BOUN en Render (plan free) y permite que el
+# refresco automatico de 20 min siga corriendo: hace ping cada 10 minutos.
+# Render free duerme tras ~15 min de inactividad, asi que 10 min la mantiene activa.
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"   # cada 10 minutos
+  workflow_dispatch:          # permite dispararlo a mano desde la pestana Actions
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping BOUN Web
+        run: |
+          echo "Pinging $(date -u)"
+          code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 60 \
+            https://boun-web-deploy.onrender.com/ || echo "000")
+          echo "HTTP status: $code"
+          # 200 = OK. No fallamos el job por un cold-start lento (000/502);
+          # el siguiente ping seguira despertandola.
+          exit 0
