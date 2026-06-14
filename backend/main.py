@@ -259,15 +259,15 @@ def _mp_background_refresh():
     """Refresca el periodo de 60 días cada 20 min, en segundo plano,
     para que la página abra al instante con datos recientes."""
     while True:
+        # precalentar primero el mapa de ventas de 7 días (lo usa el export)
+        try:
+            _sold7_map(force=True)
+        except Exception:
+            pass
         try:
             r = _fetch_my_products(60)
             if r.get("ok"):
                 _MP_CACHE[60] = {"ts": time.time(), "data": r}
-        except Exception:
-            pass
-        # precalentar el mapa de ventas de 7 días para el export
-        try:
-            _sold7_map(force=True)
         except Exception:
             pass
         time.sleep(_MP_TTL)
@@ -607,7 +607,10 @@ def export_inventario(key: str = ""):
                             headers=_EXPORT_CORS)
 
     prods = db.inv_list_products()
-    s7 = _sold7_map()   # item_id → ventas 7 días (cacheado; {} si aún sin datos)
+    # ventas 7 días: SOLO lectura de caché (no bloquear la petición con un
+    # fetch a ML). El refresco en segundo plano la mantiene caliente; si aún
+    # no hay datos, vendidos_7d sale null y se llena en el próximo ciclo.
+    s7 = _SOLD7_CACHE["map"]
     productos = []
     for p in prods:
         pubs = []
