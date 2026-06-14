@@ -923,6 +923,86 @@ def export_inventario(key: str = ""):
     return JSONResponse(out, headers=_EXPORT_CORS)
 
 
+# ── API Falabella (ventas / catálogo / stock) — protegida por token ──────────
+# Mismas reglas que el export: pública (sin sesión), ?key= vs BOUN_EXPORT_TOKEN,
+# CORS abierto, no-store. Pensada para un agente externo sin internet abierto.
+
+def _falabella_guard(key: str):
+    """Devuelve una JSONResponse de error si no pasa auth/credenciales; si todo
+    bien, devuelve None."""
+    token = os.environ.get("BOUN_EXPORT_TOKEN", "")
+    if not token or key != token:
+        return JSONResponse({"error": "unauthorized"}, status_code=401,
+                            headers=_EXPORT_CORS)
+    import falabella as fb
+    if not fb.is_connected():
+        return JSONResponse({"error": "missing_falabella_credentials"},
+                            status_code=500, headers=_EXPORT_CORS)
+    return None
+
+
+@app.options("/api/falabella/ventas")
+@app.options("/api/falabella/productos")
+@app.options("/api/falabella/set-stock")
+def falabella_preflight():
+    return Response(status_code=204, headers=_EXPORT_CORS)
+
+
+@app.get("/api/falabella/ventas")
+def falabella_ventas(key: str = "", dias: int = 1):
+    g = _falabella_guard(key)
+    if g:
+        return g
+    import falabella as fb
+    try:
+        return JSONResponse(fb.ventas_por_sku(dias), headers=_EXPORT_CORS)
+    except Exception as e:
+        return JSONResponse({"error": str(e)[:200]}, status_code=502,
+                            headers=_EXPORT_CORS)
+
+
+@app.get("/api/falabella/productos")
+def falabella_productos(key: str = ""):
+    g = _falabella_guard(key)
+    if g:
+        return g
+    import falabella as fb
+    try:
+        return JSONResponse(fb.get_products_list(), headers=_EXPORT_CORS)
+    except Exception as e:
+        return JSONResponse({"error": str(e)[:200]}, status_code=502,
+                            headers=_EXPORT_CORS)
+
+
+@app.get("/api/falabella/set-stock")
+def falabella_set_stock(key: str = "", sku: str = "", cantidad: str = "",
+                        dry: str = ""):
+    g = _falabella_guard(key)
+    if g:
+        return g
+    if not sku:
+        return JSONResponse({"error": "bad_request"}, status_code=400,
+                            headers=_EXPORT_CORS)
+    try:
+        c = int(cantidad)
+        if c < 0:
+            raise ValueError()
+    except (ValueError, TypeError):
+        return JSONResponse({"error": "bad_request"}, status_code=400,
+                            headers=_EXPORT_CORS)
+    import falabella as fb
+    try:
+        if dry == "1":
+            return JSONResponse(fb.set_stock(sku, c, dry=True),
+                                headers=_EXPORT_CORS)
+        res = fb.set_stock(sku, c, dry=False)
+        return JSONResponse({"ok": True, "sku": sku, "cantidad": c,
+                             "respuesta": res}, headers=_EXPORT_CORS)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]},
+                            status_code=502, headers=_EXPORT_CORS)
+
+
 # ── Frontend estático ────────────────────────────────────────────────────────
 
 _FRONT = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")

@@ -10,6 +10,7 @@ import os
 import hmac
 import hashlib
 import datetime as _dt
+import xml.sax.saxutils as _su
 from urllib.parse import quote
 
 import requests
@@ -17,6 +18,9 @@ import requests
 BASE = "https://sellercenter-api.falabella.com"
 # Colombia es UTC-5 fijo (sin horario de verano)
 _CO_TZ = _dt.timezone(_dt.timedelta(hours=-5))
+# Operador logístico de la cuenta (Falabella Colombia = "faco"); el stock vive
+# por BusinessUnit/OperatorCode, así que ProductUpdate debe usar ese formato.
+_OPERATOR = os.environ.get("FALABELLA_OPERATOR", "faco")
 
 
 def _creds():
@@ -52,6 +56,109 @@ def _as_list(x):
     if x is None:
         return []
     return x if isinstance(x, list) else [x]
+
+
+def _post(action: str, body: str, extra: dict = None, timeout: int = 60) -> dict:
+    """POST firmado (la firma va en el querystring; el XML va en el cuerpo)."""
+    r = requests.post(_signed_url(action, extra), data=body.encode("utf-8"),
+                      headers={"Content-Type": "text/xml; charset=utf-8"},
+                      timeout=timeout)
+    r.raise_for_status()
+    d = r.json()
+    if "ErrorResponse" in d:
+        h = (d.get("ErrorResponse") or {}).get("Head", {}) or {}
+        raise RuntimeError("%s: %s" % (h.get("ErrorCode"),
+                                       h.get("ErrorMessage")))
+    return d
+
+
+# ── API pública para los endpoints externos (ventas/catálogo/stock) ──────────
+
+def _all_order_items(order_ids: list) -> list:
+    """Lista plana de OrderItem (cada uno = 1 unidad) de varias órdenes."""
+    out = []
+    for i in range(0, len(order_ids), 25):
+        chunk = order_ids[i:i + 25]
+        try:
+            d = _get("GetMultipleOrderItems",
+                     {"OrderIdList": "[" + ",".join(chunk) + "]"})
+            body = (d.get("SuccessResponse") or {}).get("Body") or {}
+            for o in _as_list((body.get("Orders") or {}).get("Order")):
+                out.extend(_as_list((o.get("OrderItems") or {}).get("OrderItem")))
+        except Exception:
+            pass
+    return out
+
+
+def ventas_por_sku(dias: int = 1) -> dict:
+    """Ventas agregadas por SKU en los últimos `dias` días."""
+    since = ((_dt.datetime.now(_CO_TZ) - _dt.timedelta(days=int(dias)))
+             .replace(hour=0, minute=0, second=0, microsecond=0).isoformat())
+    orders = get_orders(since)
+    ids = [str(o.get("OrderId")) for o in orders if o.get("OrderId")]
+    items = _all_order_items(ids)
+    agg = {}
+    for it in items:
+        sku = it.get("SellerSku") or it.get("Sku") or "??"
+        row = agg.setdefault(sku, {"sku": sku, "nombre": it.get("Name", ""),
+                                   "unidades": 0, "ingreso": 0.0})
+        row["unidades"] += 1
+        try:
+            row["ingreso"] += float(it.get("ItemPrice")
+                                    or it.get("PaidPrice") or 0)
+        except (TypeError, ValueError):
+            pass
+    return {"desde": since, "ordenes": len(orders), "unidades": len(items),
+            "por_sku": sorted(agg.values(), key=lambda r: -r["unidades"])}
+
+
+def _bu_field(prod: dict, field: str):
+    bu = _as_list((prod.get("BusinessUnits") or {}).get("BusinessUnit"))
+    return bu[0].get(field) if bu else None
+
+
+def get_products_list(limit: int = 100) -> list:
+    """Catálogo: SellerSku, Name, Quantity(stock), Price, Status.
+    El stock/precio/estado vive en BusinessUnits → se extrae de ahí.
+    """
+    out, off = [], 0
+    while True:
+        d = _get("GetProducts", {"Limit": str(limit), "Offset": str(off)})
+        body = (d.get("SuccessResponse") or {}).get("Body") or {}
+        page = _as_list((body.get("Products") or {}).get("Product"))
+        for x in page:
+            out.append({
+                "SellerSku": x.get("SellerSku"),
+                "Name": x.get("Name"),
+                "Quantity": x.get("Quantity") or _bu_field(x, "Stock"),
+                "Price": x.get("Price") or _bu_field(x, "Price"),
+                "Status": x.get("Status") or _bu_field(x, "Status"),
+            })
+        if len(page) < limit:
+            break
+        off += limit
+        if off > 3000:
+            break
+    return out
+
+
+def set_stock(seller_sku, cantidad, dry: bool = False) -> dict:
+    """Actualiza el stock de un SKU (ProductUpdate) por BusinessUnit/Operator.
+    dry=True devuelve el XML sin enviar nada.
+    """
+    cantidad = int(cantidad)
+    xml = ('<?xml version="1.0" encoding="UTF-8"?><Request><Product>'
+           '<SellerSku>%s</SellerSku>'
+           '<BusinessUnits><BusinessUnit>'
+           '<OperatorCode>%s</OperatorCode>'
+           '<Stock>%d</Stock>'
+           '</BusinessUnit></BusinessUnits>'
+           '</Product></Request>'
+           % (_su.escape(str(seller_sku)), _OPERATOR, cantidad))
+    if dry:
+        return {"dry_run": True, "sku": seller_sku, "cantidad": cantidad,
+                "xml": xml}
+    return _post("ProductUpdate", xml)
 
 
 def get_orders(created_after_iso: str, created_before_iso: str = None,
