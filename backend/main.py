@@ -1069,9 +1069,11 @@ def ml_item(key: str = "", item_id: str = ""):
         d = r.json()
         out = {"ok": True, "item_id": item_id,
                "seller_sku": _seller_sku(d.get("attributes")),
-               "variations": [{"id": v.get("id"),
-                               "seller_sku": _seller_sku(v.get("attributes"))}
-                              for v in (d.get("variations") or [])]}
+               "variations": [
+                   {"id": v.get("id"),
+                    "seller_sku": (v.get("seller_custom_field")
+                                   or _seller_sku(v.get("attributes")))}
+                   for v in (d.get("variations") or [])]}
         return JSONResponse(out, headers=_EXPORT_CORS)
     except Exception as e:
         return JSONResponse({"ok": False, "error": str(e)[:200]},
@@ -1107,11 +1109,11 @@ def ml_set_sku(key: str = "", item_id: str = "", sku: str = "", dry: str = ""):
                                  "item_id": item_id, "status": status,
                                  "catalog_listing": catalog},
                                 headers=_EXPORT_CORS)
-        # Con variaciones → fijar el SKU en CADA variación (no a nivel de ítem).
+        # Con variaciones → el SKU por variación va en seller_custom_field
+        # (las variaciones no usan el atributo SELLER_SKU). Se envían TODAS.
         if variations:
             body = {"variations": [
-                {"id": v.get("id"),
-                 "attributes": [{"id": "SELLER_SKU", "value_name": sku}]}
+                {"id": v.get("id"), "seller_custom_field": sku}
                 for v in variations]}
             applied = "variations"
         else:
