@@ -1003,6 +1003,130 @@ def falabella_set_stock(key: str = "", sku: str = "", cantidad: str = "",
                             status_code=502, headers=_EXPORT_CORS)
 
 
+# ── API MercadoLibre (leer/fijar SELLER_SKU) — protegida por token ───────────
+# Reutiliza el token de ML del backend (mismo que /api/inventory). El access
+# token NUNCA se devuelve. Refresca y reintenta una vez si ML responde 401.
+
+def _ml_guard(key: str):
+    token = os.environ.get("BOUN_EXPORT_TOKEN", "")
+    if not token or key != token:
+        return JSONResponse({"error": "unauthorized"}, status_code=401,
+                            headers=_EXPORT_CORS)
+    from ml_scraper import is_connected
+    if not is_connected():
+        return JSONResponse({"error": "ml_not_connected"}, status_code=500,
+                            headers=_EXPORT_CORS)
+    return None
+
+
+def _ml_request(method: str, path: str, json_body=None, timeout: int = 20):
+    """Petición a la API de ML con el token del backend; si responde 401,
+    refresca el token y reintenta una vez. Devuelve el Response o None."""
+    from ml_scraper import _ml_session_auth, _try_refresh, ML_API
+    s, _uid = _ml_session_auth()
+    if not s:
+        return None
+    url = ML_API + path
+    r = s.request(method, url, json=json_body, timeout=timeout)
+    if r.status_code == 401:
+        tok = _try_refresh()
+        if tok:
+            s.headers["Authorization"] = "Bearer " + tok
+            r = s.request(method, url, json=json_body, timeout=timeout)
+    return r
+
+
+def _seller_sku(attrs) -> Optional[str]:
+    for a in (attrs or []):
+        if a.get("id") == "SELLER_SKU":
+            return a.get("value_name")
+    return None
+
+
+@app.options("/api/ml/item")
+@app.options("/api/ml/set-sku")
+def ml_sku_preflight():
+    return Response(status_code=204, headers=_EXPORT_CORS)
+
+
+@app.get("/api/ml/item")
+def ml_item(key: str = "", item_id: str = ""):
+    g = _ml_guard(key)
+    if g:
+        return g
+    if not item_id:
+        return JSONResponse({"ok": False, "error": "bad_request"},
+                            status_code=400, headers=_EXPORT_CORS)
+    try:
+        r = _ml_request("GET", "/items/%s" % item_id)
+        if r is None:
+            return JSONResponse({"ok": False, "error": "ml_not_connected"},
+                                status_code=502, headers=_EXPORT_CORS)
+        if r.status_code != 200:
+            return JSONResponse({"ok": False, "error": r.text[:200],
+                                 "ml_status": r.status_code}, status_code=502,
+                                headers=_EXPORT_CORS)
+        d = r.json()
+        out = {"ok": True, "item_id": item_id,
+               "seller_sku": _seller_sku(d.get("attributes")),
+               "variations": [{"id": v.get("id"),
+                               "seller_sku": _seller_sku(v.get("attributes"))}
+                              for v in (d.get("variations") or [])]}
+        return JSONResponse(out, headers=_EXPORT_CORS)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]},
+                            status_code=502, headers=_EXPORT_CORS)
+
+
+@app.get("/api/ml/set-sku")
+def ml_set_sku(key: str = "", item_id: str = "", sku: str = "", dry: str = ""):
+    g = _ml_guard(key)
+    if g:
+        return g
+    if not item_id or not sku:
+        return JSONResponse({"ok": False, "error": "bad_request"},
+                            status_code=400, headers=_EXPORT_CORS)
+    try:
+        # leer el ítem para saber si tiene variaciones
+        r = _ml_request("GET", "/items/%s" % item_id)
+        if r is None:
+            return JSONResponse({"ok": False, "error": "ml_not_connected"},
+                                status_code=502, headers=_EXPORT_CORS)
+        if r.status_code != 200:
+            return JSONResponse({"ok": False, "error": r.text[:200],
+                                 "ml_status": r.status_code}, status_code=502,
+                                headers=_EXPORT_CORS)
+        variations = r.json().get("variations") or []
+        if variations:
+            body = {"variations": [
+                {"id": v.get("id"),
+                 "attributes": [{"id": "SELLER_SKU", "value_name": sku}]}
+                for v in variations]}
+            applied = "variations"
+        else:
+            body = {"attributes": [{"id": "SELLER_SKU", "value_name": sku}]}
+            applied = "item"
+        if dry == "1":
+            return JSONResponse({"ok": True, "item_id": item_id, "set": sku,
+                                 "applied_to": applied, "dry_run": True,
+                                 "body": body}, headers=_EXPORT_CORS)
+        pr = _ml_request("PUT", "/items/%s" % item_id, json_body=body)
+        if pr is None:
+            return JSONResponse({"ok": False, "error": "ml_not_connected"},
+                                status_code=502, headers=_EXPORT_CORS)
+        if pr.status_code in (200, 201):
+            return JSONResponse({"ok": True, "item_id": item_id, "set": sku,
+                                 "applied_to": applied,
+                                 "ml_status": pr.status_code},
+                                headers=_EXPORT_CORS)
+        return JSONResponse({"ok": False, "error": pr.text[:300],
+                             "ml_status": pr.status_code}, status_code=502,
+                            headers=_EXPORT_CORS)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]},
+                            status_code=502, headers=_EXPORT_CORS)
+
+
 # ── Frontend estático ────────────────────────────────────────────────────────
 
 _FRONT = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
