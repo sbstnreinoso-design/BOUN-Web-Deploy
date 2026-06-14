@@ -1174,6 +1174,172 @@ def ml_set_sku(key: str = "", item_id: str = "", sku: str = "", dry: str = ""):
                             status_code=502, headers=_EXPORT_CORS)
 
 
+@app.options("/api/ml/set-stock")
+def ml_set_stock_preflight():
+    return Response(status_code=204, headers=_EXPORT_CORS)
+
+
+@app.get("/api/ml/set-stock")
+def ml_set_stock(key: str = "", item_id: str = "", cantidad: str = "",
+                 dry: str = ""):
+    """Fija available_quantity de una publicación ML (no toca Full ni cerradas).
+    dry=1 devuelve el body sin enviar."""
+    g = _ml_guard(key)
+    if g:
+        return g
+    if not item_id:
+        return JSONResponse({"ok": False, "error": "bad_request"},
+                            status_code=400, headers=_EXPORT_CORS)
+    try:
+        c = int(cantidad)
+        if c < 0:
+            raise ValueError()
+    except (ValueError, TypeError):
+        return JSONResponse({"ok": False, "error": "bad_request"},
+                            status_code=400, headers=_EXPORT_CORS)
+    try:
+        r = _ml_request(
+            "GET", "/items/%s?attributes=id,status,available_quantity,"
+                   "variations,shipping" % item_id)
+        if r is None:
+            return JSONResponse({"ok": False, "error": "ml_not_connected"},
+                                status_code=502, headers=_EXPORT_CORS)
+        if r.status_code != 200:
+            return JSONResponse({"ok": False, "error": r.text[:300],
+                                 "ml_status": r.status_code}, status_code=502,
+                                headers=_EXPORT_CORS)
+        item = r.json()
+        status = item.get("status")
+        logistic = (item.get("shipping") or {}).get("logistic_type")
+        variations = item.get("variations") or []
+        # Guardrails: no tocar Full, ni cerradas, ni (en v1) variaciones.
+        if logistic == "fulfillment":
+            return JSONResponse({"ok": False, "skip": True, "reason": "full",
+                                 "item_id": item_id}, headers=_EXPORT_CORS)
+        if status == "closed":
+            return JSONResponse({"ok": False, "skip": True, "reason": "closed",
+                                 "item_id": item_id}, headers=_EXPORT_CORS)
+        if variations:
+            return JSONResponse(
+                {"ok": False, "skip": True, "reason": "variations",
+                 "item_id": item_id,
+                 "detalle": "requiere reparto por variación (fase 2)"},
+                headers=_EXPORT_CORS)
+        body = {"available_quantity": c}
+        if dry == "1":
+            return JSONResponse({"ok": True, "item_id": item_id, "cantidad": c,
+                                 "status": status, "logistic": logistic,
+                                 "dry_run": True, "body": body},
+                                headers=_EXPORT_CORS)
+        pr = _ml_request("PUT", "/items/%s" % item_id, json_body=body)
+        if pr is None:
+            return JSONResponse({"ok": False, "error": "ml_not_connected"},
+                                status_code=502, headers=_EXPORT_CORS)
+        if pr.status_code in (200, 201):
+            return JSONResponse({"ok": True, "item_id": item_id, "cantidad": c,
+                                 "ml_status": pr.status_code},
+                                headers=_EXPORT_CORS)
+        try:
+            err = pr.json()
+        except Exception:
+            err = pr.text[:500]
+        return JSONResponse({"ok": False, "error": err,
+                             "ml_status": pr.status_code}, status_code=502,
+                            headers=_EXPORT_CORS)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:200]},
+                            status_code=502, headers=_EXPORT_CORS)
+
+
+# ── Motor de sincronización — PLAN en DRY-RUN (no escribe en ningún canal) ────
+
+@app.options("/api/sync/plan")
+def sync_plan_preflight():
+    return Response(status_code=204, headers=_EXPORT_CORS)
+
+
+@app.get("/api/sync/plan")
+def sync_plan(key: str = "", codigo: str = "", vendidos: int = 0):
+    """Calcula el disponible de un código BOUN y cómo se repartiría entre las
+    publicaciones activas de cada canal, simulando una venta de `vendidos`.
+    NO escribe nada. Sirve para validar la lógica antes de activar la propagación.
+    """
+    token = os.environ.get("BOUN_EXPORT_TOKEN", "")
+    if not token or key != token:
+        return JSONResponse({"error": "unauthorized"}, status_code=401,
+                            headers=_EXPORT_CORS)
+    if not codigo:
+        return JSONResponse({"error": "bad_request"}, status_code=400,
+                            headers=_EXPORT_CORS)
+    try:
+        from urllib.parse import quote as _q
+        import sync as _sync
+        prows = db._sb_get(
+            "inventory_products?code=eq.%s&select=id,code,name,qty_bogota,"
+            "qty_yopal,qty_transit" % _q(codigo, safe="")) or []
+        if not prows:
+            return JSONResponse({"error": "codigo_no_encontrado",
+                                 "codigo": codigo}, status_code=404,
+                                headers=_EXPORT_CORS)
+        p = prows[0]
+        bog = int(p.get("qty_bogota") or 0)
+        yop = int(p.get("qty_yopal") or 0)
+        disponible = max(0, bog + yop - int(vendidos or 0))
+
+        # ── MercadoLibre: publicaciones activas no-Full del código ──
+        links = db._sb_get(
+            "inventory_links?product_id=eq.%d&select=ml_item_id,ml_sold60,"
+            "ml_logistic" % p["id"]) or []
+        ml_pubs, ml_excluidas = [], []
+        for l in links:
+            iid = l.get("ml_item_id")
+            if not iid:
+                continue
+            r = _ml_request("GET", "/items/%s?attributes=id,status,shipping"
+                                   % iid)
+            st = lg = None
+            if r is not None and r.status_code == 200:
+                jd = r.json(); st = jd.get("status")
+                lg = (jd.get("shipping") or {}).get("logistic_type")
+            if lg == "fulfillment":
+                ml_excluidas.append({"item_id": iid, "motivo": "full"})
+            elif st != "active":
+                ml_excluidas.append({"item_id": iid, "motivo": st or "?"})
+            else:
+                ml_pubs.append({"key": iid,
+                                "ventas": int(l.get("ml_sold60") or 0)})
+        ml_reparto = _sync.reparto(disponible, ml_pubs)
+
+        # ── Falabella: SKUs mapeados del código (desde el CSV) ──
+        fal = _sync.falabella_skus(codigo)
+        fal_pubs = [{"key": f["seller_sku"], "ventas": 0} for f in fal]
+        fal_reparto = _sync.reparto(disponible, fal_pubs)
+
+        out = {
+            "codigo": codigo, "producto": p.get("name"),
+            "stock": {"bogota": bog, "yopal": yop,
+                      "transit": int(p.get("qty_transit") or 0)},
+            "vendidos_simulado": int(vendidos or 0),
+            "disponible_vendible": disponible,
+            "canales": {
+                "mercadolibre": {"activas": list(ml_reparto.keys()),
+                                 "reparto": ml_reparto,
+                                 "excluidas": ml_excluidas},
+                "falabella": {"skus": [f["seller_sku"] for f in fal],
+                              "reparto": fal_reparto,
+                              "mapeado_en_csv": bool(fal)},
+                "shopify_boun": {"pendiente": "credenciales_tienda"},
+                "shopify_kat": {"pendiente": "credenciales_tienda"},
+            },
+            "dry_run": True,
+            "nota": "Cálculo sin escribir en canales (Fase 1).",
+        }
+        return JSONResponse(out, headers=_EXPORT_CORS)
+    except Exception as e:
+        return JSONResponse({"error": str(e)[:200]}, status_code=502,
+                            headers=_EXPORT_CORS)
+
+
 # ── Frontend estático ────────────────────────────────────────────────────────
 
 _FRONT = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
