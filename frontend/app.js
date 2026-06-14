@@ -377,6 +377,13 @@ function salMode(v){
   if(v==="custom"){ SALES_MODE="range"; if(!SALES_FROM){SALES_FROM=_isoDay(7);SALES_TO=_isoDay(0);} renderSales(); }
   else { SALES_MODE="days"; SALES_DAYS=+v; renderSales(true); }
 }
+function salToggle(f){
+  const r=document.getElementById("sd-"+f), x=document.getElementById("sx-"+f);
+  if(!r) return;
+  const open=r.style.display==="none";
+  r.style.display=open?"table-row":"none";
+  if(x) x.textContent=open?"▾":"▸";
+}
 async function renderSales(force){
   const v=document.getElementById("view");
   const periodo = SALES_MODE==="range" ? `${SALES_FROM} → ${SALES_TO}` : `${SALES_DAYS} días`;
@@ -423,29 +430,43 @@ async function renderSales(force){
     document.getElementById("salNote").innerHTML=notes;
     // tabla por día (más reciente arriba)
     if(!dias.length){ document.getElementById("salTable").innerHTML=`<div class="loading">Sin ventas en el periodo.</div>`; return; }
+    // valores compactos (como antes); el detalle va en el desplegable
+    const cel=(o)=>o&&o.unidades?`${o.unidades} u · <b>${cop(o.ingresos)}</b>`:`<span class="muted">0 u · $0</span>`;
     const rx=v=>v==null?`<span class="muted">—</span>`:v+"x";
     const ax=v=>v==null?`<span class="muted">—</span>`:v+"%";
-    const cel=(o)=>{
-      if(!o||(!o.unidades&&!(o.top&&o.top.length))) return `<span class="muted">0 u · $0</span>`;
-      const top=(o.top||[]).map((t,i)=>`<div class="pmeta">${i+1}. ${esc(t.nombre.slice(0,34))} <b>(${t.unidades})</b></div>`).join("");
-      return `<div><b>${o.unidades} u</b> · ${cop(o.ingresos)}</div>
-        <div style="font-size:10px;margin-top:1px">ROAS ${rx(o.roas)} · ACOS ${ax(o.acos)}</div>
-        ${top?`<div style="margin-top:4px">${top}</div>`:""}`;
+    const detail=(o,label,cls)=>{
+      const top=(o&&o.top&&o.top.length)
+        ? o.top.map((t,i)=>`<div class="pmeta">${i+1}. ${esc(t.nombre.slice(0,42))} <b>(${t.unidades})</b></div>`).join("")
+        : `<div class="pmeta">Sin ventas</div>`;
+      return `<div style="flex:1;min-width:230px">
+        <div class="${cls}" style="font-weight:700;font-size:12px;margin-bottom:4px">${label}</div>
+        <div style="font-size:11px">ROAS <b>${rx(o&&o.roas)}</b> · ACOS <b>${ax(o&&o.acos)}</b></div>
+        <div style="margin-top:6px"><div class="cap" style="margin-bottom:2px">Top productos del día</div>${top}</div>
+      </div>`;
     };
     let html=`<table class="sales"><thead><tr>
+        <th style="width:18px"></th>
         <th>Fecha</th>
         <th><span class="amber">● MercadoLibre</span></th>
         <th><span class="blue">● Falabella</span></th>
         <th>Total del día</th>
       </tr></thead><tbody>`;
-    html+=dias.slice().reverse().map(d=>`<tr>
-        <td style="vertical-align:top"><b>${esc(d.fecha)}</b></td>
-        <td class="amber" style="vertical-align:top">${cel(d.ml)}</td>
-        <td class="blue" style="vertical-align:top">${cel(d.falabella)}</td>
-        <td class="acc" style="vertical-align:top"><b>${d.total.unidades} u · ${cop(d.total.ingresos)}</b></td>
-      </tr>`).join("");
+    html+=dias.slice().reverse().map(d=>`<tr class="srow" onclick="salToggle('${d.fecha}')">
+        <td class="expand" id="sx-${d.fecha}">▸</td>
+        <td><b>${esc(d.fecha)}</b></td>
+        <td class="amber">${cel(d.ml)}</td>
+        <td class="blue">${cel(d.falabella)}</td>
+        <td class="acc"><b>${d.total.unidades} u · ${cop(d.total.ingresos)}</b></td>
+      </tr>
+      <tr class="sdetail" id="sd-${d.fecha}" style="display:none"><td></td><td colspan="4">
+        <div style="display:flex;gap:28px;flex-wrap:wrap;padding:4px 0 8px">
+          ${detail(d.ml,"MercadoLibre","amber")}
+          ${detail(d.falabella,"Falabella","blue")}
+        </div>
+      </td></tr>`).join("");
     // fila de totales
     html+=`<tr style="border-top:2px solid var(--acc)">
+        <td></td>
         <td><b>TOTAL${SALES_MODE==="range"?"":` ${SALES_DAYS}d`}</b></td>
         <td class="amber">${sum(dias,"ml","unidades")} u · <b>${cop(mIng)}</b></td>
         <td class="blue">${sum(dias,"falabella","unidades")} u · <b>${cop(fIng)}</b></td>
