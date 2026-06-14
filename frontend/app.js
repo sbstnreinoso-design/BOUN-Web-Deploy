@@ -368,6 +368,9 @@ async function renderDashboard(){
 // ── VENTAS (MercadoLibre + Falabella + total) ───────────────────────────────
 let SALES_DAYS=14, SALES_MODE="days", SALES_FROM="", SALES_TO="";
 const _isoDay=d=>new Date(Date.now()-(d||0)*86400000).toISOString().slice(0,10);
+const WD=["dom","lun","mar","mié","jue","vie","sáb"];
+const WDC=["#E0667A","#9BB4D4","#7FD0A0","#E0C060","#C79BE0","#5FC7C0","#E08A4C"];
+const _wd=f=>{const d=new Date(f+"T12:00:00");return isNaN(d)?-1:d.getDay();};
 function salesQ(force){
   const q=(SALES_MODE==="range"&&SALES_FROM&&SALES_TO)
     ?`date_from=${SALES_FROM}&date_to=${SALES_TO}`:`days=${SALES_DAYS}`;
@@ -436,9 +439,12 @@ async function renderSales(force){
     const ax=v=>v==null?`<span class="muted">—</span>`:v+"%";
     const detail=(o,label,cls)=>{
       const top=(o&&o.top&&o.top.length)
-        ? o.top.map((t,i)=>`<div class="pmeta">${i+1}. ${esc(t.nombre.slice(0,42))} <b>(${t.unidades})</b></div>`).join("")
+        ? o.top.map((t,i)=>`<div style="display:flex;align-items:center;gap:8px;margin:4px 0">
+            ${t.img?`<img src="${t.img}" loading="lazy" style="width:34px;height:34px;border-radius:5px;object-fit:cover;background:var(--surf);border:1px solid var(--border)">`:`<span class="th" style="width:34px;height:34px"></span>`}
+            <span class="pmeta" style="flex:1">${i+1}. ${esc(t.nombre.slice(0,42))} <b>(${t.unidades})</b></span>
+          </div>`).join("")
         : `<div class="pmeta">Sin ventas</div>`;
-      return `<div style="flex:1;min-width:230px">
+      return `<div style="flex:1;min-width:250px">
         <div class="${cls}" style="font-weight:700;font-size:12px;margin-bottom:4px">${label}</div>
         <div style="font-size:11px">ROAS <b>${rx(o&&o.roas)}</b> · ACOS <b>${ax(o&&o.acos)}</b></div>
         <div style="margin-top:6px"><div class="cap" style="margin-bottom:2px">Top productos del día</div>${top}</div>
@@ -451,9 +457,12 @@ async function renderSales(force){
         <th><span class="blue">● Falabella</span></th>
         <th>Total del día</th>
       </tr></thead><tbody>`;
-    html+=dias.slice().reverse().map(d=>`<tr class="srow" onclick="salToggle('${d.fecha}')">
+    html+=dias.slice().reverse().map(d=>{
+      const w=_wd(d.fecha), c=WDC[w]||"var(--muted)";
+      const we=(w===0||w===6)?` style="background:rgba(255,255,255,.04)"`:"";
+      return `<tr class="srow"${we} onclick="salToggle('${d.fecha}')">
         <td class="expand" id="sx-${d.fecha}">▸</td>
-        <td><b>${esc(d.fecha)}</b></td>
+        <td style="border-left:3px solid ${c}"><span style="color:${c};font-weight:700">${WD[w]||""}</span> <b>${esc(d.fecha)}</b></td>
         <td class="amber">${cel(d.ml)}</td>
         <td class="blue">${cel(d.falabella)}</td>
         <td class="acc"><b>${d.total.unidades} u · ${cop(d.total.ingresos)}</b></td>
@@ -463,7 +472,8 @@ async function renderSales(force){
           ${detail(d.ml,"MercadoLibre","amber")}
           ${detail(d.falabella,"Falabella","blue")}
         </div>
-      </td></tr>`).join("");
+      </td></tr>`;
+    }).join("");
     // fila de totales
     html+=`<tr style="border-top:2px solid var(--acc)">
         <td></td>

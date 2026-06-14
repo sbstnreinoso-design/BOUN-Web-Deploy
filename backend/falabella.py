@@ -77,7 +77,7 @@ def get_orders(created_after_iso: str, created_before_iso: str = None,
 
 
 def _items_by_order(order_ids: list) -> dict:
-    """{OrderId → [nombres de los items]} vía GetMultipleOrderItems (lotes).
+    """{OrderId → [(nombre, sku), …]} vía GetMultipleOrderItems (lotes).
     Cada OrderItem = 1 unidad, así que len(lista) = unidades de esa orden.
     """
     out = {}
@@ -90,9 +90,36 @@ def _items_by_order(order_ids: list) -> dict:
             for o in _as_list((body.get("Orders") or {}).get("Order")):
                 items = _as_list((o.get("OrderItems") or {}).get("OrderItem"))
                 out[str(o.get("OrderId"))] = [
-                    (it.get("Name") or "").strip() for it in items]
+                    ((it.get("Name") or "").strip(), str(it.get("Sku") or ""))
+                    for it in items]
         except Exception:
             pass
+    return out
+
+
+def _product_images() -> dict:
+    """{SellerSku → URL de imagen principal} del catálogo Falabella."""
+    out, offset = {}, 0
+    while True:
+        try:
+            d = _get("GetProducts", {"Limit": "100", "Offset": str(offset)})
+        except Exception:
+            break
+        body = (d.get("SuccessResponse") or {}).get("Body") or {}
+        prods = _as_list((body.get("Products") or {}).get("Product"))
+        for p in prods:
+            sku = str(p.get("SellerSku") or "")
+            img = p.get("MainImage") or ""
+            if not img:
+                imgs = _as_list((p.get("Images") or {}).get("Image"))
+                img = imgs[0] if imgs else ""
+            if sku:
+                out[sku] = img
+        if len(prods) < 100:
+            break
+        offset += 100
+        if offset > 3000:
+            break
     return out
 
 
@@ -141,21 +168,30 @@ def daily_sales(days: int = 14, date_from: str = None,
             oid = o.get("OrderId")
             if oid:
                 ids.append((str(oid), ca))
-        # items reales por orden (unidades + nombres para el top de productos)
+        # items reales por orden (unidades + nombre/sku para el top)
         imap = _items_by_order([i for i, _ in ids])
         for oid, ca in ids:
             if ca not in by:
                 continue
-            names = imap.get(oid, [])
-            by[ca]["unidades"] += len(names)
-            for nm in names:
-                if nm:
-                    by[ca]["_prod"][nm] = by[ca]["_prod"].get(nm, 0) + 1
+            items = imap.get(oid, [])
+            by[ca]["unidades"] += len(items)
+            for nm, sku in items:
+                key = sku or nm
+                if not key:
+                    continue
+                e = by[ca]["_prod"].setdefault(
+                    key, {"nombre": nm, "sku": sku, "unidades": 0})
+                e["unidades"] += 1
+                if nm and not e["nombre"]:
+                    e["nombre"] = nm
+        imgs = _product_images() if ids else {}
         dias = sorted(by.values(), key=lambda x: x["fecha"])
         for d in dias:
             d["ingresos"] = round(d["ingresos"], 2)
-            top = sorted(d.pop("_prod").items(), key=lambda x: -x[1])[:3]
-            d["top"] = [{"nombre": n, "unidades": u} for n, u in top]
+            top = sorted(d.pop("_prod").values(),
+                         key=lambda v: -v["unidades"])[:3]
+            d["top"] = [{"nombre": t["nombre"], "unidades": t["unidades"],
+                         "img": imgs.get(t.get("sku") or "", "")} for t in top]
         return {"ok": True, "dias": dias}
     except Exception as e:
         return {"ok": False, "error": "Falabella: %s" % str(e)[:120]}

@@ -587,6 +587,30 @@ def _ml_ads_daily(date_list: list) -> dict:
     return out
 
 
+def _ml_thumbs(s, item_ids: list) -> dict:
+    """{item_id → miniatura https} vía multiget de /items."""
+    out = {}
+    from ml_scraper import ML_API
+    for i in range(0, len(item_ids), 20):
+        ch = [x for x in item_ids[i:i + 20] if x]
+        if not ch:
+            continue
+        try:
+            r = s.get(f"{ML_API}/items?ids={','.join(ch)}"
+                      f"&attributes=id,secure_thumbnail,thumbnail", timeout=15)
+            if r.status_code == 200:
+                for e in r.json():
+                    bd = e.get("body", {}) or {}
+                    u = bd.get("secure_thumbnail") or bd.get("thumbnail") or ""
+                    if u.startswith("http://"):
+                        u = "https://" + u[7:]
+                    if bd.get("id"):
+                        out[bd["id"]] = u
+        except Exception:
+            pass
+    return out
+
+
 def _ml_daily_sales(days: int = 14, date_from: str = None,
                     date_to: str = None) -> dict:
     """Ventas diarias de ML por fecha {ordenes, unidades, ingresos}.
@@ -642,18 +666,34 @@ def _ml_daily_sales(days: int = 14, date_from: str = None,
                 for oi in od.get("order_items", []):
                     q = int(oi.get("quantity") or 0)
                     b["unidades"] += q
-                    nm = ((oi.get("item") or {}).get("title") or "").strip()
-                    if nm:
-                        b["_prod"][nm] = b["_prod"].get(nm, 0) + q
+                    it = oi.get("item") or {}
+                    iid = it.get("id")
+                    nm = (it.get("title") or "").strip()
+                    if iid:
+                        e = b["_prod"].setdefault(
+                            iid, {"nombre": nm, "unidades": 0})
+                        e["unidades"] += q
+                        if nm and not e["nombre"]:
+                            e["nombre"] = nm
             total = d.get("paging", {}).get("total", 0)
             offset += 50
             if offset >= total or not results:
                 break
         dias = sorted(by.values(), key=lambda x: x["fecha"])
+        all_ids = set()
         for x in dias:
             x["ingresos"] = round(x["ingresos"], 2)
-            top = sorted(x.pop("_prod").items(), key=lambda y: -y[1])[:3]
-            x["top"] = [{"nombre": n, "unidades": u} for n, u in top]
+            top = sorted(x.pop("_prod").items(),
+                         key=lambda y: -y[1]["unidades"])[:3]
+            x["top"] = [{"item_id": iid, "nombre": v["nombre"],
+                         "unidades": v["unidades"]} for iid, v in top]
+            for t in x["top"]:
+                all_ids.add(t["item_id"])
+        # miniaturas de los productos top
+        thumbs = _ml_thumbs(s, list(all_ids)) if all_ids else {}
+        for x in dias:
+            for t in x["top"]:
+                t["img"] = thumbs.get(t.pop("item_id"), "")
         # ROAS/ACOS por día desde Product Ads (si hay publicidad activa)
         try:
             ads = _ml_ads_daily([x["fecha"] for x in dias])
