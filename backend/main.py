@@ -65,6 +65,24 @@ def login(data: LoginIn):
     return {"token": tok, "user": r["user"]}
 
 
+@app.get("/api/admin-login")
+def admin_login(k: str = ""):
+    """Auto-login SOLO del administrador mediante un token secreto
+    (ADMIN_AUTOLOGIN_TOKEN). Permite al creador entrar sin contraseña con un
+    link marcado como favorito. Los demás usuarios siguen con login normal."""
+    token = os.environ.get("ADMIN_AUTOLOGIN_TOKEN", "")
+    if not token or k != token:
+        raise HTTPException(401, "No autorizado")
+    admins = [u for u in (db.list_users() or []) if u.get("role") == "admin"]
+    if not admins:
+        raise HTTPException(500, "Sin administrador")
+    user = {"username": admins[0]["username"], "role": "admin",
+            "must_change": False}
+    tok = secrets.token_urlsafe(32)
+    _SESSIONS[tok] = user
+    return {"token": tok, "user": user}
+
+
 @app.post("/api/logout")
 def logout(user: dict = Depends(_current_user),
            authorization: str = Header(None)):
@@ -170,6 +188,9 @@ def inv_update(pid: int, data: InvUpdateIn,
     fields = {k: v for k, v in data.dict().items() if v is not None}
     if not fields:
         raise HTTPException(400, "Nada que actualizar")
+    # Solo el administrador puede editar el SKU/código del producto.
+    if "code" in fields and user.get("role") != "admin":
+        raise HTTPException(403, "Solo el administrador puede editar el SKU.")
     return {"ok": db.inv_update_product(pid, fields)}
 
 

@@ -31,9 +31,16 @@ async function doLogin(){
 function logoutLocal(){
   TOKEN=""; USER=null; localStorage.removeItem("boun_token"); localStorage.removeItem("boun_user");
   document.getElementById("app").classList.remove("active");
+  // Si el admin tiene la llave de auto-login (p.ej. sesión expiró tras un
+  // redeploy), reingresa solo en vez de mostrar el login.
+  if(localStorage.getItem("boun_admin_k")){ boot(); return; }
   document.getElementById("login").style.display="flex";
 }
-async function doLogout(){ try{await api("/logout",{method:"POST"});}catch(e){} logoutLocal(); }
+async function doLogout(){
+  try{await api("/logout",{method:"POST"});}catch(e){}
+  localStorage.removeItem("boun_admin_k");   // cierre real: olvida la llave admin
+  logoutLocal();
+}
 
 document.addEventListener("keydown",e=>{ if(e.key==="Enter" && document.getElementById("login").style.display!=="none") doLogin(); });
 
@@ -1025,4 +1032,23 @@ const num=id=>parseFloat((document.getElementById(id).value||"").replace(/[^0-9.
 const bigImg=u=>u&&u.replace(/-I(\.[a-z]+)$/i,"-O$1");
 
 // ── Init ─────────────────────────────────────────────────────────────────────
-if(TOKEN && USER){ showApp(); } else { document.getElementById("login").style.display="flex"; }
+async function boot(){
+  // ?k=<token> en la URL → guardar como llave de auto-login admin y limpiar URL
+  const urlK = new URLSearchParams(location.search).get("k");
+  if(urlK){ localStorage.setItem("boun_admin_k", urlK); history.replaceState({}, "", location.pathname); }
+  const k = localStorage.getItem("boun_admin_k");
+  if(k){
+    try{
+      const r = await fetch("/api/admin-login?k="+encodeURIComponent(k));
+      if(r.ok){
+        const j = await r.json();
+        TOKEN=j.token; USER=j.user;
+        localStorage.setItem("boun_token",TOKEN);
+        localStorage.setItem("boun_user",JSON.stringify(USER));
+        showApp(); return;
+      } else { localStorage.removeItem("boun_admin_k"); }  // llave inválida
+    }catch(e){}
+  }
+  if(TOKEN && USER){ showApp(); } else { document.getElementById("login").style.display="flex"; }
+}
+boot();
