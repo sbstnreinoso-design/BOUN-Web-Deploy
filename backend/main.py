@@ -1087,16 +1087,27 @@ def ml_set_sku(key: str = "", item_id: str = "", sku: str = "", dry: str = ""):
         return JSONResponse({"ok": False, "error": "bad_request"},
                             status_code=400, headers=_EXPORT_CORS)
     try:
-        # leer el ítem para saber si tiene variaciones
+        import json as _json
+        # leer el ítem: estado, catálogo y variaciones
         r = _ml_request("GET", "/items/%s" % item_id)
         if r is None:
             return JSONResponse({"ok": False, "error": "ml_not_connected"},
                                 status_code=502, headers=_EXPORT_CORS)
         if r.status_code != 200:
-            return JSONResponse({"ok": False, "error": r.text[:200],
+            return JSONResponse({"ok": False, "error": r.text[:300],
                                  "ml_status": r.status_code}, status_code=502,
                                 headers=_EXPORT_CORS)
-        variations = r.json().get("variations") or []
+        item = r.json()
+        status = item.get("status")
+        catalog = bool(item.get("catalog_listing"))
+        variations = item.get("variations") or []
+        # Publicaciones CERRADAS: ML no las deja modificar y no necesitan SKU.
+        if status == "closed":
+            return JSONResponse({"ok": False, "skip": True, "reason": "closed",
+                                 "item_id": item_id, "status": status,
+                                 "catalog_listing": catalog},
+                                headers=_EXPORT_CORS)
+        # Con variaciones → fijar el SKU en CADA variación (no a nivel de ítem).
         if variations:
             body = {"variations": [
                 {"id": v.get("id"),
@@ -1108,7 +1119,8 @@ def ml_set_sku(key: str = "", item_id: str = "", sku: str = "", dry: str = ""):
             applied = "item"
         if dry == "1":
             return JSONResponse({"ok": True, "item_id": item_id, "set": sku,
-                                 "applied_to": applied, "dry_run": True,
+                                 "applied_to": applied, "status": status,
+                                 "catalog_listing": catalog, "dry_run": True,
                                  "body": body}, headers=_EXPORT_CORS)
         pr = _ml_request("PUT", "/items/%s" % item_id, json_body=body)
         if pr is None:
@@ -1119,7 +1131,19 @@ def ml_set_sku(key: str = "", item_id: str = "", sku: str = "", dry: str = ""):
                                  "applied_to": applied,
                                  "ml_status": pr.status_code},
                                 headers=_EXPORT_CORS)
-        return JSONResponse({"ok": False, "error": pr.text[:300],
+        # error: devolver el error CRUDO de ML (cause/code/message)
+        try:
+            err = pr.json()
+        except Exception:
+            err = pr.text[:500]
+        txt = _json.dumps(err) if isinstance(err, (dict, list)) else str(err)
+        # no modificable (catálogo/cerrada) → skip, no es un error real
+        if "not_modifiable" in txt or "catalog_listing" in txt:
+            return JSONResponse({"ok": False, "skip": True,
+                                 "reason": "closed/catalog", "item_id": item_id,
+                                 "ml_status": pr.status_code, "error": err},
+                                headers=_EXPORT_CORS)
+        return JSONResponse({"ok": False, "error": err,
                              "ml_status": pr.status_code}, status_code=502,
                             headers=_EXPORT_CORS)
     except Exception as e:
