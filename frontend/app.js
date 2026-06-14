@@ -40,6 +40,7 @@ document.addEventListener("keydown",e=>{ if(e.key==="Enter" && document.getEleme
 // ── Navegación ─────────────────────────────────────────────────────────────
 const NAV=[
   ["dashboard","⬛  Dashboard"],
+  ["ventas","↗  Ventas"],
   ["inventory","▦  Inventario"],
   ["my_products","★  Mis Productos"],
   ["products","▤  Productos para comprar"],
@@ -59,6 +60,7 @@ function showApp(){
 function go(id){
   document.querySelectorAll(".nav a").forEach(a=>a.classList.toggle("active",a.dataset.nav===id));
   if(id==="dashboard") renderDashboard();
+  else if(id==="ventas") renderSales();
   else if(id==="inventory") renderInventory();
   else if(id==="my_products") renderMyProducts();
   else if(id==="products") renderProducts();
@@ -361,6 +363,71 @@ async function renderDashboard(){
     }).join("");
     document.getElementById("dashTop").innerHTML=top.length?html+"</tbody></table>":`<div class="loading">Catálogo vacío.</div>`;
   }catch(e){ document.getElementById("dashKpis").innerHTML=`<div class="red">${e.message}</div>`; }
+}
+
+// ── VENTAS (MercadoLibre + Falabella + total) ───────────────────────────────
+let SALES_DAYS=14;
+async function renderSales(force){
+  const v=document.getElementById("view");
+  v.innerHTML=`<div class="row-between">
+      <div>
+        <div class="page-title">Ventas</div>
+        <div class="page-sub">Ventas diarias de MercadoLibre y Falabella, con total combinado.</div>
+      </div>
+      <div class="filters" style="margin:0">
+        <select id="salDays" class="field fmini" onchange="SALES_DAYS=+this.value;renderSales(true)">
+          <option value="7"${SALES_DAYS==7?" selected":""}>Últimos 7 días</option>
+          <option value="14"${SALES_DAYS==14?" selected":""}>Últimos 14 días</option>
+          <option value="30"${SALES_DAYS==30?" selected":""}>Últimos 30 días</option>
+        </select>
+        <button class="btn-ghost" onclick="renderSales(true)">↻ Actualizar</button>
+      </div>
+    </div>
+    <div id="salKpis" class="kpis"><div class="loading"><span class="spinner"></span> Cargando ventas…</div></div>
+    <div id="salNote"></div>
+    <div id="salTable"></div>`;
+  try{
+    const r=await api("/sales?days="+SALES_DAYS+(force?"&force=true":""));
+    const dias=r.dias||[];
+    const sum=(arr,src,m)=>arr.reduce((a,d)=>a+(d[src]?d[src][m]:0),0);
+    const tIng=sum(dias,"total","ingresos"), mIng=sum(dias,"ml","ingresos"), fIng=sum(dias,"falabella","ingresos");
+    const tUni=sum(dias,"total","unidades");
+    document.getElementById("salKpis").innerHTML=[
+      ["Ingresos totales",cop(tIng),"acc",`${SALES_DAYS} días · ML + Falabella`],
+      ["MercadoLibre",cop(mIng),"blue",sum(dias,"ml","unidades")+" unidades"],
+      ["Falabella",cop(fIng),"amber",sum(dias,"falabella","unidades")+" unidades"],
+      ["Unidades totales",tUni,"green",dias.length+" días con datos"],
+    ].map(([c,vv,cl,sub])=>`<div class="kpi"><div class="cap">${c}</div><div class="val ${cl}">${vv}</div><div class="cap">${sub}</div></div>`).join("");
+    // avisos de conexión
+    let notes="";
+    if(!r.ml_ok) notes+=`<div class="note red">⚠ MercadoLibre: ${esc(r.ml_error||"sin conexión")}</div>`;
+    if(!r.fal_ok) notes+=`<div class="note red">⚠ Falabella: ${esc(r.fal_error||"sin conexión")}. Configura sus credenciales para ver sus ventas.</div>`;
+    if(r.cache_age_min>0) notes+=`<div class="note">Datos de hace ${r.cache_age_min} min · se refrescan solos cada 10 min.</div>`;
+    document.getElementById("salNote").innerHTML=notes;
+    // tabla por día (más reciente arriba)
+    if(!dias.length){ document.getElementById("salTable").innerHTML=`<div class="loading">Sin ventas en el periodo.</div>`; return; }
+    const cel=(o)=>o?`${o.unidades} u · <b>${cop(o.ingresos)}</b>`:`0 u · $0`;
+    let html=`<table><thead><tr>
+        <th>Fecha</th>
+        <th>MercadoLibre</th>
+        <th>Falabella</th>
+        <th>Total del día</th>
+      </tr></thead><tbody>`;
+    html+=dias.slice().reverse().map(d=>`<tr>
+        <td><b>${esc(d.fecha)}</b></td>
+        <td class="blue">${cel(d.ml)}</td>
+        <td class="amber">${cel(d.falabella)}</td>
+        <td class="acc"><b>${d.total.unidades} u · ${cop(d.total.ingresos)}</b></td>
+      </tr>`).join("");
+    // fila de totales
+    html+=`<tr style="border-top:2px solid var(--acc)">
+        <td><b>TOTAL ${SALES_DAYS}d</b></td>
+        <td class="blue">${sum(dias,"ml","unidades")} u · <b>${cop(mIng)}</b></td>
+        <td class="amber">${sum(dias,"falabella","unidades")} u · <b>${cop(fIng)}</b></td>
+        <td class="acc"><b>${tUni} u · ${cop(tIng)}</b></td>
+      </tr>`;
+    document.getElementById("salTable").innerHTML=html+"</tbody></table>";
+  }catch(e){ document.getElementById("salKpis").innerHTML=`<div class="red">${esc(e.message)}</div>`; }
 }
 
 // ── MIS PRODUCTOS ────────────────────────────────────────────────────────────

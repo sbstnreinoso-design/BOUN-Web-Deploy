@@ -538,6 +538,105 @@ def stats(user: dict = Depends(_current_user)):
     return db.get_stats()
 
 
+# ── Ventas diarias (MercadoLibre + Falabella + total) ────────────────────────
+
+def _ml_daily_sales(days: int = 14) -> dict:
+    """Ventas diarias de ML por fecha {ordenes, unidades, ingresos}."""
+    try:
+        import datetime as _dt
+        from ml_scraper import _ml_session_auth, ML_API
+        s, uid = _ml_session_auth()
+        if not s:
+            return {"ok": False, "error": "MercadoLibre sin conexión"}
+        co = _dt.timezone(_dt.timedelta(hours=-5))
+        to_d = _dt.datetime.now(co)
+        from_d = (to_d - _dt.timedelta(days=days)).replace(
+            hour=0, minute=0, second=0, microsecond=0)
+        since = from_d.strftime("%Y-%m-%dT%H:%M:%S.000-05:00")
+        until = to_d.strftime("%Y-%m-%dT%H:%M:%S.000-05:00")
+        by, offset = {}, 0
+        while True:
+            r = s.get(f"{ML_API}/orders/search?seller={uid}"
+                      f"&order.date_created.from={since}"
+                      f"&order.date_created.to={until}"
+                      f"&sort=date_desc&limit=50&offset={offset}", timeout=20)
+            if r.status_code != 200:
+                break
+            d = r.json()
+            results = d.get("results", [])
+            for od in results:
+                fecha = (od.get("date_created") or "")[:10]
+                if not fecha:
+                    continue
+                b = by.setdefault(fecha, {"fecha": fecha, "ordenes": 0,
+                                          "unidades": 0, "ingresos": 0.0})
+                b["ordenes"] += 1
+                b["ingresos"] += float(od.get("total_amount") or 0)
+                for oi in od.get("order_items", []):
+                    b["unidades"] += int(oi.get("quantity") or 0)
+            total = d.get("paging", {}).get("total", 0)
+            offset += 50
+            if offset >= total or not results:
+                break
+        dias = sorted(by.values(), key=lambda x: x["fecha"])
+        for x in dias:
+            x["ingresos"] = round(x["ingresos"], 2)
+        return {"ok": True, "dias": dias}
+    except Exception as e:
+        return {"ok": False, "error": "MercadoLibre: %s" % str(e)[:120]}
+
+
+_SALES_CACHE = {}        # days -> {"ts": epoch, "data": ...}
+_SALES_TTL = 10 * 60
+
+
+def _build_sales(days: int) -> dict:
+    ml = _ml_daily_sales(days)
+    try:
+        import falabella as fb
+        fa = fb.daily_sales(days)
+    except Exception as e:
+        fa = {"ok": False, "error": "Falabella: %s" % str(e)[:120]}
+    combo = {}
+
+    def _add(src, key):
+        if src.get("ok"):
+            for d in src.get("dias", []):
+                b = combo.setdefault(d["fecha"], {
+                    "fecha": d["fecha"],
+                    "ml": {"ordenes": 0, "unidades": 0, "ingresos": 0},
+                    "falabella": {"ordenes": 0, "unidades": 0, "ingresos": 0}})
+                b[key] = {"ordenes": d["ordenes"], "unidades": d["unidades"],
+                          "ingresos": d["ingresos"]}
+    _add(ml, "ml")
+    _add(fa, "falabella")
+    dias = []
+    for f in sorted(combo):
+        b = combo[f]
+        b["total"] = {
+            "ordenes": b["ml"]["ordenes"] + b["falabella"]["ordenes"],
+            "unidades": b["ml"]["unidades"] + b["falabella"]["unidades"],
+            "ingresos": round(b["ml"]["ingresos"] + b["falabella"]["ingresos"], 2)}
+        dias.append(b)
+    return {"ok": True, "days": days, "dias": dias,
+            "ml_ok": bool(ml.get("ok")), "ml_error": ml.get("error", ""),
+            "fal_ok": bool(fa.get("ok")), "fal_error": fa.get("error", "")}
+
+
+@app.get("/api/sales")
+def sales(days: int = 14, force: bool = False,
+          user: dict = Depends(_current_user)):
+    now = time.time()
+    c = _SALES_CACHE.get(days)
+    if c and not force and (now - c["ts"]) < _SALES_TTL:
+        out = dict(c["data"]); out["cache_age_min"] = int((now - c["ts"]) / 60)
+        return out
+    data = _build_sales(days)
+    _SALES_CACHE[days] = {"ts": time.time(), "data": data}
+    out = dict(data); out["cache_age_min"] = 0
+    return out
+
+
 # ── Exportación de inventario (solo lectura, protegida por token) ─────────────
 # Ruta PÚBLICA (sin sesión de usuario) pensada para que un agente externo lea
 # el inventario en tiempo real pasando solo una URL con ?key=...  No toca el
