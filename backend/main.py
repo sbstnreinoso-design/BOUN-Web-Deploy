@@ -265,6 +265,11 @@ def _mp_background_refresh():
                 _MP_CACHE[60] = {"ts": time.time(), "data": r}
         except Exception:
             pass
+        # precalentar el mapa de ventas de 7 días para el export
+        try:
+            _sold7_map(force=True)
+        except Exception:
+            pass
         time.sleep(_MP_TTL)
 
 
@@ -538,6 +543,32 @@ def stats(user: dict = Depends(_current_user)):
 # el inventario en tiempo real pasando solo una URL con ?key=...  No toca el
 # login ni las demás rutas: es puramente aditiva.
 
+# Caché del nº de ventas por publicación en los últimos 7 días.  Se obtiene de
+# ML con get_my_products(days=7) (el campo sold_60d ahí trae el conteo de la
+# ventana pedida) y NO se escribe en la base, para no pisar el dato de 60 días.
+_SOLD7_CACHE = {"ts": 0.0, "map": {}}
+_SOLD7_TTL = 20 * 60
+
+
+def _sold7_map(force: bool = False) -> dict:
+    """item_id → unidades vendidas en los últimos 7 días (cacheado 20 min)."""
+    now = time.time()
+    if (not force and _SOLD7_CACHE["map"]
+            and (now - _SOLD7_CACHE["ts"]) < _SOLD7_TTL):
+        return _SOLD7_CACHE["map"]
+    try:
+        from ml_scraper import get_my_products
+        r = get_my_products(days=7)
+        if r.get("ok"):
+            m = {pr.get("item_id"): int(pr.get("sold_60d", 0) or 0)
+                 for pr in r.get("products", []) if pr.get("item_id")}
+            _SOLD7_CACHE["ts"] = now
+            _SOLD7_CACHE["map"] = m
+    except Exception:
+        pass
+    return _SOLD7_CACHE["map"]
+
+
 _EXPORT_CORS = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, OPTIONS",
@@ -576,6 +607,7 @@ def export_inventario(key: str = ""):
                             headers=_EXPORT_CORS)
 
     prods = db.inv_list_products()
+    s7 = _sold7_map()   # item_id → ventas 7 días (cacheado; {} si aún sin datos)
     productos = []
     for p in prods:
         pubs = []
@@ -583,10 +615,15 @@ def export_inventario(key: str = ""):
             mco = l.get("ml_item_id") or ""
             thumb = l.get("ml_thumb") or ""
             imagenes = [_img_full(thumb)] if thumb else []
+            roas_v = float(l.get("ml_roas") or 0)
             pub = {
                 "mco": mco,
                 "titulo": l.get("ml_title") or "",
                 "permalink": _permalink_from_mco(mco),
+                # Estadísticas de ventas por publicación (para rankear)
+                "vendidos_60d": int(l.get("ml_sold60") or 0),
+                "vendidos_7d": (s7.get(mco) if mco in s7 else None),
+                "roas": (round(roas_v, 2) if roas_v > 0 else None),
                 "imagenes": imagenes,
             }
             # Marca de stock compartido (A, B, …) si la app la detectó
