@@ -551,19 +551,47 @@ _SOLD7_TTL = 20 * 60
 
 
 def _sold7_map(force: bool = False) -> dict:
-    """item_id → unidades vendidas en los últimos 7 días (cacheado 20 min)."""
+    """item_id → unidades vendidas en los últimos 7 días (cacheado 20 min).
+
+    Consulta SOLO el endpoint de órdenes de ML (ligero), no el scrape pesado
+    de get_my_products — así es rápido y fiable en Render free.
+    """
     now = time.time()
     if (not force and _SOLD7_CACHE["map"]
             and (now - _SOLD7_CACHE["ts"]) < _SOLD7_TTL):
         return _SOLD7_CACHE["map"]
     try:
-        from ml_scraper import get_my_products
-        r = get_my_products(days=7)
-        if r.get("ok"):
-            m = {pr.get("item_id"): int(pr.get("sold_60d", 0) or 0)
-                 for pr in r.get("products", []) if pr.get("item_id")}
-            _SOLD7_CACHE["ts"] = now
-            _SOLD7_CACHE["map"] = m
+        import datetime as _dt
+        from ml_scraper import _ml_session_auth, ML_API
+        s, uid = _ml_session_auth()
+        if not s:
+            return _SOLD7_CACHE["map"]
+        to_d = _dt.date.today()
+        from_d = to_d - _dt.timedelta(days=7)
+        since = from_d.strftime("%Y-%m-%dT00:00:00.000-00:00")
+        until = to_d.strftime("%Y-%m-%dT23:59:59.000-00:00")
+        m = {}
+        offset = 0
+        while True:
+            r = s.get(f"{ML_API}/orders/search?seller={uid}"
+                      f"&order.date_created.from={since}"
+                      f"&order.date_created.to={until}"
+                      f"&sort=date_desc&limit=50&offset={offset}", timeout=20)
+            if r.status_code != 200:
+                break
+            d = r.json()
+            results = d.get("results", [])
+            for od in results:
+                for oi in od.get("order_items", []):
+                    iid = (oi.get("item") or {}).get("id")
+                    if iid:
+                        m[iid] = m.get(iid, 0) + (oi.get("quantity", 0) or 0)
+            total = d.get("paging", {}).get("total", 0)
+            offset += 50
+            if offset >= total or not results:
+                break
+        _SOLD7_CACHE["ts"] = now
+        _SOLD7_CACHE["map"] = m
     except Exception:
         pass
     return _SOLD7_CACHE["map"]
@@ -608,9 +636,11 @@ def export_inventario(key: str = ""):
 
     prods = db.inv_list_products()
     # ventas 7 días: SOLO lectura de caché (no bloquear la petición con un
-    # fetch a ML). El refresco en segundo plano la mantiene caliente; si aún
-    # no hay datos, vendidos_7d sale null y se llena en el próximo ciclo.
+    # fetch a ML). El refresco en segundo plano la mantiene caliente.
     s7 = _SOLD7_CACHE["map"]
+    # ¿ya se calculó al menos una vez? Si sí, una publicación que no aparece
+    # en el mapa = 0 ventas reales; si aún no, vendidos_7d = null.
+    s7_warm = _SOLD7_CACHE["ts"] > 0
     productos = []
     for p in prods:
         pubs = []
@@ -625,7 +655,7 @@ def export_inventario(key: str = ""):
                 "permalink": _permalink_from_mco(mco),
                 # Estadísticas de ventas por publicación (para rankear)
                 "vendidos_60d": int(l.get("ml_sold60") or 0),
-                "vendidos_7d": (s7.get(mco) if mco in s7 else None),
+                "vendidos_7d": (s7.get(mco, 0) if s7_warm else None),
                 "roas": (round(roas_v, 2) if roas_v > 0 else None),
                 "imagenes": imagenes,
             }
