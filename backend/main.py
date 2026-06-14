@@ -540,6 +540,53 @@ def stats(user: dict = Depends(_current_user)):
 
 # ── Ventas diarias (MercadoLibre + Falabella + total) ────────────────────────
 
+def _ml_ads_daily(date_list: list) -> dict:
+    """{fecha → {roas, acos}} de Product Ads de ML, consultando día por día
+    (en paralelo). ROAS = ingresos por ads / gasto; ACOS = gasto / ingresos.
+    """
+    out = {}
+    try:
+        from concurrent.futures import ThreadPoolExecutor
+        from ml_scraper import _ml_session_auth, ML_API
+        s, uid = _ml_session_auth()
+        if not s:
+            return out
+        s.headers["Api-Version"] = "1"
+        adv = s.get(f"{ML_API}/advertising/advertisers?product_id=PADS",
+                    timeout=12)
+        adv_id = None
+        if adv.status_code == 200:
+            arr = adv.json().get("advertisers", [])
+            if arr:
+                adv_id = arr[0].get("advertiser_id")
+        if not adv_id:
+            return out
+
+        def _one(day):
+            cost = rev = 0.0
+            try:
+                r = s.get(f"{ML_API}/advertising/advertisers/{adv_id}"
+                          f"/product_ads/campaigns?date_from={day}&date_to={day}"
+                          f"&metrics=cost,total_amount&limit=100", timeout=15)
+                if r.status_code == 200:
+                    for c in r.json().get("results", []):
+                        m = c.get("metrics", {}) or {}
+                        cost += m.get("cost", 0) or 0
+                        rev += m.get("total_amount", 0) or 0
+            except Exception:
+                pass
+            roas = round(rev / cost, 2) if cost > 0 else None
+            acos = round(cost / rev * 100, 1) if rev > 0 else None
+            return day, {"roas": roas, "acos": acos}
+
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            for day, v in ex.map(_one, date_list):
+                out[day] = v
+    except Exception:
+        pass
+    return out
+
+
 def _ml_daily_sales(days: int = 14, date_from: str = None,
                     date_to: str = None) -> dict:
     """Ventas diarias de ML por fecha {ordenes, unidades, ingresos}.
@@ -587,11 +634,17 @@ def _ml_daily_sales(days: int = 14, date_from: str = None,
                 if d_from and (fecha < d_from or fecha > d_to):
                     continue
                 b = by.setdefault(fecha, {"fecha": fecha, "ordenes": 0,
-                                          "unidades": 0, "ingresos": 0.0})
+                                          "unidades": 0, "ingresos": 0.0,
+                                          "_prod": {}, "roas": None,
+                                          "acos": None})
                 b["ordenes"] += 1
                 b["ingresos"] += float(od.get("total_amount") or 0)
                 for oi in od.get("order_items", []):
-                    b["unidades"] += int(oi.get("quantity") or 0)
+                    q = int(oi.get("quantity") or 0)
+                    b["unidades"] += q
+                    nm = ((oi.get("item") or {}).get("title") or "").strip()
+                    if nm:
+                        b["_prod"][nm] = b["_prod"].get(nm, 0) + q
             total = d.get("paging", {}).get("total", 0)
             offset += 50
             if offset >= total or not results:
@@ -599,6 +652,18 @@ def _ml_daily_sales(days: int = 14, date_from: str = None,
         dias = sorted(by.values(), key=lambda x: x["fecha"])
         for x in dias:
             x["ingresos"] = round(x["ingresos"], 2)
+            top = sorted(x.pop("_prod").items(), key=lambda y: -y[1])[:3]
+            x["top"] = [{"nombre": n, "unidades": u} for n, u in top]
+        # ROAS/ACOS por día desde Product Ads (si hay publicidad activa)
+        try:
+            ads = _ml_ads_daily([x["fecha"] for x in dias])
+            for x in dias:
+                a = ads.get(x["fecha"])
+                if a:
+                    x["roas"] = a.get("roas")
+                    x["acos"] = a.get("acos")
+        except Exception:
+            pass
         return {"ok": True, "dias": dias}
     except Exception as e:
         return {"ok": False, "error": "MercadoLibre: %s" % str(e)[:120]}
@@ -617,15 +682,18 @@ def _build_sales(days: int, date_from: str = None, date_to: str = None) -> dict:
         fa = {"ok": False, "error": "Falabella: %s" % str(e)[:120]}
     combo = {}
 
+    _empty = lambda: {"ordenes": 0, "unidades": 0, "ingresos": 0,
+                      "roas": None, "acos": None, "top": []}
+
     def _add(src, key):
         if src.get("ok"):
             for d in src.get("dias", []):
                 b = combo.setdefault(d["fecha"], {
-                    "fecha": d["fecha"],
-                    "ml": {"ordenes": 0, "unidades": 0, "ingresos": 0},
-                    "falabella": {"ordenes": 0, "unidades": 0, "ingresos": 0}})
+                    "fecha": d["fecha"], "ml": _empty(),
+                    "falabella": _empty()})
                 b[key] = {"ordenes": d["ordenes"], "unidades": d["unidades"],
-                          "ingresos": d["ingresos"]}
+                          "ingresos": d["ingresos"], "roas": d.get("roas"),
+                          "acos": d.get("acos"), "top": d.get("top", [])}
     _add(ml, "ml")
     _add(fa, "falabella")
     dias = []

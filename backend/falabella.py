@@ -76,9 +76,11 @@ def get_orders(created_after_iso: str, created_before_iso: str = None,
     return orders
 
 
-def _units_by_order(order_ids: list) -> dict:
-    """{OrderId → nº de unidades} vía GetMultipleOrderItems (en lotes)."""
-    units = {}
+def _items_by_order(order_ids: list) -> dict:
+    """{OrderId → [nombres de los items]} vía GetMultipleOrderItems (lotes).
+    Cada OrderItem = 1 unidad, así que len(lista) = unidades de esa orden.
+    """
+    out = {}
     for i in range(0, len(order_ids), 25):
         chunk = order_ids[i:i + 25]
         try:
@@ -87,10 +89,11 @@ def _units_by_order(order_ids: list) -> dict:
             body = (d.get("SuccessResponse") or {}).get("Body") or {}
             for o in _as_list((body.get("Orders") or {}).get("Order")):
                 items = _as_list((o.get("OrderItems") or {}).get("OrderItem"))
-                units[str(o.get("OrderId"))] = len(items)
+                out[str(o.get("OrderId"))] = [
+                    (it.get("Name") or "").strip() for it in items]
         except Exception:
             pass
-    return units
+    return out
 
 
 def daily_sales(days: int = 14, date_from: str = None,
@@ -131,20 +134,28 @@ def daily_sales(days: int = 14, date_from: str = None,
             if d_from and (ca < d_from or ca > d_to):
                 continue
             b = by.setdefault(ca, {"fecha": ca, "ordenes": 0,
-                                   "unidades": 0, "ingresos": 0.0})
+                                   "unidades": 0, "ingresos": 0.0,
+                                   "_prod": {}, "roas": None, "acos": None})
             b["ordenes"] += 1
             b["ingresos"] += float(o.get("Price") or 0)
             oid = o.get("OrderId")
             if oid:
                 ids.append((str(oid), ca))
-        # unidades reales por orden
-        umap = _units_by_order([i for i, _ in ids])
+        # items reales por orden (unidades + nombres para el top de productos)
+        imap = _items_by_order([i for i, _ in ids])
         for oid, ca in ids:
-            if ca in by:
-                by[ca]["unidades"] += umap.get(oid, 0)
+            if ca not in by:
+                continue
+            names = imap.get(oid, [])
+            by[ca]["unidades"] += len(names)
+            for nm in names:
+                if nm:
+                    by[ca]["_prod"][nm] = by[ca]["_prod"].get(nm, 0) + 1
         dias = sorted(by.values(), key=lambda x: x["fecha"])
         for d in dias:
             d["ingresos"] = round(d["ingresos"], 2)
+            top = sorted(d.pop("_prod").items(), key=lambda x: -x[1])[:3]
+            d["top"] = [{"nombre": n, "unidades": u} for n, u in top]
         return {"ok": True, "dias": dias}
     except Exception as e:
         return {"ok": False, "error": "Falabella: %s" % str(e)[:120]}

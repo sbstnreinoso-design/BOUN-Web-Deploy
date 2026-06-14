@@ -411,8 +411,8 @@ async function renderSales(force){
     const tUni=sum(dias,"total","unidades");
     document.getElementById("salKpis").innerHTML=[
       ["Ingresos totales",cop(tIng),"acc",`${periodo} · ML + Falabella`],
-      ["MercadoLibre",cop(mIng),"blue",sum(dias,"ml","unidades")+" unidades"],
-      ["Falabella",cop(fIng),"amber",sum(dias,"falabella","unidades")+" unidades"],
+      ["MercadoLibre",cop(mIng),"amber",sum(dias,"ml","unidades")+" unidades"],
+      ["Falabella",cop(fIng),"blue",sum(dias,"falabella","unidades")+" unidades"],
       ["Unidades totales",tUni,"green",dias.length+" días con datos"],
     ].map(([c,vv,cl,sub])=>`<div class="kpi"><div class="cap">${c}</div><div class="val ${cl}">${vv}</div><div class="cap">${sub}</div></div>`).join("");
     // avisos de conexión
@@ -423,24 +423,32 @@ async function renderSales(force){
     document.getElementById("salNote").innerHTML=notes;
     // tabla por día (más reciente arriba)
     if(!dias.length){ document.getElementById("salTable").innerHTML=`<div class="loading">Sin ventas en el periodo.</div>`; return; }
-    const cel=(o)=>o?`${o.unidades} u · <b>${cop(o.ingresos)}</b>`:`0 u · $0`;
-    let html=`<table><thead><tr>
+    const rx=v=>v==null?`<span class="muted">—</span>`:v+"x";
+    const ax=v=>v==null?`<span class="muted">—</span>`:v+"%";
+    const cel=(o)=>{
+      if(!o||(!o.unidades&&!(o.top&&o.top.length))) return `<span class="muted">0 u · $0</span>`;
+      const top=(o.top||[]).map((t,i)=>`<div class="pmeta">${i+1}. ${esc(t.nombre.slice(0,34))} <b>(${t.unidades})</b></div>`).join("");
+      return `<div><b>${o.unidades} u</b> · ${cop(o.ingresos)}</div>
+        <div style="font-size:10px;margin-top:1px">ROAS ${rx(o.roas)} · ACOS ${ax(o.acos)}</div>
+        ${top?`<div style="margin-top:4px">${top}</div>`:""}`;
+    };
+    let html=`<table class="sales"><thead><tr>
         <th>Fecha</th>
-        <th>MercadoLibre</th>
-        <th>Falabella</th>
+        <th><span class="amber">● MercadoLibre</span></th>
+        <th><span class="blue">● Falabella</span></th>
         <th>Total del día</th>
       </tr></thead><tbody>`;
     html+=dias.slice().reverse().map(d=>`<tr>
-        <td><b>${esc(d.fecha)}</b></td>
-        <td class="blue">${cel(d.ml)}</td>
-        <td class="amber">${cel(d.falabella)}</td>
-        <td class="acc"><b>${d.total.unidades} u · ${cop(d.total.ingresos)}</b></td>
+        <td style="vertical-align:top"><b>${esc(d.fecha)}</b></td>
+        <td class="amber" style="vertical-align:top">${cel(d.ml)}</td>
+        <td class="blue" style="vertical-align:top">${cel(d.falabella)}</td>
+        <td class="acc" style="vertical-align:top"><b>${d.total.unidades} u · ${cop(d.total.ingresos)}</b></td>
       </tr>`).join("");
     // fila de totales
     html+=`<tr style="border-top:2px solid var(--acc)">
         <td><b>TOTAL${SALES_MODE==="range"?"":` ${SALES_DAYS}d`}</b></td>
-        <td class="blue">${sum(dias,"ml","unidades")} u · <b>${cop(mIng)}</b></td>
-        <td class="amber">${sum(dias,"falabella","unidades")} u · <b>${cop(fIng)}</b></td>
+        <td class="amber">${sum(dias,"ml","unidades")} u · <b>${cop(mIng)}</b></td>
+        <td class="blue">${sum(dias,"falabella","unidades")} u · <b>${cop(fIng)}</b></td>
         <td class="acc"><b>${tUni} u · ${cop(tIng)}</b></td>
       </tr>`;
     document.getElementById("salTable").innerHTML=html+"</tbody></table>";
