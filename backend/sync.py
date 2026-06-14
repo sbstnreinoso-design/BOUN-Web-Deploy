@@ -88,24 +88,30 @@ SLEEP24-NEGRO,154950120,PA002
 """
 
 
+def _norm(c: str) -> str:
+    """Normaliza un código: colapsa espacios múltiples y recorta, para que
+    'CG  034 - ROJO' (inventario) cruce con 'CG 034 - ROJO' (CSV)."""
+    return " ".join((c or "").split())
+
+
 def _build_fal_map():
     m = {}
     for line in _FAL_CSV.strip().splitlines():
         parts = [p.strip() for p in line.split(",")]
         if len(parts) < 3:
             continue
-        seller_sku, fal_id, codigo = parts[0], parts[1], parts[2]
+        seller_sku, fal_id, codigo = parts[0], parts[1], _norm(parts[2])
         m.setdefault(codigo, []).append({"seller_sku": seller_sku,
                                          "fal_id": fal_id})
     return m
 
 
-# {codigo_boun: [{seller_sku, fal_id}, …]}
+# {codigo_boun (normalizado): [{seller_sku, fal_id}, …]}
 FAL_MAP = _build_fal_map()
 
 
 def falabella_skus(codigo_boun: str) -> list:
-    return FAL_MAP.get(codigo_boun, [])
+    return FAL_MAP.get(_norm(codigo_boun), [])
 
 
 def reparto(disponible: int, pubs: list) -> dict:
