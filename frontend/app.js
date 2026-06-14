@@ -366,34 +366,51 @@ async function renderDashboard(){
 }
 
 // ── VENTAS (MercadoLibre + Falabella + total) ───────────────────────────────
-let SALES_DAYS=14;
+let SALES_DAYS=14, SALES_MODE="days", SALES_FROM="", SALES_TO="";
+const _isoDay=d=>new Date(Date.now()-(d||0)*86400000).toISOString().slice(0,10);
+function salesQ(force){
+  const q=(SALES_MODE==="range"&&SALES_FROM&&SALES_TO)
+    ?`date_from=${SALES_FROM}&date_to=${SALES_TO}`:`days=${SALES_DAYS}`;
+  return q+(force?"&force=true":"");
+}
+function salMode(v){
+  if(v==="custom"){ SALES_MODE="range"; if(!SALES_FROM){SALES_FROM=_isoDay(7);SALES_TO=_isoDay(0);} renderSales(); }
+  else { SALES_MODE="days"; SALES_DAYS=+v; renderSales(true); }
+}
 async function renderSales(force){
   const v=document.getElementById("view");
+  const periodo = SALES_MODE==="range" ? `${SALES_FROM} → ${SALES_TO}` : `${SALES_DAYS} días`;
   v.innerHTML=`<div class="row-between">
       <div>
         <div class="page-title">Ventas</div>
         <div class="page-sub">Ventas diarias de MercadoLibre y Falabella, con total combinado.</div>
       </div>
-      <div class="filters" style="margin:0">
-        <select id="salDays" class="field fmini" onchange="SALES_DAYS=+this.value;renderSales(true)">
-          <option value="7"${SALES_DAYS==7?" selected":""}>Últimos 7 días</option>
-          <option value="14"${SALES_DAYS==14?" selected":""}>Últimos 14 días</option>
-          <option value="30"${SALES_DAYS==30?" selected":""}>Últimos 30 días</option>
+      <div class="filters" style="margin:0;align-items:center">
+        <select id="salSel" class="field fmini" onchange="salMode(this.value)">
+          <option value="7"${SALES_MODE==="days"&&SALES_DAYS==7?" selected":""}>Últimos 7 días</option>
+          <option value="14"${SALES_MODE==="days"&&SALES_DAYS==14?" selected":""}>Últimos 14 días</option>
+          <option value="30"${SALES_MODE==="days"&&SALES_DAYS==30?" selected":""}>Últimos 30 días</option>
+          <option value="custom"${SALES_MODE==="range"?" selected":""}>Personalizado…</option>
         </select>
-        <button class="btn-ghost" onclick="renderSales(true)">↻ Actualizar</button>
+        ${SALES_MODE==="range"?`
+        <input type="date" class="field fmini" value="${SALES_FROM}" max="${_isoDay(0)}" onchange="SALES_FROM=this.value">
+        <span class="muted">→</span>
+        <input type="date" class="field fmini" value="${SALES_TO}" max="${_isoDay(0)}" onchange="SALES_TO=this.value">
+        <button class="btn-acc" style="height:32px;padding:0 16px;border-radius:8px" onclick="renderSales(true)">Aplicar</button>`
+        :`<button class="btn-ghost" onclick="renderSales(true)">↻ Actualizar</button>`}
       </div>
     </div>
     <div id="salKpis" class="kpis"><div class="loading"><span class="spinner"></span> Cargando ventas…</div></div>
     <div id="salNote"></div>
     <div id="salTable"></div>`;
   try{
-    const r=await api("/sales?days="+SALES_DAYS+(force?"&force=true":""));
+    const r=await api("/sales?"+salesQ(force));
     const dias=r.dias||[];
     const sum=(arr,src,m)=>arr.reduce((a,d)=>a+(d[src]?d[src][m]:0),0);
     const tIng=sum(dias,"total","ingresos"), mIng=sum(dias,"ml","ingresos"), fIng=sum(dias,"falabella","ingresos");
     const tUni=sum(dias,"total","unidades");
     document.getElementById("salKpis").innerHTML=[
-      ["Ingresos totales",cop(tIng),"acc",`${SALES_DAYS} días · ML + Falabella`],
+      ["Ingresos totales",cop(tIng),"acc",`${periodo} · ML + Falabella`],
       ["MercadoLibre",cop(mIng),"blue",sum(dias,"ml","unidades")+" unidades"],
       ["Falabella",cop(fIng),"amber",sum(dias,"falabella","unidades")+" unidades"],
       ["Unidades totales",tUni,"green",dias.length+" días con datos"],
@@ -421,7 +438,7 @@ async function renderSales(force){
       </tr>`).join("");
     // fila de totales
     html+=`<tr style="border-top:2px solid var(--acc)">
-        <td><b>TOTAL ${SALES_DAYS}d</b></td>
+        <td><b>TOTAL${SALES_MODE==="range"?"":` ${SALES_DAYS}d`}</b></td>
         <td class="blue">${sum(dias,"ml","unidades")} u · <b>${cop(mIng)}</b></td>
         <td class="amber">${sum(dias,"falabella","unidades")} u · <b>${cop(fIng)}</b></td>
         <td class="acc"><b>${tUni} u · ${cop(tIng)}</b></td>

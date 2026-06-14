@@ -540,8 +540,13 @@ def stats(user: dict = Depends(_current_user)):
 
 # ── Ventas diarias (MercadoLibre + Falabella + total) ────────────────────────
 
-def _ml_daily_sales(days: int = 14) -> dict:
-    """Ventas diarias de ML por fecha {ordenes, unidades, ingresos}."""
+def _ml_daily_sales(days: int = 14, date_from: str = None,
+                    date_to: str = None) -> dict:
+    """Ventas diarias de ML por fecha {ordenes, unidades, ingresos}.
+
+    Rango personalizado date_from/date_to ('YYYY-MM-DD') si se pasan;
+    si no, los últimos `days` días.
+    """
     try:
         import datetime as _dt
         from ml_scraper import _ml_session_auth, ML_API
@@ -549,9 +554,20 @@ def _ml_daily_sales(days: int = 14) -> dict:
         if not s:
             return {"ok": False, "error": "MercadoLibre sin conexión"}
         co = _dt.timezone(_dt.timedelta(hours=-5))
-        to_d = _dt.datetime.now(co)
-        from_d = (to_d - _dt.timedelta(days=days)).replace(
-            hour=0, minute=0, second=0, microsecond=0)
+        d_from = d_to = None
+        if date_from:
+            d1 = _dt.date.fromisoformat(date_from[:10])
+            d2 = (_dt.date.fromisoformat(date_to[:10]) if date_to
+                  else _dt.datetime.now(co).date())
+            if d2 < d1:
+                d1, d2 = d2, d1
+            d_from, d_to = d1.isoformat(), d2.isoformat()
+            from_d = _dt.datetime.combine(d1, _dt.time(0, 0, 0), co)
+            to_d = _dt.datetime.combine(d2, _dt.time(23, 59, 59), co)
+        else:
+            to_d = _dt.datetime.now(co)
+            from_d = (to_d - _dt.timedelta(days=days)).replace(
+                hour=0, minute=0, second=0, microsecond=0)
         since = from_d.strftime("%Y-%m-%dT%H:%M:%S.000-05:00")
         until = to_d.strftime("%Y-%m-%dT%H:%M:%S.000-05:00")
         by, offset = {}, 0
@@ -567,6 +583,8 @@ def _ml_daily_sales(days: int = 14) -> dict:
             for od in results:
                 fecha = (od.get("date_created") or "")[:10]
                 if not fecha:
+                    continue
+                if d_from and (fecha < d_from or fecha > d_to):
                     continue
                 b = by.setdefault(fecha, {"fecha": fecha, "ordenes": 0,
                                           "unidades": 0, "ingresos": 0.0})
@@ -590,11 +608,11 @@ _SALES_CACHE = {}        # days -> {"ts": epoch, "data": ...}
 _SALES_TTL = 10 * 60
 
 
-def _build_sales(days: int) -> dict:
-    ml = _ml_daily_sales(days)
+def _build_sales(days: int, date_from: str = None, date_to: str = None) -> dict:
+    ml = _ml_daily_sales(days, date_from, date_to)
     try:
         import falabella as fb
-        fa = fb.daily_sales(days)
+        fa = fb.daily_sales(days, date_from, date_to)
     except Exception as e:
         fa = {"ok": False, "error": "Falabella: %s" % str(e)[:120]}
     combo = {}
@@ -619,20 +637,22 @@ def _build_sales(days: int) -> dict:
             "ingresos": round(b["ml"]["ingresos"] + b["falabella"]["ingresos"], 2)}
         dias.append(b)
     return {"ok": True, "days": days, "dias": dias,
+            "date_from": date_from or "", "date_to": date_to or "",
             "ml_ok": bool(ml.get("ok")), "ml_error": ml.get("error", ""),
             "fal_ok": bool(fa.get("ok")), "fal_error": fa.get("error", "")}
 
 
 @app.get("/api/sales")
-def sales(days: int = 14, force: bool = False,
-          user: dict = Depends(_current_user)):
+def sales(days: int = 14, date_from: str = "", date_to: str = "",
+          force: bool = False, user: dict = Depends(_current_user)):
     now = time.time()
-    c = _SALES_CACHE.get(days)
+    key = ("range:%s:%s" % (date_from, date_to)) if date_from else ("days:%d" % days)
+    c = _SALES_CACHE.get(key)
     if c and not force and (now - c["ts"]) < _SALES_TTL:
         out = dict(c["data"]); out["cache_age_min"] = int((now - c["ts"]) / 60)
         return out
-    data = _build_sales(days)
-    _SALES_CACHE[days] = {"ts": time.time(), "data": data}
+    data = _build_sales(days, date_from or None, date_to or None)
+    _SALES_CACHE[key] = {"ts": time.time(), "data": data}
     out = dict(data); out["cache_age_min"] = 0
     return out
 

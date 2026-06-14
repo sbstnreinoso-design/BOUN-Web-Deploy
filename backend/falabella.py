@@ -54,13 +54,17 @@ def _as_list(x):
     return x if isinstance(x, list) else [x]
 
 
-def get_orders(created_after_iso: str, limit: int = 100) -> list:
-    """Todas las órdenes creadas desde una fecha (paginado)."""
+def get_orders(created_after_iso: str, created_before_iso: str = None,
+               limit: int = 100) -> list:
+    """Todas las órdenes creadas en un rango de fechas (paginado)."""
     orders, offset = [], 0
     while True:
-        d = _get("GetOrders", {"CreatedAfter": created_after_iso,
-                               "Limit": str(limit), "Offset": str(offset),
-                               "SortBy": "created_at", "SortDirection": "DESC"})
+        params = {"CreatedAfter": created_after_iso,
+                  "Limit": str(limit), "Offset": str(offset),
+                  "SortBy": "created_at", "SortDirection": "DESC"}
+        if created_before_iso:
+            params["CreatedBefore"] = created_before_iso
+        d = _get("GetOrders", params)
         body = (d.get("SuccessResponse") or {}).get("Body") or {}
         oo = _as_list((body.get("Orders") or {}).get("Order"))
         orders.extend(oo)
@@ -89,22 +93,42 @@ def _units_by_order(order_ids: list) -> dict:
     return units
 
 
-def daily_sales(days: int = 14) -> dict:
+def daily_sales(days: int = 14, date_from: str = None,
+                date_to: str = None) -> dict:
     """Ventas diarias de Falabella: por fecha {ordenes, unidades, ingresos}.
 
     Agrupa por la fecha local (Colombia) en que se creó la orden.
+    Usa rango personalizado date_from/date_to ('YYYY-MM-DD') si se pasan;
+    de lo contrario, los últimos `days` días.
     """
     if not is_connected():
         return {"ok": False, "error": "Falabella API sin credenciales"}
     try:
-        since = ((_dt.datetime.now(_CO_TZ) - _dt.timedelta(days=days))
-                 .replace(hour=0, minute=0, second=0, microsecond=0).isoformat())
-        orders = get_orders(since)
+        before = None
+        d_from = d_to = None
+        if date_from:
+            d1 = _dt.date.fromisoformat(date_from[:10])
+            d2 = (_dt.date.fromisoformat(date_to[:10]) if date_to
+                  else _dt.datetime.now(_CO_TZ).date())
+            if d2 < d1:
+                d1, d2 = d2, d1
+            d_from, d_to = d1.isoformat(), d2.isoformat()
+            since = _dt.datetime.combine(
+                d1, _dt.time(0, 0, 0), _CO_TZ).isoformat()
+            before = _dt.datetime.combine(
+                d2, _dt.time(23, 59, 59), _CO_TZ).isoformat()
+        else:
+            since = ((_dt.datetime.now(_CO_TZ) - _dt.timedelta(days=days))
+                     .replace(hour=0, minute=0, second=0,
+                              microsecond=0).isoformat())
+        orders = get_orders(since, before)
         by = {}
         ids = []
         for o in orders:
             ca = (o.get("CreatedAt") or "")[:10]   # 'YYYY-MM-DD' (hora seller)
             if not ca:
+                continue
+            if d_from and (ca < d_from or ca > d_to):
                 continue
             b = by.setdefault(ca, {"fecha": ca, "ordenes": 0,
                                    "unidades": 0, "ingresos": 0.0})
