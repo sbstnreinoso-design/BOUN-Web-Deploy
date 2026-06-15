@@ -709,8 +709,9 @@ def _ml_daily_sales(days: int = 14, date_from: str = None,
         all_ids = set()
         for x in dias:
             x["ingresos"] = round(x["ingresos"], 2)
+            # TODOS los productos del día, ordenados por unidades (top primero).
             top = sorted(x.pop("_prod").items(),
-                         key=lambda y: -y[1]["unidades"])[:3]
+                         key=lambda y: -y[1]["unidades"])
             x["top"] = [{"item_id": iid, "nombre": v["nombre"],
                          "unidades": v["unidades"]} for iid, v in top]
             for t in x["top"]:

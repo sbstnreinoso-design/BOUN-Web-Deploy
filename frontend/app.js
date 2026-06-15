@@ -464,7 +464,7 @@ async function renderSales(force){
       return `<div style="flex:1;min-width:250px">
         <div class="${cls}" style="font-weight:700;font-size:12px;margin-bottom:4px">${label}</div>
         <div style="font-size:11px">ROAS <b>${rx(o&&o.roas)}</b> · ACOS <b>${ax(o&&o.acos)}</b></div>
-        <div style="margin-top:6px"><div class="cap" style="margin-bottom:2px">Top productos del día</div>${top}</div>
+        <div style="margin-top:6px"><div class="cap" style="margin-bottom:2px">Productos vendidos${o&&o.top&&o.top.length?` (${o.top.length})`:""}</div><div style="max-height:260px;overflow-y:auto;padding-right:4px">${top}</div></div>
       </div>`;
     };
     let html=`<table class="sales"><thead><tr>

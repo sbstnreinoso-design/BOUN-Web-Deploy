@@ -295,8 +295,9 @@ def daily_sales(days: int = 14, date_from: str = None,
         dias = sorted(by.values(), key=lambda x: x["fecha"])
         for d in dias:
             d["ingresos"] = round(d["ingresos"], 2)
+            # TODOS los productos del día, ordenados por unidades (top primero).
             top = sorted(d.pop("_prod").values(),
-                         key=lambda v: -v["unidades"])[:3]
+                         key=lambda v: -v["unidades"])
             d["top"] = [{"nombre": t["nombre"], "unidades": t["unidades"],
                          "img": imgs.get(t.get("sku") or "", "")} for t in top]
         return {"ok": True, "dias": dias}
