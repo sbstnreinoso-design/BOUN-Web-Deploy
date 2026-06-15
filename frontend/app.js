@@ -49,6 +49,7 @@ const NAV=[
   ["dashboard","⬛  Dashboard"],
   ["ventas","↗  Ventas"],
   ["inventory","▦  Inventario"],
+  ["cola","📦  Pendientes de bodega"],
   ["my_products","★  Mis Productos"],
   ["products","▤  Productos para comprar"],
   ["settings","⚙  Configuración"],
@@ -61,14 +62,23 @@ function showApp(){
   let nav=NAV.slice();
   if(USER.role==="admin") nav.push(["collaborators","♟  Colaboradores"]);
   document.getElementById("nav").innerHTML=nav.map(([id,t])=>
-    `<a href="#" data-nav="${id}" onclick="go('${id}');return false">${t}</a>`).join("");
+    `<a href="#" data-nav="${id}" onclick="go('${id}');return false">${t}<span class="navbadge" id="badge-${id}"></span></a>`).join("");
   go("dashboard");
+  refreshColaBadge();
+}
+async function refreshColaBadge(){
+  try{
+    const r=await api("/cola-bodega/count");
+    const b=document.getElementById("badge-cola");
+    if(b) b.textContent=r.count>0?r.count:"", b.style.display=r.count>0?"inline-block":"none";
+  }catch(e){}
 }
 function go(id){
   document.querySelectorAll(".nav a").forEach(a=>a.classList.toggle("active",a.dataset.nav===id));
   if(id==="dashboard") renderDashboard();
   else if(id==="ventas") renderSales();
   else if(id==="inventory") renderInventory();
+  else if(id==="cola") renderCola();
   else if(id==="my_products") renderMyProducts();
   else if(id==="products") renderProducts();
   else if(id==="settings") renderSettings();
@@ -491,6 +501,59 @@ async function renderSales(force){
       </tr>`;
     document.getElementById("salTable").innerHTML=html+"</tbody></table>";
   }catch(e){ document.getElementById("salKpis").innerHTML=`<div class="red">${esc(e.message)}</div>`; }
+}
+
+// ── PENDIENTES DE BODEGA ─────────────────────────────────────────────────────
+const CANAL_LBL={ml:"MercadoLibre",mercadolibre:"MercadoLibre",shopify_boun:"Shopify BOUN",shopify_kat:"Shopify KAT",falabella:"Falabella",test:"Prueba"};
+function _fechaHora(s){ if(!s) return ""; try{ const d=new Date(s); return d.toLocaleString("es-CO",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}); }catch(e){ return s; } }
+async function renderCola(){
+  const v=document.getElementById("view");
+  v.innerHTML=`<div class="row-between"><div>
+      <div class="page-title">Pendientes de bodega</div>
+      <div class="page-sub">Ventas donde ambas bodegas tenían stock: confirma de cuál salió. El total ya se descontó; esto solo cuadra la bodega.</div>
+    </div><button class="btn-ghost" onclick="renderCola()">↻ Actualizar</button></div>
+    <div id="colaList"><div class="loading"><span class="spinner"></span> Cargando…</div></div>`;
+  try{
+    const r=await api("/cola-bodega");
+    refreshColaBadge();
+    const ps=r.pendientes||[];
+    if(!ps.length){ document.getElementById("colaList").innerHTML=`<div class="empty" style="text-align:center;padding:48px;color:var(--muted)"><div style="font-size:40px">✓</div><div style="margin-top:8px;font-size:15px">Todo al día</div></div>`; return; }
+    document.getElementById("colaList").innerHTML=ps.map(p=>{
+      const canal=CANAL_LBL[p.canal]||p.canal||"—";
+      return `<div class="card" id="cola-${p.id}" style="display:flex;gap:18px;align-items:center;padding:16px;margin-bottom:10px;flex-wrap:wrap">
+        <div style="flex:1;min-width:240px">
+          <div style="font-weight:700;font-size:14px">${esc(p.codigo_boun)} <span class="muted" style="font-weight:400">· ${esc(p.nombre||"")}</span></div>
+          <div class="muted" style="font-size:12px;margin-top:3px">
+            <b style="color:var(--text)">${p.cantidad} u</b> · ${esc(canal)}${p.order_id?` · #${esc(p.order_id)}`:""} · ${_fechaHora(p.created_at)}
+          </div>
+          <div class="muted" style="font-size:12px;margin-top:4px">Saldo actual — Bogotá <b style="color:var(--text)">${p.stock_bogota}</b> · Yopal <b style="color:var(--text)">${p.stock_yopal}</b></div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn-acc" style="padding:10px 16px;border-radius:9px" onclick="confirmCola(${p.id},'bogota')">Salió de Bogotá</button>
+          <button class="btn-acc" style="padding:10px 16px;border-radius:9px" onclick="confirmCola(${p.id},'yopal')">Salió de Yopal</button>
+          <button class="btn-ghost" style="padding:10px 12px;border-radius:9px" title="Vino de ML Full, no descuenta bodega" onclick="fullCola(${p.id})">Full</button>
+        </div>
+      </div>`;
+    }).join("");
+  }catch(e){ document.getElementById("colaList").innerHTML=`<div class="red">${esc(e.message)}</div>`; }
+}
+async function confirmCola(id,bodega){
+  const nb=bodega==="bogota"?"Bogotá":"Yopal";
+  try{
+    const r=await api(`/cola-bodega/${id}/confirmar`,{method:"POST",body:JSON.stringify({bodega})});
+    const el=document.getElementById("cola-"+id); if(el) el.remove();
+    refreshColaBadge();
+    if(!document.querySelector("#colaList .card")) renderCola();
+  }catch(e){ alert(e.message); }
+}
+async function fullCola(id){
+  if(!confirm("¿Marcar como venta Full (no descuenta bodega)?")) return;
+  try{
+    await api(`/cola-bodega/${id}/full`,{method:"POST"});
+    const el=document.getElementById("cola-"+id); if(el) el.remove();
+    refreshColaBadge();
+    if(!document.querySelector("#colaList .card")) renderCola();
+  }catch(e){ alert(e.message); }
 }
 
 // ── MIS PRODUCTOS ────────────────────────────────────────────────────────────

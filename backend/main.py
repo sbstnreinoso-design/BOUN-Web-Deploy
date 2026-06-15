@@ -1205,7 +1205,7 @@ def ml_set_stock(key: str = "", item_id: str = "", cantidad: str = "",
     try:
         r = _ml_request(
             "GET", "/items/%s?attributes=id,status,available_quantity,"
-                   "variations,shipping" % item_id)
+                   "variations,shipping,catalog_listing" % item_id)
         if r is None:
             return JSONResponse({"ok": False, "error": "ml_not_connected"},
                                 status_code=502, headers=_EXPORT_CORS)
@@ -1217,37 +1217,46 @@ def ml_set_stock(key: str = "", item_id: str = "", cantidad: str = "",
         status = item.get("status")
         logistic = (item.get("shipping") or {}).get("logistic_type")
         variations = item.get("variations") or []
-        # Guardrails: no tocar Full, ni cerradas, ni (en v1) variaciones.
+        # Guardrails: no tocar Full ni cerradas/catálogo (no contar como error).
         if logistic == "fulfillment":
             return JSONResponse({"ok": False, "skip": True, "reason": "full",
                                  "item_id": item_id}, headers=_EXPORT_CORS)
-        if status == "closed":
-            return JSONResponse({"ok": False, "skip": True, "reason": "closed",
+        if status == "closed" or item.get("catalog_listing") is True:
+            return JSONResponse({"ok": False, "skip": True,
+                                 "reason": "closed/catalog",
                                  "item_id": item_id}, headers=_EXPORT_CORS)
+        # Con variaciones → fija available_quantity en CADA variación (mismo N
+        # por defecto). Sin variaciones → en el ítem.
         if variations:
-            return JSONResponse(
-                {"ok": False, "skip": True, "reason": "variations",
-                 "item_id": item_id,
-                 "detalle": "requiere reparto por variación (fase 2)"},
-                headers=_EXPORT_CORS)
-        body = {"available_quantity": c}
+            applied_to = "variations"
+            body = {"variations": [{"id": v.get("id"), "available_quantity": c}
+                                   for v in variations if v.get("id")]}
+        else:
+            applied_to = "item"
+            body = {"available_quantity": c}
         if dry == "1":
-            return JSONResponse({"ok": True, "item_id": item_id, "cantidad": c,
-                                 "status": status, "logistic": logistic,
-                                 "dry_run": True, "body": body},
-                                headers=_EXPORT_CORS)
+            return JSONResponse({"ok": True, "item_id": item_id, "set": c,
+                                 "applied_to": applied_to, "status": status,
+                                 "logistic": logistic, "dry_run": True,
+                                 "body": body}, headers=_EXPORT_CORS)
         pr = _ml_request("PUT", "/items/%s" % item_id, json_body=body)
         if pr is None:
             return JSONResponse({"ok": False, "error": "ml_not_connected"},
                                 status_code=502, headers=_EXPORT_CORS)
         if pr.status_code in (200, 201):
-            return JSONResponse({"ok": True, "item_id": item_id, "cantidad": c,
+            return JSONResponse({"ok": True, "item_id": item_id, "set": c,
+                                 "applied_to": applied_to,
                                  "ml_status": pr.status_code},
                                 headers=_EXPORT_CORS)
         try:
             err = pr.json()
         except Exception:
             err = pr.text[:500]
+        txt = (pr.text or "").lower()
+        if "not_modifiable" in txt or "catalog_listing" in txt:
+            return JSONResponse({"ok": False, "skip": True,
+                                 "reason": "closed/catalog",
+                                 "item_id": item_id}, headers=_EXPORT_CORS)
         return JSONResponse({"ok": False, "error": err,
                              "ml_status": pr.status_code}, status_code=502,
                             headers=_EXPORT_CORS)
@@ -1370,23 +1379,64 @@ def _process_sale(canal: str, order_id: str, items: list,
     resultados = []
     for codigo, cantidad in items:
         cantidad = int(cantidad)
-        prows = db._sb_get("inventory_products?code=eq.%s&select=id,code,"
+        prows = db._sb_get("inventory_products?code=eq.%s&select=id,code,name,"
                            "qty_bogota,qty_yopal" % _q_(codigo)) or []
         if not prows:
             resultados.append({"codigo": codigo, "skip": True,
                                "motivo": "no_en_inventario_central"})
             continue
         p = prows[0]
+        pid = p["id"]
+        bog = int(p.get("qty_bogota") or 0)
+        yop = int(p.get("qty_yopal") or 0)
+        # Registro de la venta (descuento del total). Audita el origen del evento.
         mov = db._sb_post("movimiento_stock", {
             "codigo_boun": codigo, "delta": -cantidad,
             "motivo": "venta_%s" % canal, "canal": canal,
             "order_id": str(order_id)})
-        db._sb_post("cola_bodega", {
-            "movimiento_id": (mov or {}).get("id"), "codigo_boun": codigo,
-            "cantidad": cantidad, "estado": "pendiente"})
-        disp = max(0, int(p.get("qty_bogota") or 0) +
-                   int(p.get("qty_yopal") or 0) - _pending_cola(codigo))
+        cola = {"movimiento_id": (mov or {}).get("id"), "codigo_boun": codigo,
+                "nombre": p.get("name"), "cantidad": cantidad,
+                "canal": canal, "order_id": str(order_id)}
+        # ── Auto-asignación de bodega (deducción, no adivinanza) ──────────────
+        if bog <= 0 and yop <= 0:
+            # No salió de bodega propia (venía de ML Full): no descuenta bodega.
+            cola.update({"estado": "full"})
+            db._sb_post("cola_bodega", cola)
+            asignado = "full"
+        elif yop <= 0:
+            # Solo Bogotá tiene stock → solo pudo salir de ahí.
+            bog = max(0, bog - cantidad)
+            db._sb_patch("inventory_products", "id=eq.%d" % pid,
+                         {"qty_bogota": bog})
+            db._sb_post("movimiento_stock", {
+                "codigo_boun": codigo, "delta": -cantidad,
+                "motivo": "asignacion_bodega_bogota", "canal": canal,
+                "order_id": str(order_id)})
+            cola.update({"estado": "confirmado", "bodega_asignada": "bogota",
+                         "auto": True})
+            db._sb_post("cola_bodega", cola)
+            asignado = "bogota(auto)"
+        elif bog <= 0:
+            # Solo Yopal tiene stock.
+            yop = max(0, yop - cantidad)
+            db._sb_patch("inventory_products", "id=eq.%d" % pid,
+                         {"qty_yopal": yop})
+            db._sb_post("movimiento_stock", {
+                "codigo_boun": codigo, "delta": -cantidad,
+                "motivo": "asignacion_bodega_yopal", "canal": canal,
+                "order_id": str(order_id)})
+            cola.update({"estado": "confirmado", "bodega_asignada": "yopal",
+                         "auto": True})
+            db._sb_post("cola_bodega", cola)
+            asignado = "yopal(auto)"
+        else:
+            # Ambas bodegas con stock → ambiguo, lo confirma una persona.
+            cola.update({"estado": "pendiente"})
+            db._sb_post("cola_bodega", cola)
+            asignado = "pendiente"
+        disp = max(0, bog + yop - _pending_cola(codigo))
         resultados.append({"codigo": codigo, "cantidad": cantidad,
+                           "bodega": asignado,
                            "disponible_tras_venta": disp,
                            "plan": _compute_plan(codigo, disp)})
     db._sb_patch("evento_venta", "canal=eq.%s&order_id=eq.%s"
@@ -1722,6 +1772,108 @@ def sync_plan(key: str = "", codigo: str = "", vendidos: int = 0):
     except Exception as e:
         return JSONResponse({"error": str(e)[:200]}, status_code=502,
                             headers=_EXPORT_CORS)
+
+
+# ── Pendientes de bodega (¿de qué bodega salió cada venta?) ──────────────────
+# El disponible TOTAL ya se descontó en la venta; esto solo cuadra de cuál
+# bodega salió. Los casos de una sola bodega con stock se auto-asignan en el
+# motor; aquí quedan únicamente los ambiguos (ambas bodegas con stock).
+
+class ConfirmBodegaIn(BaseModel):
+    bodega: str
+
+
+def _stock_map(codigos: list) -> dict:
+    """{codigo: {name, qty_bogota, qty_yopal}} para una lista de códigos."""
+    out = {}
+    cods = [c for c in dict.fromkeys(codigos) if c]
+    if not cods:
+        return out
+    inlist = ",".join('"%s"' % c.replace('"', '') for c in cods)
+    rows = db._sb_get("inventory_products?code=in.(%s)&select=code,name,"
+                      "qty_bogota,qty_yopal" % _q_(inlist)) or []
+    for r in rows:
+        out[r.get("code")] = {"name": r.get("name"),
+                              "qty_bogota": int(r.get("qty_bogota") or 0),
+                              "qty_yopal": int(r.get("qty_yopal") or 0)}
+    return out
+
+
+@app.get("/api/cola-bodega")
+def cola_bodega_list(user: dict = Depends(_current_user)):
+    rows = db._sb_get("cola_bodega?estado=eq.pendiente&select=id,codigo_boun,"
+                      "nombre,cantidad,canal,order_id,created_at&"
+                      "order=created_at.asc") or []
+    sm = _stock_map([r.get("codigo_boun") for r in rows])
+    out = []
+    for r in rows:
+        s = sm.get(r.get("codigo_boun"), {})
+        out.append({
+            "id": r.get("id"), "codigo_boun": r.get("codigo_boun"),
+            "nombre": r.get("nombre") or s.get("name") or "",
+            "cantidad": int(r.get("cantidad") or 0), "canal": r.get("canal"),
+            "order_id": r.get("order_id"), "created_at": r.get("created_at"),
+            "stock_bogota": s.get("qty_bogota", 0),
+            "stock_yopal": s.get("qty_yopal", 0)})
+    return {"pendientes": out, "total": len(out)}
+
+
+@app.get("/api/cola-bodega/count")
+def cola_bodega_count(user: dict = Depends(_current_user)):
+    rows = db._sb_get("cola_bodega?estado=eq.pendiente&select=id") or []
+    return {"count": len(rows)}
+
+
+@app.post("/api/cola-bodega/{cid}/confirmar")
+def cola_bodega_confirmar(cid: int, data: ConfirmBodegaIn,
+                          user: dict = Depends(_current_user)):
+    bodega = (data.bodega or "").strip().lower()
+    if bodega not in ("bogota", "yopal"):
+        raise HTTPException(400, "bodega debe ser 'bogota' o 'yopal'")
+    rows = db._sb_get("cola_bodega?id=eq.%d&select=id,codigo_boun,cantidad,"
+                      "estado,canal,order_id" % cid) or []
+    if not rows:
+        raise HTTPException(404, "Pendiente no encontrado")
+    c = rows[0]
+    if c.get("estado") != "pendiente":
+        raise HTTPException(409, "Ese pendiente ya fue procesado")
+    prows = db._sb_get("inventory_products?code=eq.%s&select=id,name,qty_bogota,"
+                       "qty_yopal" % _q_(c["codigo_boun"])) or []
+    if not prows:
+        raise HTTPException(404, "Producto no está en el inventario central")
+    p = prows[0]
+    col = "qty_bogota" if bodega == "bogota" else "qty_yopal"
+    actual = int(p.get(col) or 0)
+    cant = int(c.get("cantidad") or 0)
+    if actual < cant:
+        nb = "Bogotá" if bodega == "bogota" else "Yopal"
+        otra = "Yopal" if bodega == "bogota" else "Bogotá"
+        raise HTTPException(400, "%s solo tiene %d; ¿salió de %s?"
+                            % (nb, actual, otra))
+    nuevo = actual - cant
+    db._sb_patch("inventory_products", "id=eq.%d" % p["id"], {col: nuevo})
+    db._sb_post("movimiento_stock", {
+        "codigo_boun": c["codigo_boun"], "delta": -cant,
+        "motivo": "asignacion_bodega_%s" % bodega, "canal": c.get("canal"),
+        "order_id": c.get("order_id")})
+    db._sb_patch("cola_bodega", "id=eq.%d" % cid, {
+        "estado": "confirmado", "bodega_asignada": bodega,
+        "confirmado_at": datetime.now(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ")})
+    return {"ok": True, "id": cid, "bodega": bodega, "saldo_nuevo": nuevo}
+
+
+@app.post("/api/cola-bodega/{cid}/full")
+def cola_bodega_full(cid: int, user: dict = Depends(_current_user)):
+    rows = db._sb_get("cola_bodega?id=eq.%d&select=id,estado" % cid) or []
+    if not rows:
+        raise HTTPException(404, "Pendiente no encontrado")
+    if rows[0].get("estado") != "pendiente":
+        raise HTTPException(409, "Ese pendiente ya fue procesado")
+    db._sb_patch("cola_bodega", "id=eq.%d" % cid, {
+        "estado": "full", "confirmado_at": datetime.now(timezone.utc).strftime(
+            "%Y-%m-%dT%H:%M:%SZ")})
+    return {"ok": True, "id": cid, "estado": "full"}
 
 
 # ── Shopify OAuth (captura del Admin API token de cada tienda) ───────────────

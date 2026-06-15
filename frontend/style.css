@@ -46,6 +46,9 @@ a{color:inherit}
 .nav a:hover{background:var(--hov);color:var(--text)}
 .nav a.active{background:var(--hov);color:var(--acc);border-left-color:var(--acc);
   font-weight:600}
+.navbadge{display:none;float:right;min-width:18px;height:18px;line-height:18px;
+  padding:0 5px;border-radius:9px;background:var(--red);color:#fff;
+  font-size:11px;font-weight:700;text-align:center}
 .userbox{padding:12px 20px;border-top:1px solid var(--border)}
 .userbox .uname{font-size:12px;font-weight:700}
 .userbox .urole{font-size:10px;color:var(--muted)}
