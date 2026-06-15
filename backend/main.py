@@ -764,6 +764,33 @@ def _shopify_orders(shop: str, token: str, since_iso: str,
     return out
 
 
+def _shopify_product_images(shop: str, token: str, product_ids) -> dict:
+    """{str(product_id): url_imagen destacada} para productos Shopify.
+    Las órdenes no traen la imagen, así que se consulta /products.json?ids=."""
+    import requests as _rq
+    out = {}
+    ids = [str(p) for p in product_ids if p]
+    if not ids:
+        return out
+    headers = {"X-Shopify-Access-Token": token}
+    url = "https://%s/admin/api/2025-01/products.json" % shop
+    for i in range(0, len(ids), 250):
+        chunk = ids[i:i + 250]
+        try:
+            r = _rq.get(url, params={"ids": ",".join(chunk),
+                                     "fields": "id,image", "limit": 250},
+                        headers=headers, timeout=20)
+            if r.status_code != 200:
+                continue
+            for p in r.json().get("products", []) or []:
+                src = (p.get("image") or {}).get("src") or ""
+                if src:
+                    out[str(p.get("id"))] = src
+        except Exception:
+            continue
+    return out
+
+
 def _shopify_daily_sales(days: int = 14, date_from: str = None,
                          date_to: str = None) -> dict:
     """Ventas diarias combinadas de las tiendas Shopify (BOUN + KAT)."""
@@ -784,7 +811,7 @@ def _shopify_daily_sales(days: int = 14, date_from: str = None,
         from_d = (to_d - _dt.timedelta(days=days)).replace(
             hour=0, minute=0, second=0, microsecond=0)
     since_iso, until_iso = from_d.isoformat(), to_d.isoformat()
-    by, ok_any, errors = {}, False, []
+    by, ok_any, errors, store_imgs = {}, False, [], {}
     for ckey, shop in _SHOPIFY_SHOPS.items():
         tok = db.get_setting("shopify_token::%s" % shop, "")
         if not tok:
@@ -797,6 +824,7 @@ def _shopify_daily_sales(days: int = 14, date_from: str = None,
                                       str(e)[:80]))
             continue
         tienda = ckey.replace("shopify_", "").upper()
+        pids = set()
         for od in orders:
             ca = od.get("created_at") or ""
             try:
@@ -816,17 +844,26 @@ def _shopify_daily_sales(days: int = 14, date_from: str = None,
                 q = int(li.get("quantity") or 0)
                 b["unidades"] += q
                 nm = (li.get("title") or "").strip()
-                k = "%s|%s" % (tienda, li.get("sku") or nm
-                               or li.get("product_id"))
+                pid = li.get("product_id")
+                if pid:
+                    pids.add(pid)
+                k = "%s|%s" % (tienda, li.get("sku") or nm or pid)
                 e = b["_prod"].setdefault(
-                    k, {"nombre": "[%s] %s" % (tienda, nm), "unidades": 0})
+                    k, {"nombre": "[%s] %s" % (tienda, nm), "unidades": 0,
+                        "pid": pid, "tienda": tienda})
                 e["unidades"] += q
+        # Imágenes de los productos vendidos de esta tienda.
+        try:
+            store_imgs[tienda] = _shopify_product_images(shop, tok, pids)
+        except Exception:
+            store_imgs[tienda] = {}
     dias = sorted(by.values(), key=lambda x: x["fecha"])
     for d in dias:
         d["ingresos"] = round(d["ingresos"], 2)
         top = sorted(d.pop("_prod").values(), key=lambda v: -v["unidades"])
         d["top"] = [{"nombre": t["nombre"], "unidades": t["unidades"],
-                     "img": ""} for t in top]
+                     "img": store_imgs.get(t.get("tienda"), {}).get(
+                         str(t.get("pid")), "")} for t in top]
     if not ok_any:
         return {"ok": False,
                 "error": "Shopify: " + ("; ".join(errors) or "sin tiendas")}
