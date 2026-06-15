@@ -1484,20 +1484,34 @@ async def webhook_ml(request: Request):
 # ── Poller Falabella (cada SYNC_FALABELLA_POLL_SEC) ──────────────────────────
 
 def _falabella_poll_once():
+    """Procesa SOLO órdenes Falabella nuevas (posteriores al watermark), para no
+    reprocesar ventas históricas ya manejadas a mano. Avanza el watermark."""
     import falabella as fb
     import sync as _sync
     if not _sync_enabled() or not fb.is_connected():
         return
     co = timezone(timedelta(hours=-5))
-    since = ((datetime.now(co) - timedelta(days=2))
-             .replace(hour=0, minute=0, second=0, microsecond=0).isoformat())
-    orders = fb.get_orders(since)
-    ids = [str(o.get("OrderId")) for o in orders if o.get("OrderId")]
-    if not ids:
+    wm = db.get_setting("sync_falabella_since", "")
+    if not wm:
+        # primera activación: marca "desde ahora", no reprocesa el histórico
+        db.set_setting("sync_falabella_since",
+                       datetime.now(co).strftime("%Y-%m-%d %H:%M:%S"))
         return
-    items_map = fb._items_by_order(ids)
-    for oid in ids:
-        # dedupe: si ya está procesado, saltar
+    try:
+        since_dt = (datetime.strptime(wm, "%Y-%m-%d %H:%M:%S")
+                    .replace(tzinfo=co) - timedelta(days=1))
+    except Exception:
+        since_dt = datetime.now(co) - timedelta(days=1)
+    orders = fb.get_orders(since_dt.isoformat())
+    nuevas = [o for o in orders if (o.get("CreatedAt", "") > wm)
+              and o.get("OrderId")]
+    if not nuevas:
+        return
+    items_map = fb._items_by_order([str(o["OrderId"]) for o in nuevas])
+    newest = wm
+    for o in nuevas:
+        oid = str(o["OrderId"]); ca = o.get("CreatedAt", "")
+        newest = max(newest, ca)
         ev = db._sb_get("evento_venta?canal=eq.falabella&order_id=eq.%s&"
                         "select=estado" % _q_(oid)) or []
         if ev and ev[0].get("estado") == "procesado":
@@ -1509,7 +1523,9 @@ def _falabella_poll_once():
                 agg[code] = agg.get(code, 0) + 1
         if agg:
             _safe(_process_sale, "falabella", oid, list(agg.items()),
-                  {"poller": "falabella"})
+                  {"poller": "falabella", "created": ca})
+    if newest > wm:
+        db.set_setting("sync_falabella_since", newest)
 
 
 def _falabella_poller():
