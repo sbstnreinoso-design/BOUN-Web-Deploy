@@ -9,9 +9,12 @@ import time
 import threading
 import secrets
 from datetime import datetime, timezone
-from fastapi import FastAPI, HTTPException, Depends, Header
+import hmac as _hmac
+import hashlib as _hashlib
+from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import (FileResponse, JSONResponse, Response,
+                               RedirectResponse, HTMLResponse)
 from pydantic import BaseModel
 from typing import Optional
 
@@ -1338,6 +1341,104 @@ def sync_plan(key: str = "", codigo: str = "", vendidos: int = 0):
     except Exception as e:
         return JSONResponse({"error": str(e)[:200]}, status_code=502,
                             headers=_EXPORT_CORS)
+
+
+# ── Shopify OAuth (captura del Admin API token de cada tienda) ───────────────
+# Instala la app "BOUN Sync Stock" en una tienda y guarda su token en Supabase
+# (app_settings), sin que nadie tenga que copiar el token a mano.
+
+_SHOP_SCOPES = ("read_products,write_products,read_inventory,write_inventory,"
+                "read_orders,read_locations")
+_SHOP_REDIRECT = "https://boun-web-deploy.onrender.com/shopify/callback"
+
+
+def _shopify_app_creds():
+    cid = (db.get_setting("shopify_api_key", "")
+           or os.environ.get("SHOPIFY_API_KEY", ""))
+    sec = (db.get_setting("shopify_api_secret", "")
+           or os.environ.get("SHOPIFY_API_SECRET", ""))
+    return cid, sec
+
+
+@app.get("/shopify/install")
+def shopify_install(shop: str = "", key: str = ""):
+    token = os.environ.get("BOUN_EXPORT_TOKEN", "")
+    if not token or key != token:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    cid, _sec = _shopify_app_creds()
+    if not cid:
+        return JSONResponse({"error": "missing_shopify_api_key"},
+                            status_code=500)
+    shop = (shop or "").strip()
+    if not shop.endswith(".myshopify.com"):
+        return JSONResponse({"error": "bad_shop",
+                             "hint": "usa el dominio .myshopify.com"},
+                            status_code=400)
+    import urllib.parse as _u
+    url = ("https://%s/admin/oauth/authorize?client_id=%s&scope=%s"
+           "&redirect_uri=%s&state=boun" % (
+               shop, cid, _SHOP_SCOPES, _u.quote(_SHOP_REDIRECT, safe="")))
+    return RedirectResponse(url)
+
+
+@app.get("/shopify/callback")
+async def shopify_callback(request: Request):
+    cid, sec = _shopify_app_creds()
+    params = dict(request.query_params)
+    shop = params.get("shop", "")
+    code = params.get("code", "")
+    given_hmac = params.get("hmac", "")
+    if not (cid and sec and shop and code):
+        return HTMLResponse("<h3>Falta configuración o parámetros.</h3>",
+                            status_code=400)
+    # Verificar HMAC del callback
+    msg = "&".join("%s=%s" % (k, params[k]) for k in sorted(params)
+                   if k not in ("hmac", "signature"))
+    calc = _hmac.new(sec.encode(), msg.encode(), _hashlib.sha256).hexdigest()
+    if not _hmac.compare_digest(calc, given_hmac):
+        return HTMLResponse("<h3>HMAC inválido.</h3>", status_code=401)
+    # Intercambiar code por access_token
+    try:
+        import requests as _rq
+        r = _rq.post("https://%s/admin/oauth/access_token" % shop,
+                     json={"client_id": cid, "client_secret": sec,
+                           "code": code}, timeout=20)
+        if r.status_code != 200:
+            return HTMLResponse("<h3>Error al obtener token: %s</h3>"
+                                % r.text[:200], status_code=502)
+        tok = r.json().get("access_token", "")
+        db.set_setting("shopify_token::%s" % shop, tok)
+        # Guardar también el location principal
+        try:
+            lr = _rq.get("https://%s/admin/api/2025-01/locations.json" % shop,
+                         headers={"X-Shopify-Access-Token": tok}, timeout=15)
+            locs = lr.json().get("locations", []) if lr.status_code == 200 else []
+            if locs:
+                db.set_setting("shopify_location::%s" % shop,
+                               str(locs[0].get("id")))
+        except Exception:
+            pass
+        return HTMLResponse(
+            "<h2>✅ Tienda conectada: %s</h2>"
+            "<p>El token quedó guardado de forma segura. Ya puedes cerrar "
+            "esta pestaña.</p>" % shop)
+    except Exception as e:
+        return HTMLResponse("<h3>Error: %s</h3>" % str(e)[:200],
+                            status_code=502)
+
+
+@app.get("/shopify/status")
+def shopify_status(key: str = ""):
+    token = os.environ.get("BOUN_EXPORT_TOKEN", "")
+    if not token or key != token:
+        return JSONResponse({"error": "unauthorized"}, status_code=401,
+                            headers=_EXPORT_CORS)
+    rows = db._sb_get("app_settings?key=like.shopify_*&select=key,value") or []
+    out = {}
+    for r in rows:
+        k = r.get("key", "")
+        out[k] = "***" if ("token" in k or "secret" in k) else r.get("value")
+    return JSONResponse({"configurado": out}, headers=_EXPORT_CORS)
 
 
 # ── Frontend estático ────────────────────────────────────────────────────────
