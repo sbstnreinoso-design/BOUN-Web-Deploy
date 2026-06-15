@@ -184,7 +184,7 @@ function invCard(p){
       <span class="code-chip">📦 ${esc(p.code)}</span>
       <div style="flex:1">
         <div class="inv-name">${esc(p.name)}</div>
-        <div class="inv-meta">${p.n_links} publicación${p.n_links!==1?"es":""} asignada${p.n_links!==1?"s":""}${p.created_by?" · creado por "+esc(p.created_by):""}</div>
+        <div class="inv-meta">${p.n_links} publicación${p.n_links!==1?"es":""} asignada${p.n_links!==1?"s":""} ${chCounts(p.n_by_channel)}${p.created_by?" · creado por "+esc(p.created_by):""}</div>
       </div>
       <button class="btn-ghost" onclick="assignDialog(${p.id})">Asignar publicaciones</button>
       <button class="btn-ghost" onclick="editProduct(${p.id})">✏</button>
@@ -242,26 +242,34 @@ function togglePanel(pid){
   if(el.classList.contains("open")){ el.classList.remove("open"); setArrow(pid,"▸"); return; }
   el.classList.add("open"); setArrow(pid,"▾");
   const p=INV.find(x=>x.id===pid); let links=(p.links||[]).slice();
-  links.sort((a,b)=>{ const ga=a.share_group||"zzz",gb=b.share_group||"zzz";
+  links.sort((a,b)=>{ const ca=CH_ORDER.indexOf(a.channel||"mercadolibre"),cb=CH_ORDER.indexOf(b.channel||"mercadolibre");
+    if(ca!==cb)return ca-cb;
+    const ga=a.share_group||"zzz",gb=b.share_group||"zzz";
     if(ga!==gb)return ga<gb?-1:1; return (+b.ml_sold||0)-(+a.ml_sold||0); });
   const hasG=links.some(l=>l.share_group);
   let html = hasG?`<div class="note">● Las marcadas con el mismo punto comparten stock en ML — se cuentan una sola vez.</div>`:"";
   if(!links.length) html=`<div class="note">Sin publicaciones asignadas.</div>`;
   html += links.map(l=>{
+    const c=l.channel||"mercadolibre", m=chMeta(c), isML=c==="mercadolibre";
     const g=l.share_group, gc=g?GCOLORS[g]||"#3FCB82":"transparent";
     let title=(l.ml_title||l.ml_item_id||""); if(title.length>60)title=title.slice(0,60)+"…";
-    const bits=[l.ml_item_id]; if(+l.ml_margin)bits.push(`margen ${(+l.ml_margin).toFixed(1)}%`);
-    if(+l.ml_roas)bits.push(`ROAS ${(+l.ml_roas).toFixed(2)}x`); if(+l.ml_acos)bits.push(`ACOS ${(+l.ml_acos).toFixed(1)}%`);
+    const bits=[l.ml_item_id];
+    if(isML){ if(+l.ml_margin)bits.push(`margen ${(+l.ml_margin).toFixed(1)}%`);
+      if(+l.ml_roas)bits.push(`ROAS ${(+l.ml_roas).toFixed(2)}x`); if(+l.ml_acos)bits.push(`ACOS ${(+l.ml_acos).toFixed(1)}%`); }
     const url="https://articulo.mercadolibre.com.co/"+(l.ml_item_id||"").replace("MCO","MCO-");
-    return `<div class="pub" style="border-left-color:${gc}">
+    const titleHtml=isML
+      ? `<a href="${url}" target="_blank" style="text-decoration:none;color:var(--text)" title="${esc(l.ml_title||"")}">${esc(title)}</a>`
+      : `<span title="${esc(l.ml_title||"")}">${esc(title)}</span>`;
+    return `<div class="pub" style="border-left:3px solid ${m.col}">
+      ${chBadge(c)}
       ${g?`<span style="color:${gc};font-weight:700;width:16px">●${g}</span>`:""}
       ${l.ml_thumb?`<img src="${l.ml_thumb}">`:`<div style="width:32px;height:32px"></div>`}
-      <div class="ptitle"><a href="${url}" target="_blank" style="text-decoration:none;color:var(--text)" title="${esc(l.ml_title||"")}">${esc(title)}</a>
+      <div class="ptitle">${titleHtml}
         <div class="pmeta">${bits.join("  ·  ")}</div></div>
       ${(+l.ml_price)?`<span style="font-weight:700">${cop(l.ml_price)}</span>`:""}
       ${l.ml_logistic==="fulfillment"?`<span class="badge badge-full">FULL</span>`:""}
       <span class="muted" style="font-size:10px">${Math.round(+l.ml_qty||0)} disp.${g?" (comp.)":""}</span>
-      <span class="green" style="font-size:10px;font-weight:700">${Math.round(+l.ml_sold||0)} vend.</span>
+      ${isML?`<span class="green" style="font-size:10px;font-weight:700">${Math.round(+l.ml_sold||0)} vend.</span>`:""}
     </div>`;
   }).join("");
   el.innerHTML=html;
@@ -300,56 +308,100 @@ async function delProduct(pid){
   try{ await api("/inventory/"+pid,{method:"DELETE"}); renderInventory(); }catch(e){ alert(e.message); }
 }
 
-// asignar publicaciones
-let ASSIGN_ITEMS=[], ASSIGN_SHARE={}, ASSIGN_PID=0;
+// ── asignar publicaciones (multicanal) ──────────────────────────────────────
+// Cada canal se distingue por color: ML ámbar · Falabella azul ·
+// Shopify BOUN verde · Shopify KAT rosa.
+const CHMETA={
+  mercadolibre:{lbl:"MercadoLibre",short:"ML",col:"#E0A23C"},
+  falabella:{lbl:"Falabella",short:"Falabella",col:"#7FB3E0"},
+  shopify_boun:{lbl:"Shopify BOUN",short:"BOUN",col:"#3FCB82"},
+  shopify_kat:{lbl:"Shopify KAT",short:"KAT",col:"#E68CA8"},
+};
+const CH_ORDER=["mercadolibre","falabella","shopify_boun","shopify_kat"];
+function chMeta(c){ return CHMETA[c]||{lbl:c||"—",short:c||"—",col:"var(--muted)"}; }
+function chBadge(c){ const m=chMeta(c);
+  return `<span class="ch-badge" style="background:${m.col}">${esc(m.short)}</span>`; }
+function chCounts(byCh){ if(!byCh)return "";
+  const out=CH_ORDER.filter(c=>byCh[c]).map(c=>{ const m=chMeta(c);
+    return `<span class="ch-count" style="background:${m.col}" title="${esc(m.lbl)}">${esc(m.short)} ${byCh[c]}</span>`; });
+  return out.length?`<span class="ch-counts">${out.join("")}</span>`:""; }
+
+let ASSIGN_ITEMS=[], ASSIGN_SHARE={}, ASSIGN_PID=0, ASSIGN_OK_CH=[],
+    ASSIGN_FILTER="all", ASSIGN_CHST={};
+function aKey(c,id){ return (c||"mercadolibre")+"|"+id; }
 async function assignDialog(pid){
-  ASSIGN_PID=pid; const p=INV.find(x=>x.id===pid);
+  ASSIGN_PID=pid; ASSIGN_FILTER="all"; const p=INV.find(x=>x.id===pid);
   openModal(`<h3>Asignar publicaciones — ${esc(p.code)}</h3>
-    <div class="sub">Marca las publicaciones de MercadoLibre que son este producto físico. Las del mismo «●» comparten stock.</div>
-    <input id="asearch" class="field" placeholder="Buscar publicación…" oninput="filterAssign()">
+    <div class="sub">Marca las publicaciones de cada canal que son este producto físico. Cada canal tiene su color. Las de ML con el mismo «●» comparten stock.</div>
+    <div id="achips" class="ch-chips"></div>
+    <input id="asearch" class="field" placeholder="Buscar por título o ID…" oninput="filterAssign()">
     <div id="aerr" class="err"></div>
-    <div id="alist"><div class="loading"><span class="spinner"></span> Conectando con MercadoLibre…</div></div>
+    <div id="alist"><div class="loading"><span class="spinner"></span> Conectando con los canales…</div></div>
     <button class="btn-primary" onclick="saveAssign()">Guardar asignación</button>`,true);
   try{
     const r=await api("/inventory/items");
-    if(!r.ok){ document.getElementById("alist").innerHTML=`<div class="red">${r.error||"Sin datos"}</div>`; return; }
-    ASSIGN_ITEMS=r.items;
+    if(!r.ok){ document.getElementById("alist").innerHTML=`<div class="red">${r.error||"Ningún canal respondió."}</div>`; return; }
+    ASSIGN_ITEMS=r.items||[];
+    ASSIGN_CHST=r.channels||{};
+    // canales que cargaron OK (para reemplazo selectivo al guardar)
+    ASSIGN_OK_CH=Object.keys(ASSIGN_CHST).filter(c=>ASSIGN_CHST[c]&&ASSIGN_CHST[c].ok);
+    // vínculos actuales por (canal,id)
     const mine=new Set(), other={};
-    (r.links||[]).forEach(l=>{ if(l.product_id===pid)mine.add(l.ml_item_id); else other[l.ml_item_id]=l.product_id; });
-    // grupos compartidos
+    (r.links||[]).forEach(l=>{ const k=aKey(l.channel,l.ml_item_id);
+      if(l.product_id===pid)mine.add(k); else other[k]=l.product_id; });
+    // grupos de stock compartido (solo ML tiene upid/inventory_id)
     const byk={}; ASSIGN_ITEMS.forEach(it=>{ const k=it.upid||it.inventory_id; if(k){(byk[k]=byk[k]||[]).push(it);} });
     ASSIGN_SHARE={}; let li=0; const L="ABCDEFGHIJ";
-    Object.values(byk).forEach(g=>{ if(g.length>1){const lt=L[li++%10]; g.forEach(it=>ASSIGN_SHARE[it.item_id]=lt);} });
-    ASSIGN_ITEMS.forEach(it=>{ it._mine=mine.has(it.item_id); it._other=other[it.item_id]; });
-    ASSIGN_ITEMS.sort((a,b)=>(a.title||"").localeCompare(b.title||""));
-    drawAssign();
+    Object.values(byk).forEach(g=>{ if(g.length>1){const lt=L[li++%10]; g.forEach(it=>ASSIGN_SHARE[aKey(it.channel,it.item_id)]=lt);} });
+    ASSIGN_ITEMS.forEach(it=>{ const k=aKey(it.channel,it.item_id); it._mine=mine.has(k); it._other=other[k]; });
+    // orden: canal (ML, Falabella, BOUN, KAT) y luego título
+    ASSIGN_ITEMS.sort((a,b)=>{ const ca=CH_ORDER.indexOf(a.channel),cb=CH_ORDER.indexOf(b.channel);
+      if(ca!==cb)return ca-cb; return (a.title||"").localeCompare(b.title||""); });
+    drawChips(); drawAssign();
   }catch(e){ document.getElementById("alist").innerHTML=`<div class="red">${e.message}</div>`; }
 }
+function drawChips(){
+  const cnt={}; ASSIGN_ITEMS.forEach(it=>cnt[it.channel]=(cnt[it.channel]||0)+1);
+  const chips=[`<button class="ch-chip ${ASSIGN_FILTER==="all"?"on":""}" onclick="setAssignFilter('all')">Todos (${ASSIGN_ITEMS.length})</button>`];
+  CH_ORDER.forEach(c=>{ const m=chMeta(c), n=cnt[c]||0, st=ASSIGN_CHST[c]||{};
+    const down=st.ok===false;
+    chips.push(`<button class="ch-chip ${ASSIGN_FILTER===c?"on":""}" onclick="setAssignFilter('${c}')" ${down?'title="Este canal no respondió; sus asignaciones se conservan al guardar."':''}>
+      <span class="dot" style="background:${m.col}"></span>${esc(m.lbl)} ${down?"⚠":"("+n+")"}</button>`); });
+  document.getElementById("achips").innerHTML=chips.join("");
+}
+function setAssignFilter(c){ ASSIGN_FILTER=c; drawChips(); drawAssign(val("asearch")); }
 function drawAssign(filter=""){
-  const f=filter.toLowerCase();
+  const f=(filter||"").toLowerCase();
   document.getElementById("alist").innerHTML=ASSIGN_ITEMS.filter(it=>
-    !f || (it.title||"").toLowerCase().includes(f) || (it.item_id||"").toLowerCase().includes(f)
+    (ASSIGN_FILTER==="all"||it.channel===ASSIGN_FILTER) &&
+    (!f || (it.title||"").toLowerCase().includes(f) || (it.item_id||"").toLowerCase().includes(f) || (it.sku||"").toLowerCase().includes(f))
   ).map(it=>{
-    const g=ASSIGN_SHARE[it.item_id], gc=g?GCOLORS[g]||"#3FCB82":"";
-    return `<div class="assign-row">
-      <input type="checkbox" ${it._mine?"checked":""} data-iid="${it.item_id}" style="width:16px;height:16px">
+    const k=aKey(it.channel,it.item_id);
+    const g=ASSIGN_SHARE[k], gc=g?GCOLORS[g]||"#3FCB82":"";
+    const m=chMeta(it.channel);
+    const meta=[it.sku||it.item_id]; if(it.inventory!=null)meta.push(Math.round(+it.inventory||0)+" disp.");
+    return `<div class="assign-row" style="border-left:3px solid ${m.col}">
+      <input type="checkbox" ${it._mine?"checked":""} data-iid="${esc(it.item_id)}" data-ch="${it.channel}" style="width:16px;height:16px">
       ${it.thumbnail?`<img src="${it.thumbnail}">`:`<div style="width:38px;height:38px;background:var(--bg);border-radius:6px"></div>`}
       <div class="t">${esc(it.title||it.item_id)}
-        <div class="m">${it.item_id} · ${it.catalog?"catálogo":"normal"}</div></div>
+        <div class="m">${chBadge(it.channel)} ${esc(meta.join(" · "))}</div></div>
       ${g?`<span style="color:${gc};font-weight:700">●${g}</span>`:""}
       ${it._other?`<span class="amber" style="font-size:10px;border:1px solid var(--amber);border-radius:6px;padding:2px 7px">en otro SKU</span>`:""}
     </div>`;
-  }).join("") || `<div class="loading">Sin resultados.</div>`;
+  }).join("") || `<div class="loading">Sin resultados en este canal.</div>`;
 }
 function filterAssign(){ drawAssign(val("asearch")); }
 async function saveAssign(){
-  const sel=[...document.querySelectorAll("#alist input[type=checkbox]:checked")].map(c=>c.dataset.iid);
-  const byId={}; ASSIGN_ITEMS.forEach(it=>byId[it.item_id]=it);
-  const items=sel.map(iid=>{ const it=byId[iid];
-    return [iid,it.title||"",it.thumbnail||"",it.sold_total||0,it.inventory||0,it.logistic_type||"",
+  const sel=[...document.querySelectorAll("#alist input[type=checkbox]:checked")]
+    .map(c=>aKey(c.dataset.ch,c.dataset.iid));
+  const byKey={}; ASSIGN_ITEMS.forEach(it=>byKey[aKey(it.channel,it.item_id)]=it);
+  const items=sel.map(k=>{ const it=byKey[k]; if(!it) return null;
+    return [it.item_id,it.title||"",it.thumbnail||"",it.sold_total||0,it.inventory||0,it.logistic_type||"",
             it.price||0,it.net_unit||0,it.margin_pct||0,it.ad_roas||0,it.ad_acos||0,it.sold_60d||0,
-            it.inventory_id||"",it.upid||""]; });
-  try{ await api(`/inventory/${ASSIGN_PID}/links`,{method:"POST",body:JSON.stringify({items})});
+            it.inventory_id||"",it.upid||"",it.channel||"mercadolibre"]; }).filter(Boolean);
+  // Solo reemplazamos los canales que cargaron OK; los caídos se conservan.
+  const channels=ASSIGN_OK_CH.length?ASSIGN_OK_CH:CH_ORDER;
+  try{ await api(`/inventory/${ASSIGN_PID}/links`,{method:"POST",body:JSON.stringify({items,channels})});
     closeModal(); renderInventory();
   }catch(e){ document.getElementById("aerr").textContent=e.message; }
 }
