@@ -1046,6 +1046,7 @@ async function renderSettings(){
         <div class="muted" style="font-size:12px;margin-top:6px">Herramienta de análisis de rentabilidad para vendedores en MercadoLibre Colombia. Calcula comisiones, impuestos, margen de ganancia y score de viabilidad.</div>
         <div class="muted" style="font-size:11px;margin-top:6px">Comisiones ML 2024 · Retención en fuente: 2.8% · IVA comisión: 19%</div>
       </div>`;
+    if(adm) scanInit();   // reconecta el progreso si ya hay un escaneo en curso
   }catch(e){ document.getElementById("setBody").innerHTML=`<div class="red">${e.message}</div>`; }
 }
 function setField(label,id,val,ro){
@@ -1118,33 +1119,65 @@ function scanHTML(){
         ${Object.keys(SCAN_CH).map(c=>`<label style="font-size:13px;display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" class="scanch" value="${c}" checked> ${SCAN_CH[c]}</label>`).join("")}
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn-acc" onclick="scanStart('preview')">🔍 Previsualizar escaneo</button>
-        <button class="btn-ghost" onclick="scanStart('apply')">✍ Aplicar correcciones</button>
+        <button id="scanPrevBtn" class="btn-acc" onclick="scanStart('preview')">🔍 Previsualizar escaneo</button>
+        <button id="scanApplyBtn" class="btn-ghost" onclick="scanStart('apply')">✍ Aplicar correcciones</button>
       </div>
       <div id="scanOut" style="margin-top:14px"></div>
     </div>`;
+}
+async function scanInit(){
+  // Al abrir Configuración: si ya hay un escaneo corriendo, reengancha el
+  // progreso en vez de mostrar los botones como si nada; si el último terminó,
+  // muestra su resumen para no perderlo.
+  const out=document.getElementById("scanOut");
+  if(!out) return;
+  let s; try{ s=await api("/sync/scan-status"); }catch(e){ return; }
+  if(s.status==="running") scanPoll();
+  else if(s.status==="done" && s.counts && s.rows_total) out.innerHTML=scanResultHTML(s);
 }
 async function scanStart(mode){
   const chans=[...document.querySelectorAll(".scanch:checked")].map(e=>e.value);
   if(!chans.length){ alert("Elige al menos un canal."); return; }
   if(mode==="apply" && !confirm("Vas a ESCRIBIR stock real en: "+chans.map(scanChLabel).join(", ")+".\n\nCada publicación (excepto Full y catálogo) quedará igualada al disponible de tu inventario, SIN tope de salto. Esto corrige agotadas y desfases en todos los canales elegidos.\n\n¿Confirmas?")) return;
   const out=document.getElementById("scanOut");
+  scanSetBusy(true);
   if(out) out.innerHTML='<div class="loading"><span class="spinner"></span> Iniciando escaneo…</div>';
   try{
     await api("/sync/scan-start",{method:"POST",body:JSON.stringify({mode,channels:chans})});
     scanPoll();
-  }catch(e){ if(out) out.innerHTML=`<div class="red" style="font-size:12px">${esc(e.message)}</div>`; }
+  }catch(e){
+    // 409 = ya hay un escaneo en curso → engancha su progreso en vez de solo el error.
+    if(/curso/i.test(e.message||"")){ scanPoll(); }
+    else { scanSetBusy(false); if(out) out.innerHTML=`<div class="red" style="font-size:12px">${esc(e.message)}</div>`; }
+  }
+}
+function scanSetBusy(busy){
+  // Desactiva/activa los botones de escaneo mientras hay uno en curso.
+  ["scanPrevBtn","scanApplyBtn"].forEach(id=>{
+    const b=document.getElementById(id);
+    if(b){ b.disabled=busy; b.style.opacity=busy?"0.5":""; b.style.cursor=busy?"not-allowed":""; }
+  });
+}
+function scanBar(done,total,mode){
+  const pct=total?Math.round((done||0)/total*100):0;
+  const verbo = mode==="apply" ? "Aplicando" : "Escaneando";
+  return `<div>
+      <div style="font-size:12px;color:var(--muted);margin-bottom:6px"><span class="spinner"></span> ${verbo}… <b>${done||0}/${total||0}</b> productos · ${pct}%</div>
+      <div style="height:9px;background:var(--surf);border:1px solid var(--border);border-radius:6px;overflow:hidden">
+        <div style="height:100%;width:${pct}%;background:var(--acc);border-radius:6px;transition:width .35s ease"></div>
+      </div></div>`;
 }
 async function scanPoll(){
   const out=document.getElementById("scanOut");
   if(!out) return;                         // el usuario salió de Configuración
   let s; try{ s=await api("/sync/scan-status"); }
-  catch(e){ out.innerHTML=`<div class="red" style="font-size:12px">${esc(e.message)}</div>`; return; }
+  catch(e){ scanSetBusy(false); out.innerHTML=`<div class="red" style="font-size:12px">${esc(e.message)}</div>`; return; }
   if(s.status==="running"){
-    const pct=s.total?Math.round((s.done||0)/s.total*100):0;
-    out.innerHTML=`<div class="loading" style="padding:18px"><span class="spinner"></span> Escaneando… ${s.done||0}/${s.total||0} productos (${pct}%)</div>`;
+    scanSetBusy(true);
+    out.innerHTML=scanBar(s.done,s.total,s.mode);
     setTimeout(scanPoll,2000); return;
   }
+  scanSetBusy(false);
   if(s.status==="error"){ out.innerHTML=`<div class="red" style="font-size:12px">Error: ${esc(s.error||"")}</div>`; return; }
   if(s.status==="idle"){ out.innerHTML=""; return; }
   out.innerHTML=scanResultHTML(s);
