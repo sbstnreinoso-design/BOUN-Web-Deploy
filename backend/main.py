@@ -1352,11 +1352,18 @@ _SHOP_SCOPES = ("read_products,write_products,read_inventory,write_inventory,"
 _SHOP_REDIRECT = "https://boun-web-deploy.onrender.com/shopify/callback"
 
 
-def _shopify_app_creds():
-    cid = (db.get_setting("shopify_api_key", "")
-           or os.environ.get("SHOPIFY_API_KEY", ""))
-    sec = (db.get_setting("shopify_api_secret", "")
-           or os.environ.get("SHOPIFY_API_SECRET", ""))
+def _shopify_app_creds(shop: str = ""):
+    """Credenciales de la app Shopify. Por-tienda (shopify_api_key::{shop}) si
+    existen, si no las globales (la app de BOUN). KAT está en otra organización
+    y usa su propia app (creds por-tienda)."""
+    cid = db.get_setting("shopify_api_key::%s" % shop, "") if shop else ""
+    sec = db.get_setting("shopify_api_secret::%s" % shop, "") if shop else ""
+    if not cid:
+        cid = (db.get_setting("shopify_api_key", "")
+               or os.environ.get("SHOPIFY_API_KEY", ""))
+    if not sec:
+        sec = (db.get_setting("shopify_api_secret", "")
+               or os.environ.get("SHOPIFY_API_SECRET", ""))
     return cid, sec
 
 
@@ -1365,11 +1372,11 @@ def shopify_install(shop: str = "", key: str = ""):
     token = os.environ.get("BOUN_EXPORT_TOKEN", "")
     if not token or key != token:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
-    cid, _sec = _shopify_app_creds()
+    shop = (shop or "").strip()
+    cid, _sec = _shopify_app_creds(shop)
     if not cid:
         return JSONResponse({"error": "missing_shopify_api_key"},
                             status_code=500)
-    shop = (shop or "").strip()
     if not shop.endswith(".myshopify.com"):
         return JSONResponse({"error": "bad_shop",
                              "hint": "usa el dominio .myshopify.com"},
@@ -1383,10 +1390,10 @@ def shopify_install(shop: str = "", key: str = ""):
 
 @app.get("/shopify/callback")
 async def shopify_callback(request: Request):
-    cid, sec = _shopify_app_creds()
     params = dict(request.query_params)
     shop = params.get("shop", "")
     code = params.get("code", "")
+    cid, sec = _shopify_app_creds(shop)
     given_hmac = params.get("hmac", "")
     if not (cid and sec and shop and code):
         return HTMLResponse("<h3>Falta configuración o parámetros.</h3>",
