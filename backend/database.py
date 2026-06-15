@@ -69,6 +69,33 @@ def _sb_get(path):
     return None
 
 
+# ── Detección de capacidad: ¿ya existe la columna `channel` en
+# inventory_links? (migración sql/inventory_links_multicanal.sql) ──────────────
+# Permite desplegar el backend ANTES o DESPUÉS de correr el SQL sin romper nada:
+# mientras la columna no exista, todo opera en modo "solo MercadoLibre" (legacy)
+# y la función multicanal se activa SOLA en cuanto la migración corre.
+import time as _time
+_CHCAP = {"ok": None, "ts": 0.0}
+
+
+def channel_supported() -> bool:
+    c = _CHCAP
+    if c["ok"] is True:
+        return True
+    # Reprobar si es desconocido o si la última prueba (negativa) ya tiene >60s.
+    if c["ok"] is None or (_time.time() - c["ts"]) > 60:
+        probe = _sb_get("inventory_links?select=channel&limit=1")
+        c["ts"] = _time.time()
+        c["ok"] = probe is not None
+    return bool(c["ok"])
+
+
+def _ml_only_filter() -> str:
+    """Prefijo de filtro para acotar a MercadoLibre cuando la columna existe.
+    Antes de la migración devuelve '' (todas las filas ya son ML)."""
+    return "channel=eq.mercadolibre&" if channel_supported() else ""
+
+
 def _sb_post(table, payload, upsert=False):
     h = dict(_HDR)
     h["Prefer"] = ("resolution=merge-duplicates,return=representation"
@@ -520,18 +547,26 @@ def inv_list_products() -> list:
     """Productos del inventario con sus publicaciones vinculadas, el
     conteo y la foto de la publicación MÁS VENDIDA (para identificar)."""
     prods = _sb_get("inventory_products?select=*&order=code.asc") or []
-    links = _sb_get("inventory_links?select=product_id,ml_item_id,"
+    _ch = "channel," if channel_supported() else ""
+    links = _sb_get("inventory_links?select=product_id,%sml_item_id,"
                     "ml_title,ml_thumb,ml_sold,ml_qty,ml_logistic,"
                     "ml_price,ml_net,ml_margin,ml_roas,ml_acos,"
-                    "ml_sold60,ml_inventory_id,ml_upid") or []
+                    "ml_sold60,ml_inventory_id,ml_upid" % _ch) or []
     by_prod = {}
     for l in links:
+        # Normaliza el canal (filas viejas pueden venir sin él).
+        l["channel"] = l.get("channel") or "mercadolibre"
         by_prod.setdefault(l.get("product_id"), []).append(l)
     for p in prods:
         ls = sorted(by_prod.get(p["id"], []),
                     key=lambda x: -(x.get("ml_sold") or 0))
         p["links"] = ls
         p["n_links"] = len(ls)
+        # Conteo por canal (para la meta de la tarjeta).
+        p["n_by_channel"] = {}
+        for l in ls:
+            c = l.get("channel") or "mercadolibre"
+            p["n_by_channel"][c] = p["n_by_channel"].get(c, 0) + 1
         p["thumb"] = next((l.get("ml_thumb") for l in ls
                            if l.get("ml_thumb")), "")
         # Marcar GRUPOS de publicaciones que COMPARTEN stock en ML
@@ -632,20 +667,33 @@ def inv_delete_product(pid: int) -> bool:
     return _sb_delete("inventory_products", f"id=eq.{pid}")
 
 
+_INV_LINK_COLS = ("ml_item_id,ml_title,ml_thumb,ml_sold,ml_qty,ml_logistic,"
+                  "ml_price,ml_net,ml_margin,ml_roas,ml_acos,"
+                  "ml_sold60,ml_inventory_id,ml_upid")
+
+
 def inv_get_links() -> list:
-    """Todos los vínculos: [{product_id, ml_item_id, ml_title,
-    ml_thumb, ml_sold}, …]."""
-    return _sb_get("inventory_links?select=product_id,ml_item_id,"
+    """Todos los vínculos de TODOS los canales:
+    [{product_id, channel, ml_item_id, ml_title, ml_thumb, ml_sold}, …].
+    channel ∈ mercadolibre|falabella|shopify_boun|shopify_kat.
+    Pre-migración (sin columna channel) devuelve solo ML con channel inferido."""
+    ch = "channel," if channel_supported() else ""
+    rows = _sb_get("inventory_links?select=product_id,%sml_item_id,"
                    "ml_title,ml_thumb,ml_sold,ml_qty,ml_logistic,"
                    "ml_price,ml_net,ml_margin,ml_roas,ml_acos,"
-                   "ml_sold60,ml_inventory_id,ml_upid") or []
+                   "ml_sold60,ml_inventory_id,ml_upid" % ch) or []
+    for r in rows:
+        if not r.get("channel"):
+            r["channel"] = "mercadolibre"
+    return rows
 
 
 def inv_links_map() -> dict:
-    """ml_item_id → code (para mostrar el chip en Mis Productos)."""
+    """ml_item_id → code, SÓLO MercadoLibre (chip en Mis Productos)."""
     prods = _sb_get("inventory_products?select=id,code") or []
     codes = {p["id"]: p.get("code", "") for p in prods}
-    links = inv_get_links()
+    links = _sb_get("inventory_links?%sselect=product_id,ml_item_id"
+                    % _ml_only_filter()) or []
     return {l["ml_item_id"]: codes.get(l["product_id"], "")
             for l in links if l.get("ml_item_id")}
 
@@ -655,10 +703,12 @@ def inv_refresh_link_stock(stock_map: dict) -> int:
     Actualiza ml_qty/ml_logistic/ml_sold de los vínculos con datos
     frescos de ML. stock_map = {item_id: (qty, logistic, sold)}.
     Solo escribe los que cambiaron. Devuelve nº de actualizados.
+    SÓLO toca vínculos de MercadoLibre (los demás canales no usan este mapa).
     """
-    links = _sb_get("inventory_links?select=id,ml_item_id,ml_qty,"
+    links = _sb_get("inventory_links?%sselect=id,ml_item_id,ml_qty,"
                     "ml_logistic,ml_sold,ml_price,ml_net,ml_margin,"
-                    "ml_roas,ml_acos,ml_sold60,ml_inventory_id,ml_upid") or []
+                    "ml_roas,ml_acos,ml_sold60,ml_inventory_id,ml_upid"
+                    % _ml_only_filter()) or []
     n = 0
     for l in links:
         iid = l.get("ml_item_id")
@@ -709,21 +759,81 @@ def inv_costs_map() -> dict:
                     "cost_shipping") or []
     totals = {p["id"]: float(p.get("cost_product") or 0)
               + float(p.get("cost_shipping") or 0) for p in prods}
-    links = _sb_get("inventory_links?select=product_id,ml_item_id") or []
+    links = _sb_get("inventory_links?%sselect=product_id,ml_item_id"
+                    % _ml_only_filter()) or []
     return {l["ml_item_id"]: totals.get(l["product_id"], 0)
             for l in links if l.get("ml_item_id")}
 
 
-def inv_set_links(pid: int, items: list) -> bool:
+VALID_CHANNELS = ("mercadolibre", "falabella", "shopify_boun", "shopify_kat")
+
+
+def inv_set_links(pid: int, items: list, channels: list = None) -> bool:
     """
-    Define las publicaciones de un producto.
-    items = [(item_id, title, thumb_url, vendidas), …].
-    Una publicación pertenece a UN solo producto: si estaba en otro, se
-    mueve (upsert por ml_item_id único).
+    Define las publicaciones de un producto en uno o varios canales.
+
+    items = [[ext_id, title, thumb, sold, qty, logistic, price, net,
+              margin, roas, acos, sold60, inv_id, upid, channel], …]
+    El campo `channel` (índice 14) identifica el canal de cada publicación
+    (mercadolibre | falabella | shopify_boun | shopify_kat). Si falta, se
+    asume mercadolibre (retrocompatibilidad con el formato viejo).
+
+    `channels` = lista de canales que el diálogo ACTUALMENTE administra. Sólo
+    se REEMPLAZAN los vínculos de esos canales para este producto; los canales
+    que no se incluyan (p. ej. porque su API no respondió al abrir el diálogo)
+    se conservan intactos. Si es None se deducen de los items enviados.
+
+    Una publicación pertenece a UN solo producto dentro de su canal: si estaba
+    en otro, el upsert (on_conflict=channel,ml_item_id) la mueve a este.
     """
-    _sb_delete("inventory_links", f"product_id=eq.{pid}")
+    def _ch(it):
+        c = it[14] if len(it) > 14 else "mercadolibre"
+        return c if c in VALID_CHANNELS else "mercadolibre"
+
+    has_ch = channel_supported()
+
+    if not has_ch:
+        # Pre-migración: la tabla aún es solo-ML. Conservamos el
+        # comportamiento viejo (borrar todo el producto y reescribir SOLO las
+        # publicaciones de MercadoLibre). Las de Falabella/Shopify se ignoran
+        # hasta que corra la migración (entonces ya se podrán guardar).
+        _sb_delete("inventory_links", f"product_id=eq.{pid}")
+        ok = True
+        for it in items:
+            if _ch(it) != "mercadolibre":
+                continue
+            iid, title = it[0], it[1]
+            row = _sb_post("inventory_links?on_conflict=ml_item_id", {
+                "product_id": pid, "ml_item_id": iid,
+                "ml_title": (title or "")[:200],
+                "ml_thumb": (it[2] if len(it) > 2 else "") or "",
+                "ml_sold": (it[3] if len(it) > 3 else 0) or 0,
+                "ml_qty": (it[4] if len(it) > 4 else 0) or 0,
+                "ml_logistic": (it[5] if len(it) > 5 else "") or "",
+                "ml_price": (it[6] if len(it) > 6 else 0) or 0,
+                "ml_net": (it[7] if len(it) > 7 else 0) or 0,
+                "ml_margin": (it[8] if len(it) > 8 else 0) or 0,
+                "ml_roas": (it[9] if len(it) > 9 else 0) or 0,
+                "ml_acos": (it[10] if len(it) > 10 else 0) or 0,
+                "ml_sold60": (it[11] if len(it) > 11 else 0) or 0,
+                "ml_inventory_id": (it[12] if len(it) > 12 else "") or "",
+                "ml_upid": (it[13] if len(it) > 13 else "") or ""},
+                upsert=True)
+            if row is None:
+                ok = False
+        return ok
+
+    # Canales a reemplazar: los declarados, o los presentes en los items.
+    repl = set(c for c in (channels or []) if c in VALID_CHANNELS)
+    if not repl:
+        repl = set(_ch(it) for it in items)
+    # Borra SÓLO los vínculos de este producto en los canales administrados.
+    for c in repl:
+        _sb_delete("inventory_links", f"product_id=eq.{pid}&channel=eq.{c}")
+
     ok = True
     for it in items:
+        ch = _ch(it)
         iid, title = it[0], it[1]
         thumb = it[2] if len(it) > 2 else ""
         sold = it[3] if len(it) > 3 else 0
@@ -737,10 +847,10 @@ def inv_set_links(pid: int, items: list) -> bool:
         sold60 = it[11] if len(it) > 11 else 0
         inv_id = it[12] if len(it) > 12 else ""
         upid = it[13] if len(it) > 13 else ""
-        # on_conflict=ml_item_id → si la publicación estaba en otro
-        # producto, el upsert la mueve a este.
-        row = _sb_post("inventory_links?on_conflict=ml_item_id", {
-            "product_id": pid, "ml_item_id": iid,
+        # on_conflict=channel,ml_item_id → si la publicación estaba en otro
+        # producto (mismo canal), el upsert la mueve a este.
+        row = _sb_post("inventory_links?on_conflict=channel,ml_item_id", {
+            "product_id": pid, "channel": ch, "ml_item_id": iid,
             "ml_title": (title or "")[:200],
             "ml_thumb": thumb or "", "ml_sold": sold or 0,
             "ml_qty": qty or 0, "ml_logistic": logistic or "",

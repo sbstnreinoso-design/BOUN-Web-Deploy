@@ -205,24 +205,91 @@ def inv_delete(pid: int, user: dict = Depends(_admin)):
 
 
 class AssignIn(BaseModel):
-    items: list   # [[item_id,title,thumb,sold,qty,logistic,price,net,
-                  #   margin,roas,acos,sold60,inv_id,upid], …]
+    items: list        # [[ext_id,title,thumb,sold,qty,logistic,price,net,
+                       #   margin,roas,acos,sold60,inv_id,upid,channel], …]
+    channels: list = None   # canales que el diálogo administra (reemplazo
+                            # selectivo). None = deducir de los items.
 
 
 @app.post("/api/inventory/{pid}/links")
 def inv_assign(pid: int, data: AssignIn, user: dict = Depends(_current_user)):
-    return {"ok": db.inv_set_links(pid, data.items)}
+    return {"ok": db.inv_set_links(pid, data.items, data.channels)}
 
 
 @app.get("/api/inventory/items")
 def inventory_items(user: dict = Depends(_current_user)):
-    """Publicaciones de ML (ligero) para asignar, + vínculos actuales."""
-    from ml_scraper import get_my_items_basic
-    r = get_my_items_basic()
+    """Publicaciones de los 4 canales (MercadoLibre, Falabella, Shopify BOUN
+    y Shopify KAT) para asignar al inventario, + vínculos actuales.
+
+    Cada item trae un campo `channel`. `channels` informa, por canal, si su
+    catálogo cargó bien (para que el front conserve los canales que no
+    respondieron y no borre sus vínculos al guardar)."""
+    items = []
+    ch_status = {}
+
+    # ── MercadoLibre ──
+    try:
+        from ml_scraper import get_my_items_basic
+        r = get_my_items_basic()
+        if r.get("ok"):
+            for it in r["items"]:
+                it["channel"] = "mercadolibre"
+                items.append(it)
+            ch_status["mercadolibre"] = {"ok": True, "n": len(r["items"])}
+        else:
+            ch_status["mercadolibre"] = {"ok": False, "error": r.get("error")}
+    except Exception as e:
+        ch_status["mercadolibre"] = {"ok": False, "error": str(e)[:160]}
+
+    # ── Falabella (SellerSku = código BOUN) ──
+    try:
+        import falabella as fb
+        prods = fb.get_products_list()
+        n = 0
+        for x in prods or []:
+            st = (x.get("Status") or "").lower()
+            if st and st in ("deleted", "inactive"):
+                continue
+            sku = x.get("SellerSku") or ""
+            if not sku:
+                continue
+            items.append({
+                "channel": "falabella", "item_id": sku, "sku": sku,
+                "title": x.get("Name") or sku, "thumbnail": "",
+                "inventory": int(float(x.get("Quantity") or 0)),
+                "price": float(x.get("Price") or 0),
+                "sold_total": 0, "logistic_type": "",
+                "net_unit": 0, "margin_pct": 0, "ad_roas": 0,
+                "ad_acos": 0, "sold_60d": 0, "inventory_id": "", "upid": "",
+            })
+            n += 1
+        ch_status["falabella"] = {"ok": True, "n": n}
+    except Exception as e:
+        ch_status["falabella"] = {"ok": False, "error": str(e)[:160]}
+
+    # ── Shopify BOUN + KAT (SKU = código BOUN) ──
+    for ckey, shop in _SHOPIFY_SHOPS.items():
+        try:
+            vs = _shopify_products_list(shop)
+            for v in vs:
+                items.append({
+                    "channel": ckey, "item_id": v["item_id"],
+                    "sku": v.get("sku") or "", "title": v.get("title") or "",
+                    "thumbnail": v.get("thumbnail") or "",
+                    "inventory": int(v.get("inventory") or 0),
+                    "price": float(v.get("price") or 0),
+                    "sold_total": 0, "logistic_type": "", "net_unit": 0,
+                    "margin_pct": 0, "ad_roas": 0, "ad_acos": 0,
+                    "sold_60d": 0, "inventory_id": "", "upid": "",
+                })
+            ch_status[ckey] = {"ok": True, "n": len(vs)}
+        except Exception as e:
+            ch_status[ckey] = {"ok": False, "error": str(e)[:160]}
+
     links = db.inv_get_links()
-    if not r.get("ok"):
-        return {"ok": False, "error": r.get("error"), "links": links}
-    return {"ok": True, "items": r["items"], "links": links}
+    any_ok = any(v.get("ok") for v in ch_status.values())
+    return {"ok": any_ok, "items": items, "links": links,
+            "channels": ch_status}
 
 
 # ── Mis Productos ────────────────────────────────────────────────────────────
@@ -1060,6 +1127,10 @@ def export_inventario(key: str = ""):
     for p in prods:
         pubs = []
         for l in p.get("links", []):
+            # Este export es ML (permalinks MCO, ventas 7d de ML): los demás
+            # canales no aplican aquí.
+            if (l.get("channel") or "mercadolibre") != "mercadolibre":
+                continue
             mco = l.get("ml_item_id") or ""
             thumb = l.get("ml_thumb") or ""
             imagenes = [_img_full(thumb)] if thumb else []
@@ -1478,6 +1549,54 @@ def _shopify_variants_by_sku(shop: str, sku: str) -> list:
         return []
 
 
+def _shopify_products_list(shop: str, limit_pages: int = 8) -> list:
+    """Variantes ACTIVAS de una tienda Shopify (para el diálogo de asignar).
+    Devuelve [{item_id(gid de variante), sku, title, inventory, price,
+    thumbnail}, …]. Paginado y acotado para no colgar la petición."""
+    tok = db.get_setting("shopify_token::%s" % shop, "")
+    if not tok:
+        return []
+    q = ('query($cursor:String){products(first:100,after:$cursor,'
+         'query:"status:active"){pageInfo{hasNextPage endCursor}'
+         'edges{node{title featuredImage{url} variants(first:25){edges{node{'
+         'id title sku inventoryQuantity price}}}}}}}')
+    out, cursor, pages = [], None, 0
+    import requests as _rq
+    while pages < limit_pages:
+        try:
+            r = _rq.post("https://%s/admin/api/2025-01/graphql.json" % shop,
+                         json={"query": q, "variables": {"cursor": cursor}},
+                         headers={"X-Shopify-Access-Token": tok}, timeout=20)
+            if r.status_code != 200:
+                break
+            data = (r.json().get("data") or {}).get("products") or {}
+        except Exception:
+            break
+        for e in (data.get("edges") or []):
+            n = e.get("node") or {}
+            ptitle = n.get("title") or ""
+            thumb = (n.get("featuredImage") or {}).get("url") or ""
+            for ve in ((n.get("variants") or {}).get("edges") or []):
+                vn = ve.get("node") or {}
+                vt = vn.get("title") or ""
+                full = ptitle if (not vt or vt == "Default Title") \
+                    else "%s · %s" % (ptitle, vt)
+                out.append({
+                    "item_id": vn.get("id") or "",
+                    "sku": vn.get("sku") or "",
+                    "title": full,
+                    "thumbnail": thumb,
+                    "inventory": vn.get("inventoryQuantity") or 0,
+                    "price": float(vn.get("price") or 0),
+                })
+        pi = data.get("pageInfo") or {}
+        pages += 1
+        if not pi.get("hasNextPage"):
+            break
+        cursor = pi.get("endCursor")
+    return out
+
+
 _SHOP_LOC = {}
 
 
@@ -1548,8 +1667,9 @@ def _shopify_set_inventory(shop: str, tok: str, inv_item: str, location: str,
 
 def _ml_active_pubs(product_id: int) -> tuple:
     """(activas[{key,ventas}], excluidas[]) de ML para un producto (no-Full)."""
-    links = db._sb_get("inventory_links?product_id=eq.%d&select=ml_item_id,"
-                       "ml_sold60,ml_logistic" % product_id) or []
+    links = db._sb_get("inventory_links?product_id=eq.%d&%sselect=ml_item_id,"
+                       "ml_sold60,ml_logistic"
+                       % (product_id, db._ml_only_filter())) or []
     activas, excl = [], []
     for l in links:
         iid = l.get("ml_item_id")
@@ -1832,8 +1952,8 @@ def _sync_enabled() -> bool:
 
 def _ml_code_for_item(item_id: str) -> str:
     """código BOUN de una publicación ML (vía inventory_links → product code)."""
-    links = db._sb_get("inventory_links?ml_item_id=eq.%s&select=product_id"
-                       % _q_(item_id)) or []
+    links = db._sb_get("inventory_links?ml_item_id=eq.%s&%sselect=product_id"
+                       % (_q_(item_id), db._ml_only_filter())) or []
     if not links:
         return ""
     p = db._sb_get("inventory_products?id=eq.%d&select=code"
@@ -1845,8 +1965,8 @@ def _ml_item_full(item_id: str) -> bool:
     """¿La publicación ML vendida es Full? Usa el logistic_type guardado en
     inventory_links (=fulfillment). Si no hay dato, asume que NO (la lógica de
     bodega decide)."""
-    links = db._sb_get("inventory_links?ml_item_id=eq.%s&select=ml_logistic"
-                       % _q_(item_id)) or []
+    links = db._sb_get("inventory_links?ml_item_id=eq.%s&%sselect=ml_logistic"
+                       % (_q_(item_id), db._ml_only_filter())) or []
     return bool(links) and (links[0].get("ml_logistic") == "fulfillment")
 
 
@@ -2199,8 +2319,8 @@ def sync_plan(key: str = "", codigo: str = "", vendidos: int = 0):
 
         # ── MercadoLibre: publicaciones activas no-Full del código ──
         links = db._sb_get(
-            "inventory_links?product_id=eq.%d&select=ml_item_id,ml_sold60,"
-            "ml_logistic" % p["id"]) or []
+            "inventory_links?product_id=eq.%d&%sselect=ml_item_id,ml_sold60,"
+            "ml_logistic" % (p["id"], db._ml_only_filter())) or []
         ml_pubs, ml_excluidas = [], []
         for l in links:
             iid = l.get("ml_item_id")
