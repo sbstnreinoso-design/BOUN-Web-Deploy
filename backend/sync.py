@@ -109,6 +109,12 @@ def _build_fal_map():
 # {codigo_boun (normalizado): [{seller_sku, fal_id}, …]}
 FAL_MAP = _build_fal_map()
 
+# {seller_sku → codigo_boun}  (para el poller: mapear ventas Falabella al centro)
+FAL_SKU_TO_BOUN = {}
+for _cod, _lst in FAL_MAP.items():
+    for _f in _lst:
+        FAL_SKU_TO_BOUN[_f["seller_sku"]] = _cod
+
 
 def falabella_skus(codigo_boun: str) -> list:
     return FAL_MAP.get(_norm(codigo_boun), [])

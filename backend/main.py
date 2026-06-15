@@ -6,9 +6,11 @@ sirve el frontend carbón.
 """
 import os
 import time
+import json
+import base64
 import threading
 import secrets
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import hmac as _hmac
 import hashlib as _hashlib
 from fastapi import FastAPI, HTTPException, Depends, Header, Request
@@ -1390,6 +1392,136 @@ def _process_sale(canal: str, order_id: str, items: list,
                       _dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
     return {"ok": True, "dry_run": True, "canal": canal, "order_id": order_id,
             "resultados": resultados}
+
+
+def _sync_enabled() -> bool:
+    """Interruptor maestro de la ingestión automática (poller + webhooks).
+    Apagado por defecto: el motor queda desplegado pero no procesa ventas reales
+    hasta activarlo (setting sync_enabled=1). /api/sync/simular siempre funciona."""
+    return (db.get_setting("sync_enabled", "") == "1"
+            or os.environ.get("SYNC_ENABLED", "") == "1")
+
+
+def _ml_code_for_item(item_id: str) -> str:
+    """código BOUN de una publicación ML (vía inventory_links → product code)."""
+    links = db._sb_get("inventory_links?ml_item_id=eq.%s&select=product_id"
+                       % _q_(item_id)) or []
+    if not links:
+        return ""
+    p = db._sb_get("inventory_products?id=eq.%d&select=code"
+                   % links[0]["product_id"]) or []
+    return p[0]["code"] if p else ""
+
+
+def _process_async(canal, order_id, items, payload=None):
+    threading.Thread(target=lambda: _safe(_process_sale, canal, order_id,
+                                          items, payload), daemon=True).start()
+
+
+def _safe(fn, *a, **k):
+    try:
+        fn(*a, **k)
+    except Exception:
+        pass
+
+
+# ── Webhooks (responden 200 rápido; el pipeline corre en hilo) ───────────────
+
+@app.post("/webhooks/shopify/{tienda}")
+async def webhook_shopify(tienda: str, request: Request):
+    shop = _SHOPIFY_SHOPS.get("shopify_%s" % tienda)
+    if not shop:
+        return Response(status_code=404)
+    _cid, sec = _shopify_app_creds(shop)
+    raw = await request.body()
+    given = request.headers.get("x-shopify-hmac-sha256", "")
+    calc = base64.b64encode(
+        _hmac.new(sec.encode(), raw, _hashlib.sha256).digest()).decode()
+    if not (sec and given and _hmac.compare_digest(calc, given)):
+        return Response(status_code=401)
+    try:
+        data = json.loads(raw or b"{}")
+        oid = str(data.get("id") or data.get("order_id") or "")
+        items = [((li.get("sku") or "").strip(), int(li.get("quantity") or 0))
+                 for li in data.get("line_items", [])
+                 if (li.get("sku") or "").strip() and li.get("quantity")]
+        if oid and items and _sync_enabled():
+            _process_async("shopify_%s" % tienda, oid, items,
+                           {"webhook": "shopify"})
+    except Exception:
+        pass
+    return Response(status_code=200)
+
+
+@app.post("/webhooks/mercadolibre")
+async def webhook_ml(request: Request):
+    try:
+        data = await request.json()
+    except Exception:
+        data = {}
+    resource = data.get("resource", "") or ""
+    # solo órdenes
+    if "/orders/" in resource and _sync_enabled():
+        oid = resource.rstrip("/").split("/")[-1]
+
+        def _work():
+            r = _ml_request("GET", "/orders/%s" % oid)
+            if not r or r.status_code != 200:
+                return
+            items = []
+            for oi in r.json().get("order_items", []):
+                iid = (oi.get("item") or {}).get("id")
+                qty = int(oi.get("quantity") or 0)
+                code = _ml_code_for_item(iid) if iid else ""
+                if code and qty:
+                    items.append((code, qty))
+            if items:
+                _safe(_process_sale, "ml", oid, items, {"webhook": "ml"})
+        threading.Thread(target=_work, daemon=True).start()
+    return Response(status_code=200)
+
+
+# ── Poller Falabella (cada SYNC_FALABELLA_POLL_SEC) ──────────────────────────
+
+def _falabella_poll_once():
+    import falabella as fb
+    import sync as _sync
+    if not _sync_enabled() or not fb.is_connected():
+        return
+    co = timezone(timedelta(hours=-5))
+    since = ((datetime.now(co) - timedelta(days=2))
+             .replace(hour=0, minute=0, second=0, microsecond=0).isoformat())
+    orders = fb.get_orders(since)
+    ids = [str(o.get("OrderId")) for o in orders if o.get("OrderId")]
+    if not ids:
+        return
+    items_map = fb._items_by_order(ids)
+    for oid in ids:
+        # dedupe: si ya está procesado, saltar
+        ev = db._sb_get("evento_venta?canal=eq.falabella&order_id=eq.%s&"
+                        "select=estado" % _q_(oid)) or []
+        if ev and ev[0].get("estado") == "procesado":
+            continue
+        agg = {}
+        for nm, sku in items_map.get(oid, []):
+            code = _sync.FAL_SKU_TO_BOUN.get(sku)
+            if code:
+                agg[code] = agg.get(code, 0) + 1
+        if agg:
+            _safe(_process_sale, "falabella", oid, list(agg.items()),
+                  {"poller": "falabella"})
+
+
+def _falabella_poller():
+    sec = int(os.environ.get("SYNC_FALABELLA_POLL_SEC", "180") or 180)
+    while True:
+        _safe(_falabella_poll_once)
+        time.sleep(max(60, sec))
+
+
+@app.on_event("startup")
+def _start_poller():
+    threading.Thread(target=_falabella_poller, daemon=True).start()
 
 
 @app.get("/api/sync/simular")
