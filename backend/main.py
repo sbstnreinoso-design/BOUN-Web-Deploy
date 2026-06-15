@@ -1749,7 +1749,7 @@ def _sync_apply_max_delta():
 
 
 def _apply_plan(codigo: str, plan: dict, order_id: str = "",
-                dry: bool = False, force=None) -> dict:
+                dry: bool = False, force=None, ignore_delta: bool = False) -> dict:
     """Aplica el plan de reparto SOLO a los canales en la lista blanca
     (`_sync_apply_channels`), o a `force` si se pasa (para previsualizar).
 
@@ -1758,9 +1758,11 @@ def _apply_plan(codigo: str, plan: dict, order_id: str = "",
     - Cada escritura se audita best-effort en la tabla `sync_aplicacion`
       (si no existe aún, `_sb_post` falla en silencio y no rompe el flujo).
     - `dry=True` calcula y devuelve lo que escribiría, sin enviar nada.
+    - `ignore_delta=True` desactiva el tope de salto (lo usa el escaneo de
+      reconciliación para poder rellenar agotadas grandes 0→N).
     """
     permitidos = set(force) if force else _sync_apply_channels()
-    max_delta = _sync_apply_max_delta()
+    max_delta = None if ignore_delta else _sync_apply_max_delta()
     out = {"permitidos": sorted(permitidos), "dry": dry, "canales": {}}
     if not permitidos:
         return out  # nadie habilitado → no escribe (DRY-RUN puro)
@@ -2281,6 +2283,156 @@ def sync_apply_config(data: ApplyConfigIn, user: dict = Depends(_admin)):
     return {"ok": True, "channels": canales,
             "max_delta": _sync_apply_max_delta(),
             "dry_run": not bool(canales)}
+
+
+# ── Motor de sincronización — ESCANEO de reconciliación (Web → canales) ───────
+# Recorre TODO el inventario central y alinea cada publicación de los canales
+# elegidos al disponible vendible (Bogotá+Yopal−pendientes) de la web BOUN, que
+# es la fuente de verdad. Salta Full y catálogo (guardas del escritor). Sin tope
+# de salto (ignore_delta) para poder rellenar agotadas grandes 0→N. Corre en
+# segundo plano (thread) para no chocar con timeouts del proxy; el avance y el
+# resultado se consultan con /api/sync/scan-status.
+
+_SCAN_STATE = {"status": "idle"}        # idle | running | done | error
+_SCAN_LOCK = threading.Lock()
+
+
+def _scan_row(canal: str, r: dict, dry: bool) -> dict:
+    """Normaliza el resultado de un escritor (ML/Falabella/Shopify) a una fila
+    legible: actual → objetivo + acción."""
+    ref = (r.get("item_id") or r.get("sku") or r.get("ref")
+           or r.get("inv_item") or "")
+    actual, objetivo = r.get("actual"), r.get("set")
+    if r.get("skip"):
+        accion = "saltado:%s" % (r.get("reason") or "")
+    elif not r.get("ok"):
+        accion = "error"
+    elif actual is not None and objetivo is not None:
+        accion = "sin_cambio" if int(actual) == int(objetivo) else \
+                 ("cambiaria" if dry else "escrito")
+    else:
+        # Falabella no expone snapshot del stock actual → escribe el absoluto.
+        accion = "escribiria" if dry else "escrito"
+    return {"canal": canal, "ref": str(ref), "actual": actual,
+            "objetivo": objetivo, "accion": accion,
+            "detalle": str(r.get("error") or "")[:160]}
+
+
+def _scan_reconcile(channels: set, dry: bool):
+    """Núcleo del escaneo. Recorre todos los productos del inventario central,
+    calcula el disponible y alinea las publicaciones de `channels`. Va volcando
+    progreso y filas en `_SCAN_STATE`. No relanza: deja el error en el estado."""
+    prods = db._sb_get("inventory_products?select=code,qty_bogota,qty_yopal"
+                       "&order=code") or []
+    total = len(prods)
+    counts = {"cambios": 0, "sin_cambio": 0, "saltados": 0,
+              "errores": 0, "escritos": 0}
+    rows = []
+    _SCAN_STATE.clear()
+    _SCAN_STATE.update({
+        "status": "running", "mode": "preview" if dry else "apply",
+        "channels": sorted(channels), "done": 0, "total": total,
+        "counts": counts, "rows": rows,
+        "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
+    for i, p in enumerate(prods, 1):
+        codigo = p.get("code") or ""
+        bog = int(p.get("qty_bogota") or 0)
+        yop = int(p.get("qty_yopal") or 0)
+        disp = max(0, bog + yop - _pending_cola(codigo))
+        try:
+            plan = _compute_plan(codigo, disp)
+            res = _apply_plan(codigo, plan, order_id="scan", dry=dry,
+                              force=channels, ignore_delta=True)
+        except Exception as e:
+            counts["errores"] += 1
+            rows.append({"codigo": codigo, "canal": "-", "ref": "", "actual": None,
+                         "objetivo": None, "accion": "error",
+                         "detalle": str(e)[:160], "disponible": disp})
+            _SCAN_STATE["done"] = i
+            continue
+        for canal, lst in (res.get("canales") or {}).items():
+            for r in (lst or []):
+                row = _scan_row(canal, r, dry)
+                row["codigo"] = codigo
+                row["disponible"] = disp
+                rows.append(row)
+                a = row["accion"]
+                if a == "escrito":
+                    counts["cambios"] += 1
+                    counts["escritos"] += 1
+                elif a in ("cambiaria", "escribiria"):
+                    counts["cambios"] += 1
+                elif a == "sin_cambio":
+                    counts["sin_cambio"] += 1
+                elif a.startswith("saltado"):
+                    counts["saltados"] += 1
+                else:
+                    counts["errores"] += 1
+        _SCAN_STATE["done"] = i
+    _SCAN_STATE["status"] = "done"
+    _SCAN_STATE["finished_at"] = datetime.now(timezone.utc).strftime(
+        "%Y-%m-%dT%H:%M:%SZ")
+    _safe(db.set_setting, "sync_scan_last", json.dumps({
+        "mode": _SCAN_STATE["mode"], "channels": _SCAN_STATE["channels"],
+        "counts": counts, "total": total,
+        "finished_at": _SCAN_STATE["finished_at"]}))
+
+
+def _scan_run_bg(channels: set, dry: bool):
+    try:
+        _scan_reconcile(channels, dry)
+    except Exception as e:
+        _SCAN_STATE.update({"status": "error", "error": str(e)[:200]})
+    finally:
+        if _SCAN_LOCK.locked():
+            _SCAN_LOCK.release()
+
+
+class ScanStartIn(BaseModel):
+    mode: str = "preview"                 # "preview" (no escribe) | "apply"
+    channels: Optional[list] = None       # default: los 4 canales
+
+
+@app.post("/api/sync/scan-start")
+def sync_scan_start(data: ScanStartIn, user: dict = Depends(_admin)):
+    """Inicia un escaneo de reconciliación en segundo plano. mode='preview' no
+    escribe nada (solo calcula actual→objetivo); mode='apply' escribe el
+    disponible real en cada publicación de los canales elegidos (salta Full y
+    catálogo, sin tope de salto). Avanza con /api/sync/scan-status."""
+    dry = (data.mode or "preview") != "apply"
+    chans = ({str(c).strip() for c in (data.channels or []) if str(c).strip()}
+             or set(_APPLY_CHANNELS_VALIDOS))
+    invalidos = chans - _APPLY_CHANNELS_VALIDOS
+    if invalidos:
+        raise HTTPException(400, "Canales no válidos: %s"
+                            % ", ".join(sorted(invalidos)))
+    if not _SCAN_LOCK.acquire(blocking=False):
+        raise HTTPException(409, "Ya hay un escaneo en curso")
+    threading.Thread(target=_scan_run_bg, args=(chans, dry),
+                     daemon=True).start()
+    return {"ok": True, "started": True, "mode": "preview" if dry else "apply",
+            "channels": sorted(chans)}
+
+
+@app.get("/api/sync/scan-status")
+def sync_scan_status(user: dict = Depends(_admin)):
+    """Estado y avance del último escaneo (admin). Para no inflar la respuesta,
+    devuelve solo las filas con cambio o incidencia (omite las 'sin_cambio')."""
+    s = dict(_SCAN_STATE)
+    # snapshot defensivo: el thread sigue haciendo append a la misma lista, y
+    # copiar una lista que crece puede lanzar RuntimeError en CPython → reintenta.
+    src = s.get("rows") or []
+    for _ in range(3):
+        try:
+            rows = list(src)
+            break
+        except RuntimeError:
+            time.sleep(0.05)
+    else:
+        rows = []
+    s["rows"] = [r for r in rows if r.get("accion") != "sin_cambio"]
+    s["rows_total"] = len(rows)
+    return s
 
 
 # ── Motor de sincronización — PLAN en DRY-RUN (no escribe en ningún canal) ────
