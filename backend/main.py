@@ -1357,12 +1357,16 @@ def _process_sale(canal: str, order_id: str, items: list,
     import datetime as _dt
     ev = db._sb_get("evento_venta?canal=eq.%s&order_id=eq.%s&select=id,estado"
                     % (_q_(canal), _q_(order_id))) or []
-    if ev and ev[0].get("estado") == "procesado":
+    # idempotencia: si ya está procesado o en curso, no volver a descontar
+    if ev and ev[0].get("estado") in ("procesado", "procesando"):
         return {"ok": True, "idempotente": True, "canal": canal,
-                "order_id": order_id}
+                "order_id": order_id, "estado": ev[0].get("estado")}
     if not ev:
         db._sb_post("evento_venta", {"canal": canal, "order_id": str(order_id),
-                                     "estado": "recibido", "payload": payload})
+                                     "estado": "procesando", "payload": payload})
+    else:
+        db._sb_patch("evento_venta", "canal=eq.%s&order_id=eq.%s"
+                     % (_q_(canal), _q_(order_id)), {"estado": "procesando"})
     resultados = []
     for codigo, cantidad in items:
         cantidad = int(cantidad)
