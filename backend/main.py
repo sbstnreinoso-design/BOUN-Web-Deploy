@@ -2253,12 +2253,16 @@ def sync_apply_status(user: dict = Depends(_admin)):
     return {"ok": True, "channels": canales,
             "max_delta": _sync_apply_max_delta(),
             "dry_run": not bool(canales),
+            "scan_daily": _scan_daily_enabled(),
+            "scan_daily_hour": _scan_daily_hour(),
             "validos": sorted(_APPLY_CHANNELS_VALIDOS)}
 
 
 class ApplyConfigIn(BaseModel):
     channels: Optional[list] = None       # lista blanca de escritura ([] = kill-switch)
     max_delta: Optional[int] = None       # tope de salto por publicación (0/None = sin tope)
+    scan_daily: Optional[bool] = None     # escaneo de reconciliación automático diario
+    scan_daily_hour: Optional[int] = None # hora local Colombia (0-23) del escaneo diario
 
 
 @app.post("/api/sync/apply-config")
@@ -2279,9 +2283,18 @@ def sync_apply_config(data: ApplyConfigIn, user: dict = Depends(_admin)):
         if data.max_delta < 0:
             raise HTTPException(400, "max_delta no puede ser negativo")
         db.set_setting("sync_apply_max_delta", str(int(data.max_delta)))
+    if data.scan_daily is not None:
+        db.set_setting("sync_scan_daily", "1" if data.scan_daily else "0")
+    if data.scan_daily_hour is not None:
+        h = int(data.scan_daily_hour)
+        if not (0 <= h <= 23):
+            raise HTTPException(400, "hora debe estar entre 0 y 23")
+        db.set_setting("sync_scan_daily_hour", str(h))
     canales = sorted(_sync_apply_channels())
     return {"ok": True, "channels": canales,
             "max_delta": _sync_apply_max_delta(),
+            "scan_daily": _scan_daily_enabled(),
+            "scan_daily_hour": _scan_daily_hour(),
             "dry_run": not bool(canales)}
 
 
@@ -2318,7 +2331,7 @@ def _scan_row(canal: str, r: dict, dry: bool) -> dict:
             "detalle": str(r.get("error") or "")[:160]}
 
 
-def _scan_reconcile(channels: set, dry: bool):
+def _scan_reconcile(channels: set, dry: bool, tag: str = "scan"):
     """Núcleo del escaneo. Recorre todos los productos del inventario central,
     calcula el disponible y alinea las publicaciones de `channels`. Va volcando
     progreso y filas en `_SCAN_STATE`. No relanza: deja el error en el estado."""
@@ -2341,7 +2354,7 @@ def _scan_reconcile(channels: set, dry: bool):
         disp = max(0, bog + yop - _pending_cola(codigo))
         try:
             plan = _compute_plan(codigo, disp)
-            res = _apply_plan(codigo, plan, order_id="scan", dry=dry,
+            res = _apply_plan(codigo, plan, order_id=tag, dry=dry,
                               force=channels, ignore_delta=True)
         except Exception as e:
             counts["errores"] += 1
@@ -2433,6 +2446,54 @@ def sync_scan_status(user: dict = Depends(_admin)):
     s["rows"] = [r for r in rows if r.get("accion") != "sin_cambio"]
     s["rows_total"] = len(rows)
     return s
+
+
+# ── Escaneo de reconciliación — AUTOMÁTICO diario (servidor) ─────────────────
+# Corre el escaneo en modo Aplicar una vez al día a la hora configurada (hora
+# Colombia, UTC-5). Idempotente por fecha (setting sync_scan_daily_last) para no
+# repetir aunque el proceso reinicie por un cold-start. Respeta _SCAN_LOCK.
+
+def _scan_daily_enabled() -> bool:
+    return (db.get_setting("sync_scan_daily", "") == "1"
+            or os.environ.get("SYNC_SCAN_DAILY", "") == "1")
+
+
+def _scan_daily_hour() -> int:
+    try:
+        h = int(db.get_setting("sync_scan_daily_hour", "") or "4")
+        return h if 0 <= h <= 23 else 4
+    except Exception:
+        return 4
+
+
+def _scan_daily_loop():
+    import datetime as _dt
+    while True:
+        try:
+            if _scan_daily_enabled():
+                # Hora local Colombia (UTC-5, sin horario de verano).
+                now_co = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=5)
+                hoy = now_co.strftime("%Y-%m-%d")
+                if (now_co.hour == _scan_daily_hour()
+                        and db.get_setting("sync_scan_daily_last", "") != hoy):
+                    # Marca la fecha ANTES de correr → si reinicia a media corrida
+                    # no la repite hoy. El escaneo es idempotente igual.
+                    db.set_setting("sync_scan_daily_last", hoy)
+                    if _SCAN_LOCK.acquire(blocking=False):
+                        try:
+                            _scan_reconcile(set(_APPLY_CHANNELS_VALIDOS),
+                                            dry=False, tag="scan-auto")
+                        finally:
+                            if _SCAN_LOCK.locked():
+                                _SCAN_LOCK.release()
+        except Exception:
+            pass
+        time.sleep(60)   # revisa cada minuto
+
+
+@app.on_event("startup")
+def _start_scan_daily():
+    threading.Thread(target=_scan_daily_loop, daemon=True).start()
 
 
 # ── Motor de sincronización — PLAN en DRY-RUN (no escribe en ningún canal) ────
