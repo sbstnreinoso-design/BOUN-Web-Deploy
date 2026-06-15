@@ -2116,6 +2116,52 @@ def sync_apply_preview(key: str = "", codigo: str = "", vendidos: int = 0,
                             headers=_EXPORT_CORS)
 
 
+# ── Activación de la escritura real — toggle admin (sin SQL) ─────────────────
+
+_APPLY_CHANNELS_VALIDOS = {"mercadolibre", "falabella",
+                           "shopify_boun", "shopify_kat"}
+
+
+@app.get("/api/sync/apply-status")
+def sync_apply_status(user: dict = Depends(_admin)):
+    """Estado actual de la propagación real: qué canales escriben, el tope de
+    salto y si el motor está en DRY-RUN. Solo lectura (admin)."""
+    canales = sorted(_sync_apply_channels())
+    return {"ok": True, "channels": canales,
+            "max_delta": _sync_apply_max_delta(),
+            "dry_run": not bool(canales),
+            "validos": sorted(_APPLY_CHANNELS_VALIDOS)}
+
+
+class ApplyConfigIn(BaseModel):
+    channels: Optional[list] = None       # lista blanca de escritura ([] = kill-switch)
+    max_delta: Optional[int] = None       # tope de salto por publicación (0/None = sin tope)
+
+
+@app.post("/api/sync/apply-config")
+def sync_apply_config(data: ApplyConfigIn, user: dict = Depends(_admin)):
+    """Prende/apaga la escritura real por canal SIN tocar SQL ni redeploy.
+    - channels=[] → DRY-RUN (kill-switch instantáneo).
+    - channels=['mercadolibre'] → solo ML escribe.
+    Valida contra la lista de canales soportados. Devuelve el estado resultante.
+    """
+    if data.channels is not None:
+        pedidos = {str(c).strip() for c in data.channels if str(c).strip()}
+        invalidos = pedidos - _APPLY_CHANNELS_VALIDOS
+        if invalidos:
+            raise HTTPException(400, "Canales no válidos: %s"
+                                % ", ".join(sorted(invalidos)))
+        db.set_setting("sync_apply_channels", ",".join(sorted(pedidos)))
+    if data.max_delta is not None:
+        if data.max_delta < 0:
+            raise HTTPException(400, "max_delta no puede ser negativo")
+        db.set_setting("sync_apply_max_delta", str(int(data.max_delta)))
+    canales = sorted(_sync_apply_channels())
+    return {"ok": True, "channels": canales,
+            "max_delta": _sync_apply_max_delta(),
+            "dry_run": not bool(canales)}
+
+
 # ── Motor de sincronización — PLAN en DRY-RUN (no escribe en ningún canal) ────
 
 @app.options("/api/sync/plan")

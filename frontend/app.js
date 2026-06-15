@@ -958,6 +958,7 @@ async function renderSettings(){
   try{
     const st=await api("/ml-status"); const cf=await api("/settings");
     const adm=isAdmin(), ro=adm?"":"disabled";
+    let aps=null; if(adm){ try{ aps=await api("/sync/apply-status"); }catch(e){} }
     document.getElementById("setBody").innerHTML=`
       <div class="set-sec">INFORMACIÓN DE LA EMPRESA</div>
       <div class="set-grid">
@@ -979,6 +980,8 @@ async function renderSettings(){
         <button class="btn-ghost" onclick="mlAdvanced(${cf.has_secret})">Configuración avanzada (APP ID y Secret)</button>
       </div>`:`<div class="muted" style="font-size:11px">La conexión la administra el administrador.</div>`}
 
+      ${adm&&aps?syncApplyHTML(aps):""}
+
       <div class="set-sec" style="margin-top:24px">TU CUENTA</div>
       <div style="font-size:13px">Usuario: <b>${esc(USER.username)}</b> · ${adm?"Administrador":"Colaborador"}</div>
       <button class="btn-ghost" style="margin-top:10px" onclick="changePwDialog()">Cambiar mi contraseña</button>
@@ -998,6 +1001,54 @@ async function saveCompany(){
   try{ await api("/settings",{method:"POST",body:JSON.stringify({
     company_name:val("s_name"),company_nit:val("s_nit"),default_user:val("s_user"),currency:val("s_curr")})});
     alert("Información guardada.");
+  }catch(e){ alert(e.message); }
+}
+function syncApplyHTML(aps){
+  const ch=aps.channels||[], dry=aps.dry_run, md=aps.max_delta;
+  const mlOn=ch.includes("mercadolibre");
+  const estado = dry
+    ? `<span class="green">● DRY-RUN — calcula el plan pero NO escribe en ningún canal</span>`
+    : `<span class="red">● ESCRIBIENDO en: <b>${esc(ch.join(", "))}</b></span>`;
+  return `<div class="set-sec" style="margin-top:24px">SINCRONIZACIÓN DE STOCK · ESCRITURA REAL</div>
+    <div class="muted" style="font-size:12px;margin-bottom:8px">Controla si el motor de sincronización escribe stock real en los canales tras cada venta. En DRY-RUN solo calcula el reparto (seguro). Activa un canal a la vez y vigila la auditoría antes de ampliar.</div>
+    <div class="inv-card" style="padding:16px;max-width:600px">
+      <div style="font-size:14px;margin-bottom:10px">${estado}</div>
+      <div class="set-row" style="max-width:340px"><label>Tope de salto por publicación (max_delta)</label>
+        <input id="s_maxdelta" class="field" style="margin:0" type="number" min="0" value="${md==null?"":md}" placeholder="vacío = sin tope"></div>
+      <div class="muted" style="font-size:11px;margin:6px 0 12px">Si el nuevo valor difiere del actual en más de este tope, NO escribe (red anti-cálculo-raro). Recomendado para estrenar: 5.</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        ${mlOn
+          ? `<button class="btn-ghost" onclick="syncApplyKill()">⏸ Pausar todo (DRY-RUN)</button>`
+          : `<button class="btn-acc" onclick="syncApplyEnableML()">▶ Activar escritura en MercadoLibre</button>`}
+        <button class="btn-ghost" onclick="syncApplySaveDelta()">Guardar tope</button>
+      </div>
+    </div>`;
+}
+async function syncApplyEnableML(){
+  const md=val("s_maxdelta");
+  if(!confirm("Vas a ACTIVAR la escritura real de stock en MercadoLibre. A partir de ahora, cada venta procesada ajustará el available_quantity de tus publicaciones ML.\n\n¿Confirmas? (puedes pausarlo en 1 clic en cualquier momento)"))return;
+  try{
+    const body={channels:["mercadolibre"]};
+    if(md!=="") body.max_delta=parseInt(md,10);
+    await api("/sync/apply-config",{method:"POST",body:JSON.stringify(body)});
+    alert("✓ Escritura activada en MercadoLibre.");
+    renderSettings();
+  }catch(e){ alert(e.message); }
+}
+async function syncApplyKill(){
+  if(!confirm("¿Pausar la escritura real en TODOS los canales? El motor vuelve a DRY-RUN (solo calcula, no escribe). El inventario central y la cola de bodega siguen funcionando."))return;
+  try{
+    await api("/sync/apply-config",{method:"POST",body:JSON.stringify({channels:[]})});
+    alert("✓ En DRY-RUN. Ningún canal escribe.");
+    renderSettings();
+  }catch(e){ alert(e.message); }
+}
+async function syncApplySaveDelta(){
+  const md=val("s_maxdelta");
+  try{
+    await api("/sync/apply-config",{method:"POST",body:JSON.stringify({max_delta:md===""?0:parseInt(md,10)})});
+    alert("✓ Tope guardado.");
+    renderSettings();
   }catch(e){ alert(e.message); }
 }
 async function mlConnect(){
