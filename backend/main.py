@@ -1254,6 +1254,165 @@ def ml_set_stock(key: str = "", item_id: str = "", cantidad: str = "",
                             status_code=502, headers=_EXPORT_CORS)
 
 
+# ── Motor de sincronización — helpers de canales + pipeline (DRY-RUN) ────────
+
+_SHOPIFY_SHOPS = {"shopify_boun": "uapngf-er.myshopify.com",
+                  "shopify_kat": "2kp2p9-qu.myshopify.com"}
+
+
+def _shopify_variants_by_sku(shop: str, sku: str) -> list:
+    """Variantes activas de una tienda Shopify con ese SKU (= código BOUN)."""
+    tok = db.get_setting("shopify_token::%s" % shop, "")
+    if not tok:
+        return []
+    q = ('query($q:String!){productVariants(first:20,query:$q){edges{node{'
+         'id sku inventoryQuantity product{status} inventoryItem{id}}}}}')
+    try:
+        import requests as _rq
+        r = _rq.post("https://%s/admin/api/2025-01/graphql.json" % shop,
+                     json={"query": q, "variables": {"q": "sku:%s" % sku}},
+                     headers={"X-Shopify-Access-Token": tok}, timeout=15)
+        if r.status_code != 200:
+            return []
+        edges = (((r.json().get("data") or {}).get("productVariants") or {})
+                 .get("edges") or [])
+        out = []
+        for e in edges:
+            n = e.get("node") or {}
+            if (n.get("product") or {}).get("status") == "ACTIVE":
+                out.append({"key": n.get("id"), "ventas": 0,
+                            "actual": n.get("inventoryQuantity")})
+        return out
+    except Exception:
+        return []
+
+
+def _ml_active_pubs(product_id: int) -> tuple:
+    """(activas[{key,ventas}], excluidas[]) de ML para un producto (no-Full)."""
+    links = db._sb_get("inventory_links?product_id=eq.%d&select=ml_item_id,"
+                       "ml_sold60,ml_logistic" % product_id) or []
+    activas, excl = [], []
+    for l in links:
+        iid = l.get("ml_item_id")
+        if not iid:
+            continue
+        r = _ml_request("GET", "/items/%s?attributes=id,status,shipping" % iid)
+        st = lg = None
+        if r is not None and r.status_code == 200:
+            jd = r.json(); st = jd.get("status")
+            lg = (jd.get("shipping") or {}).get("logistic_type")
+        if lg == "fulfillment":
+            excl.append({"item_id": iid, "motivo": "full"})
+        elif st != "active":
+            excl.append({"item_id": iid, "motivo": st or "?"})
+        else:
+            activas.append({"key": iid, "ventas": int(l.get("ml_sold60") or 0)})
+    return activas, excl
+
+
+def _compute_plan(codigo: str, disponible: int) -> dict:
+    """Reparto del disponible entre publicaciones activas de los 4 canales."""
+    import sync as _sync
+    out = {}
+    prows = db._sb_get("inventory_products?code=eq.%s&select=id"
+                       % _q_(codigo)) or []
+    pid = prows[0]["id"] if prows else None
+    # MercadoLibre
+    if pid:
+        ml_act, ml_excl = _ml_active_pubs(pid)
+        out["mercadolibre"] = {"reparto": _sync.reparto(disponible, ml_act),
+                               "excluidas": ml_excl}
+    else:
+        out["mercadolibre"] = {"reparto": {}, "excluidas": []}
+    # Falabella (SKUs del CSV)
+    fal = _sync.falabella_skus(codigo)
+    out["falabella"] = {"reparto": _sync.reparto(
+        disponible, [{"key": f["seller_sku"], "ventas": 0} for f in fal])}
+    # Shopify ×2
+    for ckey, shop in _SHOPIFY_SHOPS.items():
+        vs = _shopify_variants_by_sku(shop, codigo)
+        out[ckey] = {"reparto": _sync.reparto(disponible, vs),
+                     "variantes": len(vs)}
+    return out
+
+
+def _q_(v):
+    import urllib.parse as _u
+    return _u.quote(str(v), safe="")
+
+
+def _pending_cola(codigo: str) -> int:
+    rows = db._sb_get("cola_bodega?codigo_boun=eq.%s&estado=eq.pendiente&"
+                      "select=cantidad" % _q_(codigo)) or []
+    return sum(int(r.get("cantidad") or 0) for r in rows)
+
+
+def _process_sale(canal: str, order_id: str, items: list,
+                  payload=None) -> dict:
+    """Pipeline (DRY-RUN): idempotencia → descuento central (cola_bodega) →
+    recalcula disponible → plan de reparto a los 4 canales. NO escribe en
+    los canales. items = [(codigo_boun, cantidad), …]."""
+    import datetime as _dt
+    ev = db._sb_get("evento_venta?canal=eq.%s&order_id=eq.%s&select=id,estado"
+                    % (_q_(canal), _q_(order_id))) or []
+    if ev and ev[0].get("estado") == "procesado":
+        return {"ok": True, "idempotente": True, "canal": canal,
+                "order_id": order_id}
+    if not ev:
+        db._sb_post("evento_venta", {"canal": canal, "order_id": str(order_id),
+                                     "estado": "recibido", "payload": payload})
+    resultados = []
+    for codigo, cantidad in items:
+        cantidad = int(cantidad)
+        prows = db._sb_get("inventory_products?code=eq.%s&select=id,code,"
+                           "qty_bogota,qty_yopal" % _q_(codigo)) or []
+        if not prows:
+            resultados.append({"codigo": codigo, "skip": True,
+                               "motivo": "no_en_inventario_central"})
+            continue
+        p = prows[0]
+        mov = db._sb_post("movimiento_stock", {
+            "codigo_boun": codigo, "delta": -cantidad,
+            "motivo": "venta_%s" % canal, "canal": canal,
+            "order_id": str(order_id)})
+        db._sb_post("cola_bodega", {
+            "movimiento_id": (mov or {}).get("id"), "codigo_boun": codigo,
+            "cantidad": cantidad, "estado": "pendiente"})
+        disp = max(0, int(p.get("qty_bogota") or 0) +
+                   int(p.get("qty_yopal") or 0) - _pending_cola(codigo))
+        resultados.append({"codigo": codigo, "cantidad": cantidad,
+                           "disponible_tras_venta": disp,
+                           "plan": _compute_plan(codigo, disp)})
+    db._sb_patch("evento_venta", "canal=eq.%s&order_id=eq.%s"
+                 % (_q_(canal), _q_(order_id)),
+                 {"estado": "procesado",
+                  "procesado_at": _dt.datetime.now(
+                      _dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
+    return {"ok": True, "dry_run": True, "canal": canal, "order_id": order_id,
+            "resultados": resultados}
+
+
+@app.get("/api/sync/simular")
+def sync_simular(key: str = "", canal: str = "test", order_id: str = "",
+                 codigo: str = "", cantidad: int = 1):
+    """Simula una venta y corre el pipeline (DRY-RUN) para probar end-to-end."""
+    token = os.environ.get("BOUN_EXPORT_TOKEN", "")
+    if not token or key != token:
+        return JSONResponse({"error": "unauthorized"}, status_code=401,
+                            headers=_EXPORT_CORS)
+    if not codigo or not order_id:
+        return JSONResponse({"error": "bad_request",
+                             "hint": "codigo y order_id requeridos"},
+                            status_code=400, headers=_EXPORT_CORS)
+    try:
+        res = _process_sale(canal, order_id, [(codigo, int(cantidad))],
+                            payload={"simulado": True})
+        return JSONResponse(res, headers=_EXPORT_CORS)
+    except Exception as e:
+        return JSONResponse({"error": str(e)[:200]}, status_code=502,
+                            headers=_EXPORT_CORS)
+
+
 # ── Motor de sincronización — PLAN en DRY-RUN (no escribe en ningún canal) ────
 
 @app.options("/api/sync/plan")
