@@ -1377,8 +1377,12 @@ def _process_sale(canal: str, order_id: str, items: list,
         db._sb_patch("evento_venta", "canal=eq.%s&order_id=eq.%s"
                      % (_q_(canal), _q_(order_id)), {"estado": "procesando"})
     resultados = []
-    for codigo, cantidad in items:
-        cantidad = int(cantidad)
+    for raw in items:
+        # items: (codigo, cantidad) o (codigo, cantidad, es_full). es_full=True
+        # cuando el canal informa que el envío salió de Full (ML logistic_type
+        # =fulfillment); None = desconocido → se decide por stock de bodega.
+        codigo, cantidad = raw[0], int(raw[1])
+        es_full = raw[2] if len(raw) >= 3 else None
         prows = db._sb_get("inventory_products?code=eq.%s&select=id,code,name,"
                            "qty_bogota,qty_yopal" % _q_(codigo)) or []
         if not prows:
@@ -1392,19 +1396,25 @@ def _process_sale(canal: str, order_id: str, items: list,
         # Registro de la venta (descuento del total). Audita el origen del evento.
         mov = db._sb_post("movimiento_stock", {
             "codigo_boun": codigo, "delta": -cantidad,
-            "motivo": "venta_%s" % canal, "canal": canal,
-            "order_id": str(order_id)})
+            "motivo": "venta_%s%s" % (canal, "_full" if es_full else ""),
+            "canal": canal, "order_id": str(order_id)})
         cola = {"movimiento_id": (mov or {}).get("id"), "codigo_boun": codigo,
                 "nombre": p.get("name"), "cantidad": cantidad,
                 "canal": canal, "order_id": str(order_id)}
-        # ── Auto-asignación de bodega (deducción, no adivinanza) ──────────────
-        if bog <= 0 and yop <= 0:
-            # No salió de bodega propia (venía de ML Full): no descuenta bodega.
+        # ── Asignación de bodega ──────────────────────────────────────────────
+        if es_full is True:
+            # El canal confirma Full: el envío salió de la bodega de ML, no de la
+            # nuestra → no descuenta bodega propia.
             cola.update({"estado": "full"})
             db._sb_post("cola_bodega", cola)
             asignado = "full"
-        elif yop <= 0:
-            # Solo Bogotá tiene stock → solo pudo salir de ahí.
+        elif bog > 0 and yop > 0:
+            # Ambas bodegas con stock → ambiguo, lo confirma una persona.
+            cola.update({"estado": "pendiente"})
+            db._sb_post("cola_bodega", cola)
+            asignado = "pendiente"
+        elif bog > 0:
+            # Solo Bogotá tiene stock → deducción: salió de ahí.
             bog = max(0, bog - cantidad)
             db._sb_patch("inventory_products", "id=eq.%d" % pid,
                          {"qty_bogota": bog})
@@ -1416,7 +1426,7 @@ def _process_sale(canal: str, order_id: str, items: list,
                          "auto": True})
             db._sb_post("cola_bodega", cola)
             asignado = "bogota(auto)"
-        elif bog <= 0:
+        elif yop > 0:
             # Solo Yopal tiene stock.
             yop = max(0, yop - cantidad)
             db._sb_patch("inventory_products", "id=eq.%d" % pid,
@@ -1430,13 +1440,15 @@ def _process_sale(canal: str, order_id: str, items: list,
             db._sb_post("cola_bodega", cola)
             asignado = "yopal(auto)"
         else:
-            # Ambas bodegas con stock → ambiguo, lo confirma una persona.
+            # Sin stock en ninguna bodega y el canal NO confirmó Full → puede ser
+            # Full (con logística sin marcar) o sobreventa. Lo dejamos pendiente
+            # para que una persona lo revise (puede marcarlo Full con el botón).
             cola.update({"estado": "pendiente"})
             db._sb_post("cola_bodega", cola)
-            asignado = "pendiente"
+            asignado = "pendiente(sin stock)"
         disp = max(0, bog + yop - _pending_cola(codigo))
         resultados.append({"codigo": codigo, "cantidad": cantidad,
-                           "bodega": asignado,
+                           "es_full": bool(es_full), "bodega": asignado,
                            "disponible_tras_venta": disp,
                            "plan": _compute_plan(codigo, disp)})
     db._sb_patch("evento_venta", "canal=eq.%s&order_id=eq.%s"
@@ -1465,6 +1477,15 @@ def _ml_code_for_item(item_id: str) -> str:
     p = db._sb_get("inventory_products?id=eq.%d&select=code"
                    % links[0]["product_id"]) or []
     return p[0]["code"] if p else ""
+
+
+def _ml_item_full(item_id: str) -> bool:
+    """¿La publicación ML vendida es Full? Usa el logistic_type guardado en
+    inventory_links (=fulfillment). Si no hay dato, asume que NO (la lógica de
+    bodega decide)."""
+    links = db._sb_get("inventory_links?ml_item_id=eq.%s&select=ml_logistic"
+                       % _q_(item_id)) or []
+    return bool(links) and (links[0].get("ml_logistic") == "fulfillment")
 
 
 def _process_async(canal, order_id, items, payload=None):
@@ -1522,13 +1543,15 @@ async def webhook_ml(request: Request):
             r = _ml_request("GET", "/orders/%s" % oid)
             if not r or r.status_code != 200:
                 return
-            items = []
+            agg = {}
             for oi in r.json().get("order_items", []):
                 iid = (oi.get("item") or {}).get("id")
                 qty = int(oi.get("quantity") or 0)
                 code = _ml_code_for_item(iid) if iid else ""
                 if code and qty:
-                    items.append((code, qty))
+                    k = (code, _ml_item_full(iid))
+                    agg[k] = agg.get(k, 0) + qty
+            items = [(c, q, f) for (c, f), q in agg.items()]
             if items:
                 _safe(_process_sale, "ml", oid, items, {"webhook": "ml"})
         threading.Thread(target=_work, daemon=True).start()
@@ -1638,9 +1661,11 @@ def _ml_poll_once():
                 qty = int(oi.get("quantity") or 0)
                 code = _ml_code_for_item(iid) if iid else ""
                 if code and qty:
-                    agg[code] = agg.get(code, 0) + qty
+                    k = (code, _ml_item_full(iid))
+                    agg[k] = agg.get(k, 0) + qty
             if agg:
-                _safe(_process_sale, "ml", oid, list(agg.items()),
+                items = [(c, q, f) for (c, f), q in agg.items()]
+                _safe(_process_sale, "ml", oid, items,
                       {"poller": "ml", "created": dc})
         total = d.get("paging", {}).get("total", 0)
         offset += 50
@@ -1666,8 +1691,9 @@ def _start_poller():
 
 @app.get("/api/sync/simular")
 def sync_simular(key: str = "", canal: str = "test", order_id: str = "",
-                 codigo: str = "", cantidad: int = 1):
-    """Simula una venta y corre el pipeline (DRY-RUN) para probar end-to-end."""
+                 codigo: str = "", cantidad: int = 1, full: str = ""):
+    """Simula una venta y corre el pipeline (DRY-RUN) para probar end-to-end.
+    full=1 marca la venta como Full (no descuenta bodega)."""
     token = os.environ.get("BOUN_EXPORT_TOKEN", "")
     if not token or key != token:
         return JSONResponse({"error": "unauthorized"}, status_code=401,
@@ -1677,7 +1703,9 @@ def sync_simular(key: str = "", canal: str = "test", order_id: str = "",
                              "hint": "codigo y order_id requeridos"},
                             status_code=400, headers=_EXPORT_CORS)
     try:
-        res = _process_sale(canal, order_id, [(codigo, int(cantidad))],
+        es_full = True if full == "1" else None
+        res = _process_sale(canal, order_id,
+                            [(codigo, int(cantidad), es_full)],
                             payload={"simulado": True})
         return JSONResponse(res, headers=_EXPORT_CORS)
     except Exception as e:

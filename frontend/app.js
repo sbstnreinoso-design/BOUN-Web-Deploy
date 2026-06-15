@@ -505,6 +505,9 @@ async function renderSales(force){
 
 // ── PENDIENTES DE BODEGA ─────────────────────────────────────────────────────
 const CANAL_LBL={ml:"MercadoLibre",mercadolibre:"MercadoLibre",shopify_boun:"Shopify BOUN",shopify_kat:"Shopify KAT",falabella:"Falabella",test:"Prueba"};
+const CANAL_COL={ml:"#E0A23C",mercadolibre:"#E0A23C",falabella:"#7FB3E0",shopify_boun:"#3FCB82",shopify_kat:"#E68CA8",test:"#9B9A96"};
+function canalChip(c){ const lbl=CANAL_LBL[c]||c||"—", col=CANAL_COL[c]||"#9B9A96";
+  return `<span style="display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:11px;border:1px solid ${col}55;background:${col}1A;color:${col};font-size:11px;font-weight:700"><span style="width:6px;height:6px;border-radius:50%;background:${col}"></span>${esc(lbl)}</span>`; }
 function _fechaHora(s){ if(!s) return ""; try{ const d=new Date(s); return d.toLocaleString("es-CO",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}); }catch(e){ return s; } }
 async function renderCola(){
   const v=document.getElementById("view");
@@ -519,12 +522,14 @@ async function renderCola(){
     const ps=r.pendientes||[];
     if(!ps.length){ document.getElementById("colaList").innerHTML=`<div class="empty" style="text-align:center;padding:48px;color:var(--muted)"><div style="font-size:40px">✓</div><div style="margin-top:8px;font-size:15px">Todo al día</div></div>`; return; }
     document.getElementById("colaList").innerHTML=ps.map(p=>{
-      const canal=CANAL_LBL[p.canal]||p.canal||"—";
       return `<div class="card" id="cola-${p.id}" style="display:flex;gap:18px;align-items:center;padding:16px;margin-bottom:10px;flex-wrap:wrap">
         <div style="flex:1;min-width:240px">
-          <div style="font-weight:700;font-size:14px">${esc(p.codigo_boun)} <span class="muted" style="font-weight:400">· ${esc(p.nombre||"")}</span></div>
-          <div class="muted" style="font-size:12px;margin-top:3px">
-            <b style="color:var(--text)">${p.cantidad} u</b> · ${esc(canal)}${p.order_id?` · #${esc(p.order_id)}`:""} · ${_fechaHora(p.created_at)}
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <span style="font-weight:700;font-size:14px">${esc(p.codigo_boun)} <span class="muted" style="font-weight:400">· ${esc(p.nombre||"")}</span></span>
+            ${canalChip(p.canal)}
+          </div>
+          <div class="muted" style="font-size:12px;margin-top:4px">
+            <b style="color:var(--text)">${p.cantidad} u</b> · vendido en <b style="color:var(--text)">${esc(CANAL_LBL[p.canal]||p.canal||"—")}</b>${p.order_id?` · orden #${esc(p.order_id)}`:""} · ${_fechaHora(p.created_at)}
           </div>
           <div class="muted" style="font-size:12px;margin-top:4px">Saldo actual — Bogotá <b style="color:var(--text)">${p.stock_bogota}</b> · Yopal <b style="color:var(--text)">${p.stock_yopal}</b></div>
         </div>
