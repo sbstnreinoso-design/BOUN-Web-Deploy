@@ -1539,9 +1539,79 @@ def _falabella_poller():
         time.sleep(max(60, sec))
 
 
+def _ml_poll_once():
+    """Procesa SOLO órdenes ML nuevas (posteriores al watermark). Reemplaza al
+    webhook (que requiere configurar callback tras 2FA en el panel ML)."""
+    import sync as _sync
+    if not _sync_enabled():
+        return
+    from ml_scraper import _ml_session_auth, ML_API
+    s, uid = _ml_session_auth()
+    if not s:
+        return
+    co = timezone(timedelta(hours=-5))
+    fmt = "%Y-%m-%dT%H:%M:%S.000-05:00"
+    wm = db.get_setting("sync_ml_since", "")
+    if not wm:
+        db.set_setting("sync_ml_since", datetime.now(co).strftime(fmt))
+        return
+    try:
+        base = (datetime.strptime(wm[:19], "%Y-%m-%dT%H:%M:%S")
+                .replace(tzinfo=co) - timedelta(hours=2))
+    except Exception:
+        base = datetime.now(co) - timedelta(hours=2)
+    since = base.strftime(fmt)
+    until = datetime.now(co).strftime(fmt)
+    newest = wm
+    offset = 0
+    while True:
+        r = s.get("%s/orders/search?seller=%s&order.date_created.from=%s"
+                  "&order.date_created.to=%s&sort=date_desc&limit=50&offset=%d"
+                  % (ML_API, uid, since, until, offset), timeout=20)
+        if r.status_code != 200:
+            break
+        d = r.json()
+        results = d.get("results", [])
+        for od in results:
+            dc = od.get("date_created", "")
+            if dc <= wm:
+                continue
+            newest = max(newest, dc)
+            oid = str(od.get("id"))
+            ev = db._sb_get("evento_venta?canal=eq.ml&order_id=eq.%s&"
+                            "select=estado" % _q_(oid)) or []
+            if ev and ev[0].get("estado") in ("procesado", "procesando"):
+                continue
+            agg = {}
+            for oi in od.get("order_items", []):
+                iid = (oi.get("item") or {}).get("id")
+                qty = int(oi.get("quantity") or 0)
+                code = _ml_code_for_item(iid) if iid else ""
+                if code and qty:
+                    agg[code] = agg.get(code, 0) + qty
+            if agg:
+                _safe(_process_sale, "ml", oid, list(agg.items()),
+                      {"poller": "ml", "created": dc})
+        total = d.get("paging", {}).get("total", 0)
+        offset += 50
+        if offset >= total or not results:
+            break
+    if newest > wm:
+        db.set_setting("sync_ml_since", newest)
+
+
+def _poller_loop():
+    sec = int(os.environ.get("SYNC_FALABELLA_POLL_SEC", "180") or 180)
+    sec = max(60, sec)
+    while True:
+        _safe(_falabella_poll_once)
+        _safe(_ml_poll_once)
+        time.sleep(sec)
+
+
 @app.on_event("startup")
 def _start_poller():
-    threading.Thread(target=_falabella_poller, daemon=True).start()
+    threading.Thread(target=_poller_loop, daemon=True).start()
 
 
 @app.get("/api/sync/simular")
