@@ -1819,31 +1819,29 @@ def _stock_map(codigos: list) -> dict:
     cods = [c for c in dict.fromkeys(codigos) if c]
     if not cods:
         return out
-    # PostgREST in.(...): comillas y comas SEPARADORAS van literales; solo se
-    # encodea el CONTENIDO de cada código (si se encodea la coma, PostgREST lo
-    # toma como un único valor y no cruza nada).
-    inlist = ",".join("%%22%s%%22" % _q_(c.replace('"', '')) for c in cods)
-    rows = db._sb_get("inventory_products?code=in.(%s)&select=id,code,name,"
-                      "qty_bogota,qty_yopal,image_path" % inlist) or []
-    id2code = {}
-    for r in rows:
-        code = r.get("code")
-        id2code[r.get("id")] = code
+    # Una consulta por código con filtro code=eq.<código> (patrón probado del
+    # motor). El in.() con comillas falla porque requests re-encodea el '%'.
+    for c in cods:
+        rows = db._sb_get("inventory_products?code=eq.%s&select=id,code,name,"
+                          "qty_bogota,qty_yopal,image_path&limit=1" % _q_(c)) or []
+        if not rows:
+            continue
+        r = rows[0]
         ip = r.get("image_path") or ""
-        out[code] = {"name": r.get("name"),
-                     "qty_bogota": int(r.get("qty_bogota") or 0),
-                     "qty_yopal": int(r.get("qty_yopal") or 0),
-                     "img": ip if ip.startswith("http") else ""}
-    # Foto preferida: thumb de ML de la(s) publicación(es) del producto.
-    if id2code:
-        ids = ",".join(str(i) for i in id2code)
-        links = db._sb_get("inventory_links?product_id=in.(%s)&select=product_id,"
-                           "ml_thumb" % ids) or []
-        for l in links:
-            code = id2code.get(l.get("product_id"))
-            thumb = l.get("ml_thumb") or ""
-            if code and thumb and not out[code].get("img"):
-                out[code]["img"] = _img_full(thumb)
+        img = ip if ip.startswith("http") else ""
+        # Foto preferida: thumb de ML de la publicación del producto.
+        if not img:
+            links = db._sb_get("inventory_links?product_id=eq.%d&select=ml_thumb"
+                               "&limit=10" % r.get("id")) or []
+            for l in links:
+                thumb = l.get("ml_thumb") or ""
+                if thumb:
+                    img = _img_full(thumb)
+                    break
+        out[c] = {"name": r.get("name"),
+                  "qty_bogota": int(r.get("qty_bogota") or 0),
+                  "qty_yopal": int(r.get("qty_yopal") or 0),
+                  "img": img}
     return out
 
 
