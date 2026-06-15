@@ -7,6 +7,7 @@ Autenticación por firma HMAC-SHA256 sobre el querystring ordenado.
 Se usa para traer las ventas diarias (GetOrders + GetMultipleOrderItems).
 """
 import os
+import time
 import hmac
 import hashlib
 import datetime as _dt
@@ -14,6 +15,9 @@ import xml.sax.saxutils as _su
 from urllib.parse import quote
 
 import requests
+
+# Estados transitorios de la API de Falabella que vale la pena reintentar.
+_RETRY_STATUS = {429, 500, 502, 503, 504}
 
 BASE = "https://sellercenter-api.falabella.com"
 # Colombia es UTC-5 fijo (sin horario de verano)
@@ -46,10 +50,27 @@ def _signed_url(action: str, extra: dict = None) -> str:
     return f"{BASE}/?{q}&Signature={sig}"
 
 
-def _get(action: str, extra: dict = None, timeout: int = 30) -> dict:
-    r = requests.get(_signed_url(action, extra), timeout=timeout)
-    r.raise_for_status()
-    return r.json()
+def _get(action: str, extra: dict = None, timeout: int = 30,
+         retries: int = 3) -> dict:
+    """GET firmado con reintentos: la API de Falabella devuelve 503/429
+    transitorios. Cada intento re-firma (Timestamp fresco) y espera con backoff."""
+    last = None
+    for i in range(retries):
+        try:
+            r = requests.get(_signed_url(action, extra), timeout=timeout)
+            if r.status_code in _RETRY_STATUS and i < retries - 1:
+                last = "HTTP %d" % r.status_code
+                time.sleep(1.5 * (i + 1))
+                continue
+            r.raise_for_status()
+            return r.json()
+        except requests.exceptions.RequestException as e:
+            last = e
+            if i < retries - 1:
+                time.sleep(1.5 * (i + 1))
+                continue
+            raise
+    raise RuntimeError(str(last) if last else "sin respuesta")
 
 
 def _as_list(x):
@@ -58,12 +79,32 @@ def _as_list(x):
     return x if isinstance(x, list) else [x]
 
 
-def _post(action: str, body: str, extra: dict = None, timeout: int = 60) -> dict:
-    """POST firmado (la firma va en el querystring; el XML va en el cuerpo)."""
-    r = requests.post(_signed_url(action, extra), data=body.encode("utf-8"),
-                      headers={"Content-Type": "text/xml; charset=utf-8"},
-                      timeout=timeout)
-    r.raise_for_status()
+def _post(action: str, body: str, extra: dict = None, timeout: int = 60,
+          retries: int = 3) -> dict:
+    """POST firmado (la firma va en el querystring; el XML va en el cuerpo).
+    Reintenta los estados transitorios (503/429…) con backoff."""
+    last = None
+    for i in range(retries):
+        try:
+            r = requests.post(_signed_url(action, extra),
+                              data=body.encode("utf-8"),
+                              headers={"Content-Type":
+                                       "text/xml; charset=utf-8"},
+                              timeout=timeout)
+            if r.status_code in _RETRY_STATUS and i < retries - 1:
+                last = "HTTP %d" % r.status_code
+                time.sleep(1.5 * (i + 1))
+                continue
+            r.raise_for_status()
+            break
+        except requests.exceptions.RequestException as e:
+            last = e
+            if i < retries - 1:
+                time.sleep(1.5 * (i + 1))
+                continue
+            raise
+    else:
+        raise RuntimeError(str(last) if last else "sin respuesta")
     d = r.json()
     if "ErrorResponse" in d:
         h = (d.get("ErrorResponse") or {}).get("Head", {}) or {}
