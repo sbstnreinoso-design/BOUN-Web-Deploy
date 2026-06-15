@@ -1034,6 +1034,8 @@ async function renderSettings(){
 
       ${adm&&aps?syncApplyHTML(aps):""}
 
+      ${adm?scanHTML():""}
+
       <div class="set-sec" style="margin-top:24px">TU CUENTA</div>
       <div style="font-size:13px">Usuario: <b>${esc(USER.username)}</b> · ${adm?"Administrador":"Colaborador"}</div>
       <button class="btn-ghost" style="margin-top:10px" onclick="changePwDialog()">Cambiar mi contraseña</button>
@@ -1102,6 +1104,79 @@ async function syncApplySaveDelta(){
     alert("✓ Tope guardado.");
     renderSettings();
   }catch(e){ alert(e.message); }
+}
+
+// ── Escaneo de reconciliación de stock (Web BOUN → canales) ─────────────────
+const SCAN_CH = {mercadolibre:"MercadoLibre", falabella:"Falabella",
+                 shopify_boun:"Shopify BOUN", shopify_kat:"Shopify KAT"};
+function scanChLabel(c){ return SCAN_CH[c] || c; }
+function scanHTML(){
+  return `<div class="set-sec" style="margin-top:24px">ESCANEO DE RECONCILIACIÓN DE STOCK</div>
+    <div class="muted" style="font-size:12px;margin-bottom:8px">Recorre <b>todas</b> las publicaciones de los canales elegidos y las iguala al disponible real de tu inventario (Bogotá + Yopal − pendientes). Corrige agotadas y desfases <b>sin importar el tamaño del salto</b>. Salta <b>Full y catálogo</b> automáticamente. Empieza siempre con <b>Previsualizar</b> (no escribe nada).</div>
+    <div class="inv-card" style="padding:16px;max-width:680px">
+      <div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:12px">
+        ${Object.keys(SCAN_CH).map(c=>`<label style="font-size:13px;display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" class="scanch" value="${c}" checked> ${SCAN_CH[c]}</label>`).join("")}
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn-acc" onclick="scanStart('preview')">🔍 Previsualizar escaneo</button>
+        <button class="btn-ghost" onclick="scanStart('apply')">✍ Aplicar correcciones</button>
+      </div>
+      <div id="scanOut" style="margin-top:14px"></div>
+    </div>`;
+}
+async function scanStart(mode){
+  const chans=[...document.querySelectorAll(".scanch:checked")].map(e=>e.value);
+  if(!chans.length){ alert("Elige al menos un canal."); return; }
+  if(mode==="apply" && !confirm("Vas a ESCRIBIR stock real en: "+chans.map(scanChLabel).join(", ")+".\n\nCada publicación (excepto Full y catálogo) quedará igualada al disponible de tu inventario, SIN tope de salto. Esto corrige agotadas y desfases en todos los canales elegidos.\n\n¿Confirmas?")) return;
+  const out=document.getElementById("scanOut");
+  if(out) out.innerHTML='<div class="loading"><span class="spinner"></span> Iniciando escaneo…</div>';
+  try{
+    await api("/sync/scan-start",{method:"POST",body:JSON.stringify({mode,channels:chans})});
+    scanPoll();
+  }catch(e){ if(out) out.innerHTML=`<div class="red" style="font-size:12px">${esc(e.message)}</div>`; }
+}
+async function scanPoll(){
+  const out=document.getElementById("scanOut");
+  if(!out) return;                         // el usuario salió de Configuración
+  let s; try{ s=await api("/sync/scan-status"); }
+  catch(e){ out.innerHTML=`<div class="red" style="font-size:12px">${esc(e.message)}</div>`; return; }
+  if(s.status==="running"){
+    const pct=s.total?Math.round((s.done||0)/s.total*100):0;
+    out.innerHTML=`<div class="loading" style="padding:18px"><span class="spinner"></span> Escaneando… ${s.done||0}/${s.total||0} productos (${pct}%)</div>`;
+    setTimeout(scanPoll,2000); return;
+  }
+  if(s.status==="error"){ out.innerHTML=`<div class="red" style="font-size:12px">Error: ${esc(s.error||"")}</div>`; return; }
+  if(s.status==="idle"){ out.innerHTML=""; return; }
+  out.innerHTML=scanResultHTML(s);
+}
+function scanResultHTML(s){
+  const c=s.counts||{}, dry=s.mode!=="apply";
+  const rows=(s.rows||[]).filter(r=>r.accion!=="sin_cambio");
+  const head=`<div style="font-size:13px;margin-bottom:10px">
+      <span class="${dry?"amber":"green"}">●</span> <b>${dry?"Previsualización":"Cambios aplicados"}</b> · ${esc((s.channels||[]).map(scanChLabel).join(", "))}<br>
+      <span style="font-size:12px">${dry?"Cambiarían":"Escritas"}: <b class="green">${c.cambios||0}</b> · Ya alineadas: ${c.sin_cambio||0} · Saltadas (Full/catálogo): ${c.saltados||0} · Errores: <span class="${(c.errores||0)?"red":""}">${c.errores||0}</span></span></div>`;
+  if(!rows.length) return head+`<div class="muted" style="font-size:12px">Todo está alineado con tu inventario. No hay cambios que mostrar.</div>`;
+  const trs=rows.slice(0,500).map(r=>{
+    const col=r.accion.startsWith("saltado")?"var(--dim)":r.accion==="error"?"var(--red)":"var(--green)";
+    const arrow=(r.actual!=null&&r.objetivo!=null)?`${r.actual} → <b>${r.objetivo}</b>`:(r.objetivo!=null?`<b>${r.objetivo}</b>`:"—");
+    return `<tr>
+      <td style="padding:4px 8px"><span class="code-chip" style="font-size:10px">${esc(r.codigo||"")}</span></td>
+      <td style="padding:4px 8px">${esc(scanChLabel(r.canal))}</td>
+      <td style="padding:4px 8px;color:var(--dim);font-size:10px">${esc(r.ref||"")}</td>
+      <td style="padding:4px 8px;text-align:right;white-space:nowrap">${arrow}</td>
+      <td style="padding:4px 8px;color:${col};white-space:nowrap">${esc(r.accion)}</td></tr>`;
+  }).join("");
+  return head+`<div style="max-height:360px;overflow:auto;border:1px solid var(--border);border-radius:8px">
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead><tr style="position:sticky;top:0;background:var(--surf)">
+          <th style="padding:6px 8px;text-align:left">Código</th>
+          <th style="padding:6px 8px;text-align:left">Canal</th>
+          <th style="padding:6px 8px;text-align:left">Publicación</th>
+          <th style="padding:6px 8px;text-align:right">Actual → Objetivo</th>
+          <th style="padding:6px 8px;text-align:left">Acción</th></tr></thead>
+        <tbody>${trs}</tbody></table></div>
+      ${rows.length>500?`<div class="muted" style="font-size:11px;margin-top:6px">Mostrando 500 de ${rows.length} filas.</div>`:""}
+      ${dry&&(c.cambios||0)?`<button class="btn-acc" style="margin-top:12px" onclick="scanStart('apply')">✍ Aplicar estas ${c.cambios} correcciones</button>`:""}`;
 }
 async function mlConnect(){
   try{ const r=await api("/ml/auth-url");
