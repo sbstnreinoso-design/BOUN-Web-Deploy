@@ -1123,17 +1123,40 @@ function scanHTML(){
         <button id="scanApplyBtn" class="btn-ghost" onclick="scanStart('apply')">✍ Aplicar correcciones</button>
       </div>
       <div id="scanOut" style="margin-top:14px"></div>
+      <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">
+        <label style="font-size:13px;display:flex;gap:8px;align-items:center;cursor:pointer">
+          <input type="checkbox" id="scanDaily" onchange="scanDailySave()"> Escaneo diario automático <span class="muted" style="font-size:11px">(aplica solo, todos los días)</span>
+        </label>
+        <div style="font-size:12px;color:var(--muted);margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          a las <input id="scanDailyHour" type="number" min="0" max="23" value="4" onchange="scanDailySave()" style="width:56px;height:30px;background:var(--surf);color:var(--text);border:1px solid var(--border);border-radius:6px;text-align:center;font-size:13px"> h (hora Colombia)
+          <span id="scanDailyMsg" style="font-size:11px"></span>
+        </div>
+      </div>
     </div>`;
 }
 async function scanInit(){
   // Al abrir Configuración: si ya hay un escaneo corriendo, reengancha el
   // progreso en vez de mostrar los botones como si nada; si el último terminó,
-  // muestra su resumen para no perderlo.
+  // muestra su resumen para no perderlo. Y refleja el estado del escaneo diario.
+  try{
+    const aps=await api("/sync/apply-status");
+    const cb=document.getElementById("scanDaily"); if(cb) cb.checked=!!aps.scan_daily;
+    const hr=document.getElementById("scanDailyHour"); if(hr && aps.scan_daily_hour!=null) hr.value=aps.scan_daily_hour;
+  }catch(e){}
   const out=document.getElementById("scanOut");
   if(!out) return;
   let s; try{ s=await api("/sync/scan-status"); }catch(e){ return; }
   if(s.status==="running") scanPoll();
   else if(s.status==="done" && s.counts && s.rows_total) out.innerHTML=scanResultHTML(s);
+}
+async function scanDailySave(){
+  const en=document.getElementById("scanDaily").checked;
+  let h=parseInt(document.getElementById("scanDailyHour").value,10); if(isNaN(h))h=4;
+  const msg=document.getElementById("scanDailyMsg");
+  try{
+    await api("/sync/apply-config",{method:"POST",body:JSON.stringify({scan_daily:en,scan_daily_hour:h})});
+    if(msg){ msg.textContent=en?`✓ activado · ${h}:00`:"✓ desactivado"; msg.className="green"; setTimeout(()=>{if(msg)msg.textContent="";},2500); }
+  }catch(e){ if(msg){ msg.textContent=e.message; msg.className="red"; } }
 }
 async function scanStart(mode){
   const chans=[...document.querySelectorAll(".scanch:checked")].map(e=>e.value);
