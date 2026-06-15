@@ -434,18 +434,20 @@ async function renderSales(force){
     const r=await api("/sales?"+salesQ(force));
     const dias=r.dias||[];
     const sum=(arr,src,m)=>arr.reduce((a,d)=>a+(d[src]?d[src][m]:0),0);
-    const tIng=sum(dias,"total","ingresos"), mIng=sum(dias,"ml","ingresos"), fIng=sum(dias,"falabella","ingresos");
+    const tIng=sum(dias,"total","ingresos"), mIng=sum(dias,"ml","ingresos"), fIng=sum(dias,"falabella","ingresos"), sIng=sum(dias,"shopify","ingresos");
     const tUni=sum(dias,"total","unidades");
     document.getElementById("salKpis").innerHTML=[
-      ["Ingresos totales",cop(tIng),"acc",`${periodo} · ML + Falabella`],
+      ["Ingresos totales",cop(tIng),"acc",`${periodo} · ML + Falabella + Shopify`],
       ["MercadoLibre",cop(mIng),"amber",sum(dias,"ml","unidades")+" unidades"],
       ["Falabella",cop(fIng),"blue",sum(dias,"falabella","unidades")+" unidades"],
-      ["Unidades totales",tUni,"green",dias.length+" días con datos"],
+      ["Shopify",cop(sIng),"green",sum(dias,"shopify","unidades")+" unidades"],
+      ["Unidades totales",tUni,"acc",dias.length+" días con datos"],
     ].map(([c,vv,cl,sub])=>`<div class="kpi"><div class="cap">${c}</div><div class="val ${cl}">${vv}</div><div class="cap">${sub}</div></div>`).join("");
     // avisos de conexión
     let notes="";
     if(!r.ml_ok) notes+=`<div class="note red">⚠ MercadoLibre: ${esc(r.ml_error||"sin conexión")}</div>`;
     if(!r.fal_ok) notes+=`<div class="note red">⚠ Falabella: ${esc(r.fal_error||"sin conexión")}. Configura sus credenciales para ver sus ventas.</div>`;
+    if(!r.shop_ok) notes+=`<div class="note red">⚠ Shopify: ${esc(r.shop_error||"sin conexión")}.</div>`;
     if(r.cache_age_min>0) notes+=`<div class="note">Datos de hace ${r.cache_age_min} min · se refrescan solos cada 10 min.</div>`;
     document.getElementById("salNote").innerHTML=notes;
     // tabla por día (más reciente arriba)
@@ -472,6 +474,7 @@ async function renderSales(force){
         <th>Fecha</th>
         <th><span class="amber">● MercadoLibre</span></th>
         <th><span class="blue">● Falabella</span></th>
+        <th><span class="green">● Shopify</span></th>
         <th>Total del día</th>
       </tr></thead><tbody>`;
     html+=dias.slice().reverse().map(d=>{
@@ -482,12 +485,14 @@ async function renderSales(force){
         <td style="border-left:3px solid ${c}"><span style="color:${c};font-weight:700">${WD[w]||""}</span> <b>${esc(d.fecha)}</b></td>
         <td class="amber">${cel(d.ml)}</td>
         <td class="blue">${cel(d.falabella)}</td>
+        <td class="green">${cel(d.shopify)}</td>
         <td class="acc"><b>${d.total.unidades} u · ${cop(d.total.ingresos)}</b></td>
       </tr>
-      <tr class="sdetail" id="sd-${d.fecha}" style="display:none"><td></td><td colspan="4">
+      <tr class="sdetail" id="sd-${d.fecha}" style="display:none"><td></td><td colspan="5">
         <div style="display:flex;gap:28px;flex-wrap:wrap;padding:4px 0 8px">
           ${detail(d.ml,"MercadoLibre","amber")}
           ${detail(d.falabella,"Falabella","blue")}
+          ${detail(d.shopify,"Shopify","green")}
         </div>
       </td></tr>`;
     }).join("");
@@ -497,6 +502,7 @@ async function renderSales(force){
         <td><b>TOTAL${SALES_MODE==="range"?"":` ${SALES_DAYS}d`}</b></td>
         <td class="amber">${sum(dias,"ml","unidades")} u · <b>${cop(mIng)}</b></td>
         <td class="blue">${sum(dias,"falabella","unidades")} u · <b>${cop(fIng)}</b></td>
+        <td class="green">${sum(dias,"shopify","unidades")} u · <b>${cop(sIng)}</b></td>
         <td class="acc"><b>${tUni} u · ${cop(tIng)}</b></td>
       </tr>`;
     document.getElementById("salTable").innerHTML=html+"</tbody></table>";

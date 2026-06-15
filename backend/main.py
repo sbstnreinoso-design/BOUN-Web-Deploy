@@ -736,6 +736,103 @@ def _ml_daily_sales(days: int = 14, date_from: str = None,
         return {"ok": False, "error": "MercadoLibre: %s" % str(e)[:120]}
 
 
+def _shopify_orders(shop: str, token: str, since_iso: str,
+                    until_iso: str) -> list:
+    """Órdenes de una tienda Shopify en el rango (paginado por Link header)."""
+    import requests as _rq
+    import re as _re
+    out = []
+    url = "https://%s/admin/api/2025-01/orders.json" % shop
+    params = {"status": "any", "created_at_min": since_iso,
+              "created_at_max": until_iso, "limit": 250,
+              "fields": "created_at,total_price,line_items,financial_status"}
+    headers = {"X-Shopify-Access-Token": token}
+    for _ in range(15):
+        r = _rq.get(url, params=params, headers=headers, timeout=20)
+        if r.status_code != 200:
+            raise Exception("HTTP %d" % r.status_code)
+        out.extend(r.json().get("orders", []) or [])
+        nxt = None
+        for part in (r.headers.get("Link", "") or "").split(","):
+            if 'rel="next"' in part:
+                m = _re.search(r"<([^>]+)>", part)
+                if m:
+                    nxt = m.group(1)
+        if not nxt:
+            break
+        url, params = nxt, None   # la URL "next" ya trae page_info+limit
+    return out
+
+
+def _shopify_daily_sales(days: int = 14, date_from: str = None,
+                         date_to: str = None) -> dict:
+    """Ventas diarias combinadas de las tiendas Shopify (BOUN + KAT)."""
+    import datetime as _dt
+    co = _dt.timezone(_dt.timedelta(hours=-5))
+    d_from = d_to = None
+    if date_from:
+        d1 = _dt.date.fromisoformat(date_from[:10])
+        d2 = (_dt.date.fromisoformat(date_to[:10]) if date_to
+              else _dt.datetime.now(co).date())
+        if d2 < d1:
+            d1, d2 = d2, d1
+        d_from, d_to = d1.isoformat(), d2.isoformat()
+        from_d = _dt.datetime.combine(d1, _dt.time(0, 0, 0), co)
+        to_d = _dt.datetime.combine(d2, _dt.time(23, 59, 59), co)
+    else:
+        to_d = _dt.datetime.now(co)
+        from_d = (to_d - _dt.timedelta(days=days)).replace(
+            hour=0, minute=0, second=0, microsecond=0)
+    since_iso, until_iso = from_d.isoformat(), to_d.isoformat()
+    by, ok_any, errors = {}, False, []
+    for ckey, shop in _SHOPIFY_SHOPS.items():
+        tok = db.get_setting("shopify_token::%s" % shop, "")
+        if not tok:
+            continue
+        try:
+            orders = _shopify_orders(shop, tok, since_iso, until_iso)
+            ok_any = True
+        except Exception as e:
+            errors.append("%s: %s" % (ckey.replace("shopify_", ""),
+                                      str(e)[:80]))
+            continue
+        tienda = ckey.replace("shopify_", "").upper()
+        for od in orders:
+            ca = od.get("created_at") or ""
+            try:
+                dt = _dt.datetime.fromisoformat(
+                    ca.replace("Z", "+00:00")).astimezone(co)
+            except Exception:
+                continue
+            fecha = dt.strftime("%Y-%m-%d")
+            if d_from and (fecha < d_from or fecha > d_to):
+                continue
+            b = by.setdefault(fecha, {"fecha": fecha, "ordenes": 0,
+                                      "unidades": 0, "ingresos": 0.0,
+                                      "_prod": {}, "roas": None, "acos": None})
+            b["ordenes"] += 1
+            b["ingresos"] += float(od.get("total_price") or 0)
+            for li in od.get("line_items", []):
+                q = int(li.get("quantity") or 0)
+                b["unidades"] += q
+                nm = (li.get("title") or "").strip()
+                k = "%s|%s" % (tienda, li.get("sku") or nm
+                               or li.get("product_id"))
+                e = b["_prod"].setdefault(
+                    k, {"nombre": "[%s] %s" % (tienda, nm), "unidades": 0})
+                e["unidades"] += q
+    dias = sorted(by.values(), key=lambda x: x["fecha"])
+    for d in dias:
+        d["ingresos"] = round(d["ingresos"], 2)
+        top = sorted(d.pop("_prod").values(), key=lambda v: -v["unidades"])
+        d["top"] = [{"nombre": t["nombre"], "unidades": t["unidades"],
+                     "img": ""} for t in top]
+    if not ok_any:
+        return {"ok": False,
+                "error": "Shopify: " + ("; ".join(errors) or "sin tiendas")}
+    return {"ok": True, "dias": dias}
+
+
 _SALES_CACHE = {}        # days -> {"ts": epoch, "data": ...}
 _SALES_TTL = 10 * 60
 
@@ -747,6 +844,10 @@ def _build_sales(days: int, date_from: str = None, date_to: str = None) -> dict:
         fa = fb.daily_sales(days, date_from, date_to)
     except Exception as e:
         fa = {"ok": False, "error": "Falabella: %s" % str(e)[:120]}
+    try:
+        sh = _shopify_daily_sales(days, date_from, date_to)
+    except Exception as e:
+        sh = {"ok": False, "error": "Shopify: %s" % str(e)[:120]}
     combo = {}
 
     _empty = lambda: {"ordenes": 0, "unidades": 0, "ingresos": 0,
@@ -757,24 +858,30 @@ def _build_sales(days: int, date_from: str = None, date_to: str = None) -> dict:
             for d in src.get("dias", []):
                 b = combo.setdefault(d["fecha"], {
                     "fecha": d["fecha"], "ml": _empty(),
-                    "falabella": _empty()})
+                    "falabella": _empty(), "shopify": _empty()})
                 b[key] = {"ordenes": d["ordenes"], "unidades": d["unidades"],
                           "ingresos": d["ingresos"], "roas": d.get("roas"),
                           "acos": d.get("acos"), "top": d.get("top", [])}
     _add(ml, "ml")
     _add(fa, "falabella")
+    _add(sh, "shopify")
     dias = []
     for f in sorted(combo):
         b = combo[f]
+        b.setdefault("shopify", _empty())
         b["total"] = {
-            "ordenes": b["ml"]["ordenes"] + b["falabella"]["ordenes"],
-            "unidades": b["ml"]["unidades"] + b["falabella"]["unidades"],
-            "ingresos": round(b["ml"]["ingresos"] + b["falabella"]["ingresos"], 2)}
+            "ordenes": b["ml"]["ordenes"] + b["falabella"]["ordenes"]
+            + b["shopify"]["ordenes"],
+            "unidades": b["ml"]["unidades"] + b["falabella"]["unidades"]
+            + b["shopify"]["unidades"],
+            "ingresos": round(b["ml"]["ingresos"] + b["falabella"]["ingresos"]
+                              + b["shopify"]["ingresos"], 2)}
         dias.append(b)
     return {"ok": True, "days": days, "dias": dias,
             "date_from": date_from or "", "date_to": date_to or "",
             "ml_ok": bool(ml.get("ok")), "ml_error": ml.get("error", ""),
-            "fal_ok": bool(fa.get("ok")), "fal_error": fa.get("error", "")}
+            "fal_ok": bool(fa.get("ok")), "fal_error": fa.get("error", ""),
+            "shop_ok": bool(sh.get("ok")), "shop_error": sh.get("error", "")}
 
 
 @app.get("/api/sales")
