@@ -522,8 +522,11 @@ async function renderCola(){
     const ps=r.pendientes||[];
     if(!ps.length){ document.getElementById("colaList").innerHTML=`<div class="empty" style="text-align:center;padding:48px;color:var(--muted)"><div style="font-size:40px">✓</div><div style="margin-top:8px;font-size:15px">Todo al día</div></div>`; return; }
     document.getElementById("colaList").innerHTML=ps.map(p=>{
-      return `<div class="card" id="cola-${p.id}" style="display:flex;gap:18px;align-items:center;padding:16px;margin-bottom:10px;flex-wrap:wrap">
-        <div style="flex:1;min-width:240px">
+      const foto=p.img?`<img src="${esc(p.img)}" loading="lazy" style="width:56px;height:56px;border-radius:10px;object-fit:cover;background:var(--surf);border:1px solid var(--border);flex:none">`
+        :`<span style="width:56px;height:56px;border-radius:10px;background:var(--surf);border:1px solid var(--border);flex:none;display:flex;align-items:center;justify-content:center;font-size:22px">📦</span>`;
+      return `<div class="card" id="cola-${p.id}" style="display:flex;gap:16px;align-items:center;padding:16px;margin-bottom:10px;flex-wrap:wrap">
+        ${foto}
+        <div style="flex:1;min-width:220px">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
             <span style="font-weight:700;font-size:14px">${esc(p.codigo_boun)} <span class="muted" style="font-weight:400">· ${esc(p.nombre||"")}</span></span>
             ${canalChip(p.canal)}

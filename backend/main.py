@@ -1812,18 +1812,35 @@ class ConfirmBodegaIn(BaseModel):
 
 
 def _stock_map(codigos: list) -> dict:
-    """{codigo: {name, qty_bogota, qty_yopal}} para una lista de códigos."""
+    """{codigo: {name, qty_bogota, qty_yopal, img}} para una lista de códigos.
+    La foto sale del thumb de ML (inventory_links.ml_thumb, subido a alta
+    resolución) y, si no hay, de image_path cuando es una URL pública."""
     out = {}
     cods = [c for c in dict.fromkeys(codigos) if c]
     if not cods:
         return out
     inlist = ",".join('"%s"' % c.replace('"', '') for c in cods)
-    rows = db._sb_get("inventory_products?code=in.(%s)&select=code,name,"
-                      "qty_bogota,qty_yopal" % _q_(inlist)) or []
+    rows = db._sb_get("inventory_products?code=in.(%s)&select=id,code,name,"
+                      "qty_bogota,qty_yopal,image_path" % _q_(inlist)) or []
+    id2code = {}
     for r in rows:
-        out[r.get("code")] = {"name": r.get("name"),
-                              "qty_bogota": int(r.get("qty_bogota") or 0),
-                              "qty_yopal": int(r.get("qty_yopal") or 0)}
+        code = r.get("code")
+        id2code[r.get("id")] = code
+        ip = r.get("image_path") or ""
+        out[code] = {"name": r.get("name"),
+                     "qty_bogota": int(r.get("qty_bogota") or 0),
+                     "qty_yopal": int(r.get("qty_yopal") or 0),
+                     "img": ip if ip.startswith("http") else ""}
+    # Foto preferida: thumb de ML de la(s) publicación(es) del producto.
+    if id2code:
+        ids = ",".join(str(i) for i in id2code)
+        links = db._sb_get("inventory_links?product_id=in.(%s)&select=product_id,"
+                           "ml_thumb" % ids) or []
+        for l in links:
+            code = id2code.get(l.get("product_id"))
+            thumb = l.get("ml_thumb") or ""
+            if code and thumb and not out[code].get("img"):
+                out[code]["img"] = _img_full(thumb)
     return out
 
 
@@ -1841,6 +1858,7 @@ def cola_bodega_list(user: dict = Depends(_current_user)):
             "nombre": r.get("nombre") or s.get("name") or "",
             "cantidad": int(r.get("cantidad") or 0), "canal": r.get("canal"),
             "order_id": r.get("order_id"), "created_at": r.get("created_at"),
+            "img": s.get("img", ""),
             "stock_bogota": s.get("qty_bogota", 0),
             "stock_yopal": s.get("qty_yopal", 0)})
     return {"pendientes": out, "total": len(out)}
