@@ -1346,6 +1346,81 @@ def ml_set_stock_preflight():
     return Response(status_code=204, headers=_EXPORT_CORS)
 
 
+def _ml_set_stock_one(item_id: str, cantidad: int, dry: bool = False,
+                      max_delta=None) -> dict:
+    """Fija available_quantity de UNA publicación ML al valor ABSOLUTO `cantidad`.
+    Devuelve un dict plano (lo usan el endpoint y el motor de propagación).
+
+    Seguridad:
+    - Salta Full, cerradas y catálogo (skip, no error).
+    - Escritura absoluta → idempotente: reaplicar el mismo plan no descuadra.
+    - `max_delta`: si |nuevo-actual| supera el tope, NO escribe (skip=delta_guard).
+    - Snapshot del stock `actual` para auditoría y reversión.
+    """
+    try:
+        c = int(cantidad)
+        if c < 0:
+            return {"ok": False, "error": "bad_request", "item_id": item_id}
+        r = _ml_request(
+            "GET", "/items/%s?attributes=id,status,available_quantity,"
+                   "variations,shipping,catalog_listing" % item_id)
+        if r is None:
+            return {"ok": False, "error": "ml_not_connected", "item_id": item_id}
+        if r.status_code != 200:
+            return {"ok": False, "error": r.text[:300],
+                    "ml_status": r.status_code, "item_id": item_id}
+        item = r.json()
+        status = item.get("status")
+        logistic = (item.get("shipping") or {}).get("logistic_type")
+        variations = item.get("variations") or []
+        # Guardrails: no tocar Full ni cerradas/catálogo (no contar como error).
+        if logistic == "fulfillment":
+            return {"ok": False, "skip": True, "reason": "full",
+                    "item_id": item_id}
+        if status == "closed" or item.get("catalog_listing") is True:
+            return {"ok": False, "skip": True, "reason": "closed/catalog",
+                    "item_id": item_id}
+        # Con variaciones → fija available_quantity en CADA variación (mismo N
+        # por defecto). Sin variaciones → en el ítem. `actual` = snapshot previo.
+        if variations:
+            applied_to = "variations"
+            actual = sum(int(v.get("available_quantity") or 0)
+                         for v in variations)
+            body = {"variations": [{"id": v.get("id"), "available_quantity": c}
+                                   for v in variations if v.get("id")]}
+        else:
+            applied_to = "item"
+            actual = int(item.get("available_quantity") or 0)
+            body = {"available_quantity": c}
+        # Guardia de salto: evita escrituras desproporcionadas por un cálculo raro.
+        if max_delta is not None and abs(c - actual) > max_delta:
+            return {"ok": False, "skip": True, "reason": "delta_guard",
+                    "item_id": item_id, "actual": actual, "target": c,
+                    "max_delta": max_delta, "applied_to": applied_to}
+        if dry:
+            return {"ok": True, "dry_run": True, "item_id": item_id, "set": c,
+                    "actual": actual, "applied_to": applied_to,
+                    "status": status, "logistic": logistic, "body": body}
+        pr = _ml_request("PUT", "/items/%s" % item_id, json_body=body)
+        if pr is None:
+            return {"ok": False, "error": "ml_not_connected", "item_id": item_id}
+        if pr.status_code in (200, 201):
+            return {"ok": True, "item_id": item_id, "set": c, "actual": actual,
+                    "applied_to": applied_to, "ml_status": pr.status_code}
+        txt = (pr.text or "").lower()
+        if "not_modifiable" in txt or "catalog_listing" in txt:
+            return {"ok": False, "skip": True, "reason": "closed/catalog",
+                    "item_id": item_id}
+        try:
+            err = pr.json()
+        except Exception:
+            err = pr.text[:500]
+        return {"ok": False, "error": err, "ml_status": pr.status_code,
+                "item_id": item_id}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200], "item_id": item_id}
+
+
 @app.get("/api/ml/set-stock")
 def ml_set_stock(key: str = "", item_id: str = "", cantidad: str = "",
                  dry: str = ""):
@@ -1364,67 +1439,9 @@ def ml_set_stock(key: str = "", item_id: str = "", cantidad: str = "",
     except (ValueError, TypeError):
         return JSONResponse({"ok": False, "error": "bad_request"},
                             status_code=400, headers=_EXPORT_CORS)
-    try:
-        r = _ml_request(
-            "GET", "/items/%s?attributes=id,status,available_quantity,"
-                   "variations,shipping,catalog_listing" % item_id)
-        if r is None:
-            return JSONResponse({"ok": False, "error": "ml_not_connected"},
-                                status_code=502, headers=_EXPORT_CORS)
-        if r.status_code != 200:
-            return JSONResponse({"ok": False, "error": r.text[:300],
-                                 "ml_status": r.status_code}, status_code=502,
-                                headers=_EXPORT_CORS)
-        item = r.json()
-        status = item.get("status")
-        logistic = (item.get("shipping") or {}).get("logistic_type")
-        variations = item.get("variations") or []
-        # Guardrails: no tocar Full ni cerradas/catálogo (no contar como error).
-        if logistic == "fulfillment":
-            return JSONResponse({"ok": False, "skip": True, "reason": "full",
-                                 "item_id": item_id}, headers=_EXPORT_CORS)
-        if status == "closed" or item.get("catalog_listing") is True:
-            return JSONResponse({"ok": False, "skip": True,
-                                 "reason": "closed/catalog",
-                                 "item_id": item_id}, headers=_EXPORT_CORS)
-        # Con variaciones → fija available_quantity en CADA variación (mismo N
-        # por defecto). Sin variaciones → en el ítem.
-        if variations:
-            applied_to = "variations"
-            body = {"variations": [{"id": v.get("id"), "available_quantity": c}
-                                   for v in variations if v.get("id")]}
-        else:
-            applied_to = "item"
-            body = {"available_quantity": c}
-        if dry == "1":
-            return JSONResponse({"ok": True, "item_id": item_id, "set": c,
-                                 "applied_to": applied_to, "status": status,
-                                 "logistic": logistic, "dry_run": True,
-                                 "body": body}, headers=_EXPORT_CORS)
-        pr = _ml_request("PUT", "/items/%s" % item_id, json_body=body)
-        if pr is None:
-            return JSONResponse({"ok": False, "error": "ml_not_connected"},
-                                status_code=502, headers=_EXPORT_CORS)
-        if pr.status_code in (200, 201):
-            return JSONResponse({"ok": True, "item_id": item_id, "set": c,
-                                 "applied_to": applied_to,
-                                 "ml_status": pr.status_code},
-                                headers=_EXPORT_CORS)
-        try:
-            err = pr.json()
-        except Exception:
-            err = pr.text[:500]
-        txt = (pr.text or "").lower()
-        if "not_modifiable" in txt or "catalog_listing" in txt:
-            return JSONResponse({"ok": False, "skip": True,
-                                 "reason": "closed/catalog",
-                                 "item_id": item_id}, headers=_EXPORT_CORS)
-        return JSONResponse({"ok": False, "error": err,
-                             "ml_status": pr.status_code}, status_code=502,
-                            headers=_EXPORT_CORS)
-    except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)[:200]},
-                            status_code=502, headers=_EXPORT_CORS)
+    res = _ml_set_stock_one(item_id, c, dry=(dry == "1"))
+    code = 200 if (res.get("ok") or res.get("skip")) else 502
+    return JSONResponse(res, status_code=code, headers=_EXPORT_CORS)
 
 
 # ── Motor de sincronización — helpers de canales + pipeline (DRY-RUN) ────────
@@ -1454,10 +1471,79 @@ def _shopify_variants_by_sku(shop: str, sku: str) -> list:
             n = e.get("node") or {}
             if (n.get("product") or {}).get("status") == "ACTIVE":
                 out.append({"key": n.get("id"), "ventas": 0,
-                            "actual": n.get("inventoryQuantity")})
+                            "actual": n.get("inventoryQuantity"),
+                            "inv_item": (n.get("inventoryItem") or {}).get("id")})
         return out
     except Exception:
         return []
+
+
+_SHOP_LOC = {}
+
+
+def _shopify_location_id(shop: str, tok: str):
+    """Primera location activa de la tienda (cacheada). Necesaria para fijar
+    inventario con inventorySetQuantities."""
+    if shop in _SHOP_LOC:
+        return _SHOP_LOC[shop]
+    if not tok:
+        return None
+    q = "query{locations(first:10){edges{node{id name isActive}}}}"
+    try:
+        import requests as _rq
+        r = _rq.post("https://%s/admin/api/2025-01/graphql.json" % shop,
+                     json={"query": q},
+                     headers={"X-Shopify-Access-Token": tok}, timeout=15)
+        if r.status_code != 200:
+            return None
+        edges = (((r.json().get("data") or {}).get("locations") or {})
+                 .get("edges") or [])
+        for e in edges:
+            n = e.get("node") or {}
+            if n.get("isActive"):
+                _SHOP_LOC[shop] = n.get("id")
+                return _SHOP_LOC[shop]
+    except Exception:
+        pass
+    return None
+
+
+def _shopify_set_inventory(shop: str, tok: str, inv_item: str, location: str,
+                           cantidad: int, actual=None, dry: bool = False,
+                           max_delta=None) -> dict:
+    """Fija el inventario 'available' (valor ABSOLUTO → idempotente) de un
+    inventoryItem en una location, vía inventorySetQuantities. Respeta max_delta."""
+    c = int(cantidad)
+    if max_delta is not None and actual is not None and abs(c - actual) > max_delta:
+        return {"ok": False, "skip": True, "reason": "delta_guard",
+                "inv_item": inv_item, "actual": actual, "target": c,
+                "max_delta": max_delta}
+    if dry:
+        return {"ok": True, "dry_run": True, "shop": shop, "inv_item": inv_item,
+                "actual": actual, "set": c}
+    m = ("mutation($input:InventorySetQuantitiesInput!){"
+         "inventorySetQuantities(input:$input){userErrors{field message}}}")
+    variables = {"input": {"name": "available", "reason": "correction",
+                           "ignoreCompareQuantity": True,
+                           "quantities": [{"inventoryItemId": inv_item,
+                                           "locationId": location,
+                                           "quantity": c}]}}
+    try:
+        import requests as _rq
+        r = _rq.post("https://%s/admin/api/2025-01/graphql.json" % shop,
+                     json={"query": m, "variables": variables},
+                     headers={"X-Shopify-Access-Token": tok}, timeout=20)
+        if r.status_code != 200:
+            return {"ok": False, "error": r.text[:200], "http": r.status_code,
+                    "inv_item": inv_item}
+        data = (r.json().get("data") or {}).get("inventorySetQuantities") or {}
+        errs = data.get("userErrors") or []
+        if errs:
+            return {"ok": False, "error": errs, "inv_item": inv_item}
+        return {"ok": True, "shop": shop, "inv_item": inv_item, "actual": actual,
+                "set": c}
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:200], "inv_item": inv_item}
 
 
 def _ml_active_pubs(product_id: int) -> tuple:
@@ -1518,6 +1604,116 @@ def _pending_cola(codigo: str) -> int:
     rows = db._sb_get("cola_bodega?codigo_boun=eq.%s&estado=eq.pendiente&"
                       "select=cantidad" % _q_(codigo)) or []
     return sum(int(r.get("cantidad") or 0) for r in rows)
+
+
+def _sync_apply_channels() -> set:
+    """Lista blanca de canales habilitados para ESCRITURA real. Separada de
+    `sync_enabled` (que solo controla la ingesta de ventas). Vacío = nadie
+    escribe → DRY-RUN puro. Ej.: setting `sync_apply_channels='mercadolibre'`.
+    Kill-switch = vaciar el setting. Acepta coma o punto y coma."""
+    raw = (db.get_setting("sync_apply_channels", "")
+           or os.environ.get("SYNC_APPLY_CHANNELS", ""))
+    return {c.strip() for c in raw.replace(";", ",").split(",") if c.strip()}
+
+
+def _sync_apply_max_delta():
+    """Tope de salto absoluto por publicación (guardia anti-cálculo-raro).
+    setting `sync_apply_max_delta` o env SYNC_APPLY_MAX_DELTA. 0/vacío = sin tope."""
+    try:
+        v = int(db.get_setting("sync_apply_max_delta", "")
+                or os.environ.get("SYNC_APPLY_MAX_DELTA", "") or "0")
+        return v if v > 0 else None
+    except Exception:
+        return None
+
+
+def _apply_plan(codigo: str, plan: dict, order_id: str = "",
+                dry: bool = False, force=None) -> dict:
+    """Aplica el plan de reparto SOLO a los canales en la lista blanca
+    (`_sync_apply_channels`), o a `force` si se pasa (para previsualizar).
+
+    - Hoy implementa MercadoLibre (escritor probado, valor absoluto =
+      idempotente). Falabella/Shopify quedan listos para sumarse después.
+    - Cada escritura se audita best-effort en la tabla `sync_aplicacion`
+      (si no existe aún, `_sb_post` falla en silencio y no rompe el flujo).
+    - `dry=True` calcula y devuelve lo que escribiría, sin enviar nada.
+    """
+    permitidos = set(force) if force else _sync_apply_channels()
+    max_delta = _sync_apply_max_delta()
+    out = {"permitidos": sorted(permitidos), "dry": dry, "canales": {}}
+    if not permitidos:
+        return out  # nadie habilitado → no escribe (DRY-RUN puro)
+    # ── MercadoLibre ──────────────────────────────────────────────────────────
+    if "mercadolibre" in permitidos:
+        ml_res = []
+        reparto = (plan.get("mercadolibre", {}) or {}).get("reparto", {}) or {}
+        for item_id, cant in reparto.items():
+            r = _ml_set_stock_one(str(item_id), int(cant), dry=dry,
+                                  max_delta=max_delta)
+            ml_res.append(r)
+            if not dry:
+                _safe(db._sb_post, "sync_aplicacion", {
+                    "codigo_boun": codigo, "canal": "mercadolibre",
+                    "ref": str(item_id), "order_id": str(order_id),
+                    "actual": r.get("actual"), "objetivo": r.get("set"),
+                    "ok": bool(r.get("ok")),
+                    "detalle": str(r.get("reason") or r.get("error") or "")[:200]})
+        out["canales"]["mercadolibre"] = ml_res
+    # ── Falabella ─────────────────────────────────────────────────────────────
+    # fb.set_stock fija el valor absoluto (ProductUpdate) y _post ya reintenta los
+    # 503/429 con backoff. No hay snapshot barato del stock actual → sin delta_guard.
+    if "falabella" in permitidos:
+        import falabella as fb
+        fal_res = []
+        reparto = (plan.get("falabella", {}) or {}).get("reparto", {}) or {}
+        for sku, cant in reparto.items():
+            try:
+                if dry:
+                    r = {"ok": True, "dry_run": True, "sku": sku, "set": int(cant)}
+                else:
+                    resp = fb.set_stock(sku, int(cant), dry=False)
+                    r = {"ok": True, "sku": sku, "set": int(cant), "respuesta": resp}
+            except Exception as e:
+                r = {"ok": False, "sku": sku, "set": int(cant),
+                     "error": str(e)[:200]}
+            fal_res.append(r)
+            if not dry:
+                _safe(db._sb_post, "sync_aplicacion", {
+                    "codigo_boun": codigo, "canal": "falabella", "ref": str(sku),
+                    "order_id": str(order_id), "actual": None,
+                    "objetivo": int(cant), "ok": bool(r.get("ok")),
+                    "detalle": str(r.get("error") or "")[:200]})
+        out["canales"]["falabella"] = fal_res
+    # ── Shopify (BOUN y/o KAT) ────────────────────────────────────────────────
+    for ckey in ("shopify_boun", "shopify_kat"):
+        if ckey not in permitidos:
+            continue
+        shop = _SHOPIFY_SHOPS[ckey]
+        tok = db.get_setting("shopify_token::%s" % shop, "")
+        loc = _shopify_location_id(shop, tok)
+        vmap = {v["key"]: v for v in _shopify_variants_by_sku(shop, codigo)}
+        sh_res = []
+        reparto = (plan.get(ckey, {}) or {}).get("reparto", {}) or {}
+        for vid, cant in reparto.items():
+            v = vmap.get(vid) or {}
+            inv = v.get("inv_item")
+            if not inv or not loc:
+                r = {"ok": False, "skip": True,
+                     "reason": "sin_inv_item_o_location", "ref": vid}
+            else:
+                r = _shopify_set_inventory(shop, tok, inv, loc, int(cant),
+                                           actual=v.get("actual"), dry=dry,
+                                           max_delta=max_delta)
+                r["ref"] = vid
+            sh_res.append(r)
+            if not dry:
+                _safe(db._sb_post, "sync_aplicacion", {
+                    "codigo_boun": codigo, "canal": ckey, "ref": str(vid),
+                    "order_id": str(order_id), "actual": v.get("actual"),
+                    "objetivo": int(cant), "ok": bool(r.get("ok")),
+                    "detalle": str(r.get("reason") or r.get("error") or "")[:200]})
+        out["canales"][ckey] = sh_res
+    return out
 
 
 def _process_sale(canal: str, order_id: str, items: list,
@@ -1609,17 +1805,21 @@ def _process_sale(canal: str, order_id: str, items: list,
             db._sb_post("cola_bodega", cola)
             asignado = "pendiente(sin stock)"
         disp = max(0, bog + yop - _pending_cola(codigo))
+        plan = _compute_plan(codigo, disp)
+        # Propagación a canales: escribe SOLO los canales de la lista blanca
+        # (_sync_apply_channels). Si está vacía, sigue siendo DRY-RUN.
+        aplicado = _apply_plan(codigo, plan, order_id=order_id)
         resultados.append({"codigo": codigo, "cantidad": cantidad,
                            "es_full": bool(es_full), "bodega": asignado,
                            "disponible_tras_venta": disp,
-                           "plan": _compute_plan(codigo, disp)})
+                           "plan": plan, "aplicado": aplicado})
     db._sb_patch("evento_venta", "canal=eq.%s&order_id=eq.%s"
                  % (_q_(canal), _q_(order_id)),
                  {"estado": "procesado",
                   "procesado_at": _dt.datetime.now(
                       _dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
-    return {"ok": True, "dry_run": True, "canal": canal, "order_id": order_id,
-            "resultados": resultados}
+    return {"ok": True, "dry_run": not bool(_sync_apply_channels()),
+            "canal": canal, "order_id": order_id, "resultados": resultados}
 
 
 def _sync_enabled() -> bool:
@@ -1870,6 +2070,47 @@ def sync_simular(key: str = "", canal: str = "test", order_id: str = "",
                             [(codigo, int(cantidad), es_full)],
                             payload={"simulado": True})
         return JSONResponse(res, headers=_EXPORT_CORS)
+    except Exception as e:
+        return JSONResponse({"error": str(e)[:200]}, status_code=502,
+                            headers=_EXPORT_CORS)
+
+
+# ── Motor de sincronización — PREVIEW de escritura (no envía nada) ────────────
+
+@app.options("/api/sync/apply-preview")
+def sync_apply_preview_preflight():
+    return Response(status_code=204, headers=_EXPORT_CORS)
+
+
+@app.get("/api/sync/apply-preview")
+def sync_apply_preview(key: str = "", codigo: str = "", vendidos: int = 0,
+                       canal: str = "mercadolibre"):
+    """Muestra EXACTAMENTE lo que el motor escribiría en un canal para `codigo`
+    (snapshot actual → objetivo por publicación), SIN enviar nada. Úsalo antes de
+    poblar `sync_apply_channels`. Por defecto previsualiza MercadoLibre."""
+    token = os.environ.get("BOUN_EXPORT_TOKEN", "")
+    if not token or key != token:
+        return JSONResponse({"error": "unauthorized"}, status_code=401,
+                            headers=_EXPORT_CORS)
+    if not codigo:
+        return JSONResponse({"error": "bad_request"}, status_code=400,
+                            headers=_EXPORT_CORS)
+    try:
+        prows = db._sb_get("inventory_products?code=eq.%s&select=qty_bogota,"
+                           "qty_yopal" % _q_(codigo)) or []
+        if not prows:
+            return JSONResponse({"error": "codigo_no_encontrado",
+                                 "codigo": codigo}, status_code=404,
+                                headers=_EXPORT_CORS)
+        bog = int(prows[0].get("qty_bogota") or 0)
+        yop = int(prows[0].get("qty_yopal") or 0)
+        disp = max(0, bog + yop - _pending_cola(codigo) - int(vendidos or 0))
+        plan = _compute_plan(codigo, disp)
+        prev = _apply_plan(codigo, plan, dry=True, force={canal})
+        return JSONResponse({"ok": True, "codigo": codigo, "disponible": disp,
+                             "plan": plan, "preview": prev,
+                             "nota": "dry-run: no se escribió nada"},
+                            headers=_EXPORT_CORS)
     except Exception as e:
         return JSONResponse({"error": str(e)[:200]}, status_code=502,
                             headers=_EXPORT_CORS)
