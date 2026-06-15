@@ -872,6 +872,7 @@ def _shopify_daily_sales(days: int = 14, date_from: str = None,
 
 _SALES_CACHE = {}        # days -> {"ts": epoch, "data": ...}
 _SALES_TTL = 10 * 60
+_FAL_LAST_GOOD = {}      # rango -> {"ts": epoch, "dias": [...]} última lectura ok
 
 
 def _build_sales(days: int, date_from: str = None, date_to: str = None) -> dict:
@@ -885,6 +886,21 @@ def _build_sales(days: int, date_from: str = None, date_to: str = None) -> dict:
         sh = _shopify_daily_sales(days, date_from, date_to)
     except Exception as e:
         sh = {"ok": False, "error": "Shopify: %s" % str(e)[:120]}
+    # Degradación elegante: si Falabella cae (503), mostrar la última lectura
+    # buena de ese mismo rango marcada como "stale", en vez de quedar vacío.
+    _fal_key = "%s|%s|%s" % (days, date_from or "", date_to or "")
+    fal_ok = bool(fa.get("ok"))
+    fal_error = fa.get("error", "")
+    fal_stale, fal_as_of = False, 0
+    if fal_ok:
+        _FAL_LAST_GOOD[_fal_key] = {"ts": time.time(),
+                                    "dias": fa.get("dias", [])}
+    else:
+        lg = _FAL_LAST_GOOD.get(_fal_key)
+        if lg:
+            fa = {"ok": True, "dias": lg["dias"]}
+            fal_stale = True
+            fal_as_of = int((time.time() - lg["ts"]) / 60)
     combo = {}
 
     _empty = lambda: {"ordenes": 0, "unidades": 0, "ingresos": 0,
@@ -917,7 +933,8 @@ def _build_sales(days: int, date_from: str = None, date_to: str = None) -> dict:
     return {"ok": True, "days": days, "dias": dias,
             "date_from": date_from or "", "date_to": date_to or "",
             "ml_ok": bool(ml.get("ok")), "ml_error": ml.get("error", ""),
-            "fal_ok": bool(fa.get("ok")), "fal_error": fa.get("error", ""),
+            "fal_ok": fal_ok, "fal_error": fal_error,
+            "fal_stale": fal_stale, "fal_as_of": fal_as_of,
             "shop_ok": bool(sh.get("ok")), "shop_error": sh.get("error", "")}
 
 

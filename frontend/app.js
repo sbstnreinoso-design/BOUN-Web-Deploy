@@ -446,7 +446,10 @@ async function renderSales(force){
     // avisos de conexión
     let notes="";
     if(!r.ml_ok) notes+=`<div class="note red">⚠ MercadoLibre: ${esc(r.ml_error||"sin conexión")}</div>`;
-    if(!r.fal_ok) notes+=`<div class="note red">⚠ Falabella: ${esc(r.fal_error||"sin conexión")}. Configura sus credenciales para ver sus ventas.</div>`;
+    if(!r.fal_ok){
+      if(r.fal_stale) notes+=`<div class="note">⚠ Falabella: su API no responde ahora (503); mostrando la <b>última lectura de hace ${r.fal_as_of} min</b>.</div>`;
+      else notes+=`<div class="note red">⚠ Falabella: ${esc(r.fal_error||"sin conexión")}</div>`;
+    }
     if(!r.shop_ok) notes+=`<div class="note red">⚠ Shopify: ${esc(r.shop_error||"sin conexión")}.</div>`;
     if(r.cache_age_min>0) notes+=`<div class="note">Datos de hace ${r.cache_age_min} min · se refrescan solos cada 10 min.</div>`;
     document.getElementById("salNote").innerHTML=notes;
