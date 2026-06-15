@@ -1819,9 +1819,12 @@ def _stock_map(codigos: list) -> dict:
     cods = [c for c in dict.fromkeys(codigos) if c]
     if not cods:
         return out
-    inlist = ",".join('"%s"' % c.replace('"', '') for c in cods)
+    # PostgREST in.(...): comillas y comas SEPARADORAS van literales; solo se
+    # encodea el CONTENIDO de cada código (si se encodea la coma, PostgREST lo
+    # toma como un único valor y no cruza nada).
+    inlist = ",".join("%%22%s%%22" % _q_(c.replace('"', '')) for c in cods)
     rows = db._sb_get("inventory_products?code=in.(%s)&select=id,code,name,"
-                      "qty_bogota,qty_yopal,image_path" % _q_(inlist)) or []
+                      "qty_bogota,qty_yopal,image_path" % inlist) or []
     id2code = {}
     for r in rows:
         code = r.get("code")
