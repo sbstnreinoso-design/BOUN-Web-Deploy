@@ -1820,24 +1820,22 @@ def _stock_map(codigos: list) -> dict:
     if not cods:
         return out
     # Una consulta por código con filtro code=eq.<código> (patrón probado del
-    # motor). El in.() con comillas falla porque requests re-encodea el '%'.
+    # motor). OJO: inventory_products NO tiene image_path → pedirla rompía TODO
+    # el select (400). La foto sale de inventory_links.ml_thumb.
     for c in cods:
         rows = db._sb_get("inventory_products?code=eq.%s&select=id,code,name,"
-                          "qty_bogota,qty_yopal,image_path&limit=1" % _q_(c)) or []
+                          "qty_bogota,qty_yopal&limit=1" % _q_(c)) or []
         if not rows:
             continue
         r = rows[0]
-        ip = r.get("image_path") or ""
-        img = ip if ip.startswith("http") else ""
-        # Foto preferida: thumb de ML de la publicación del producto.
-        if not img:
-            links = db._sb_get("inventory_links?product_id=eq.%d&select=ml_thumb"
-                               "&limit=10" % r.get("id")) or []
-            for l in links:
-                thumb = l.get("ml_thumb") or ""
-                if thumb:
-                    img = _img_full(thumb)
-                    break
+        img = ""
+        links = db._sb_get("inventory_links?product_id=eq.%d&select=ml_thumb"
+                           "&limit=10" % r.get("id")) or []
+        for l in links:
+            thumb = l.get("ml_thumb") or ""
+            if thumb:
+                img = _img_full(thumb)
+                break
         out[c] = {"name": r.get("name"),
                   "qty_bogota": int(r.get("qty_bogota") or 0),
                   "qty_yopal": int(r.get("qty_yopal") or 0),
