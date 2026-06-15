@@ -1168,16 +1168,20 @@ function scanBar(done,total,mode){
       </div></div>`;
 }
 async function scanPoll(){
-  const out=document.getElementById("scanOut");
-  if(!out) return;                         // el usuario salió de Configuración
   let s; try{ s=await api("/sync/scan-status"); }
-  catch(e){ scanSetBusy(false); out.innerHTML=`<div class="red" style="font-size:12px">${esc(e.message)}</div>`; return; }
+  catch(e){ scanSetBusy(false); const o=document.getElementById("scanOut"); if(o) o.innerHTML=`<div class="red" style="font-size:12px">${esc(e.message)}</div>`; return; }
+  // Releemos el contenedor en CADA tick: si Configuración se re-renderizó, el
+  // <div id="scanOut"> es otro nodo. No cortamos la cadena si está null (el
+  // escaneo sigue en el servidor); seguimos sondeando y pintamos cuando reaparezca.
   if(s.status==="running"){
     scanSetBusy(true);
-    out.innerHTML=scanBar(s.done,s.total,s.mode);
+    const out=document.getElementById("scanOut");
+    if(out) out.innerHTML=scanBar(s.done,s.total,s.mode);
     setTimeout(scanPoll,2000); return;
   }
   scanSetBusy(false);
+  const out=document.getElementById("scanOut");
+  if(!out) return;
   if(s.status==="error"){ out.innerHTML=`<div class="red" style="font-size:12px">Error: ${esc(s.error||"")}</div>`; return; }
   if(s.status==="idle"){ out.innerHTML=""; return; }
   out.innerHTML=scanResultHTML(s);
