@@ -168,12 +168,17 @@ def get_products_list(limit: int = 100) -> list:
         body = (d.get("SuccessResponse") or {}).get("Body") or {}
         page = _as_list((body.get("Products") or {}).get("Product"))
         for x in page:
+            img = x.get("MainImage") or ""
+            if not img:
+                imgs = _as_list((x.get("Images") or {}).get("Image"))
+                img = imgs[0] if imgs else ""
             out.append({
                 "SellerSku": x.get("SellerSku"),
                 "Name": x.get("Name"),
                 "Quantity": x.get("Quantity") or _bu_field(x, "Stock"),
                 "Price": x.get("Price") or _bu_field(x, "Price"),
                 "Status": x.get("Status") or _bu_field(x, "Status"),
+                "Image": img,
             })
         if len(page) < limit:
             break

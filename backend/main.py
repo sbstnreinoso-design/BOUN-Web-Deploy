@@ -255,7 +255,8 @@ def inventory_items(user: dict = Depends(_current_user)):
                 continue
             items.append({
                 "channel": "falabella", "item_id": sku, "sku": sku,
-                "title": x.get("Name") or sku, "thumbnail": "",
+                "title": x.get("Name") or sku,
+                "thumbnail": x.get("Image") or "",
                 "inventory": int(float(x.get("Quantity") or 0)),
                 "price": float(x.get("Price") or 0),
                 "sold_total": 0, "logistic_type": "",
