@@ -2764,21 +2764,22 @@ def _cerebro_pendientes(tasks: list) -> list:
     """Construye la lista de "Pendientes de la IA" que ve Sebastián.
 
     Regla (16-jun-2026): toda tarea/skill reporta a Cerebro y los pendientes se
-    auto-actualizan. Fuente:
-      1) DERIVADOS de los heartbeats: cada tarea cuyo último estado sea `warn` o
-         `err` se convierte en pendiente; al reportar `ok`/`run` deja de aparecer
-         (auto-limpieza en la siguiente corrida, sin pendientes obsoletos).
-      2) MANUALES: lo que haya en el setting `cerebro_alertas` (para pendientes que
-         no estén atados a una tarea). Se pueden auto-limpiar si llevan `task_id`
-         y esa tarea ya reportó `ok`.
+    auto-actualizan. NINGUNA tarea programada se escapa. Fuentes:
+      1) FALLAS: cada tarea cuyo último heartbeat sea `warn` o `err` se muestra;
+         al reportar `ok`/`run` deja de aparecer (auto-limpieza).
+      2) WATCHDOG (sin excepción): toda tarea programada que debió correr y NO
+         confirmó un heartbeat fresco (no corrió, falló, o no pudo reportar) se
+         marca como pendiente hasta que confirme una corrida.
+      3) MANUALES: lo del setting `cerebro_alertas` (pendientes no atados a tarea).
     """
     pend, vistos = [], set()
-    # 1) derivados de heartbeats
+    now = datetime.now(timezone.utc)
     for t in tasks:
         hb = t.get("heartbeat") or {}
         st = hb.get("status")
+        tid = t.get("id")
+        # 1) fallas reportadas
         if st in ("warn", "err"):
-            tid = t.get("id")
             vistos.add(tid)
             cuando = hb.get("last_run") or ""
             txt = hb.get("msg") or t.get("desc") or "Sin detalle."
@@ -2786,7 +2787,33 @@ def _cerebro_pendientes(tasks: list) -> list:
                 txt = f"{txt} · último reporte {cuando}"
             pend.append({"sev": st, "title": t.get("nombre") or tid,
                          "txt": txt, "task_id": tid, "auto": True})
-    # 2) manuales del setting (si su task_id ya reportó ok/run, se omite = limpio)
+            continue
+        # 2) watchdog: solo tareas programadas (las dinámicas no tienen horario)
+        if t.get("auto"):
+            continue
+        hours, days = t.get("hours"), t.get("days")
+        if not hours and not days:
+            continue
+        if days:
+            max_age_h = 18 * 24 if len(days) >= 2 else 34 * 24
+        else:
+            max_age_h = 20 if (hours and len(hours) >= 2) else 28
+        lr = hb.get("last_run")
+        stale = True
+        if lr:
+            try:
+                last = datetime.strptime(lr, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+                stale = (now - last).total_seconds() > max_age_h * 3600
+            except Exception:
+                stale = True
+        if stale:
+            vistos.add(tid)
+            cuando = lr or "nunca"
+            pend.append({"sev": "warn", "title": t.get("nombre") or tid,
+                         "txt": f"No confirmó su última corrida programada (último heartbeat: {cuando}). "
+                                f"Revisa si corrió y si pudo reportar al Cerebro.",
+                         "task_id": tid, "auto": True})
+    # 3) manuales del setting (si su task_id ya se mostró o reportó ok/run, se omite)
     try:
         raw = db.get_setting("cerebro_alertas", "")
         manuales = json.loads(raw) if raw else []
@@ -2800,9 +2827,9 @@ def _cerebro_pendientes(tasks: list) -> list:
             continue
         tid = a.get("task_id")
         if tid:
-            if tid in vistos:        # ya está como derivado
+            if tid in vistos:
                 continue
-            if estados.get(tid) in ("ok", "run"):  # resuelto → no mostrar
+            if estados.get(tid) in ("ok", "run"):
                 continue
         pend.append(a)
     return pend
