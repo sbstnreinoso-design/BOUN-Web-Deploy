@@ -2371,6 +2371,55 @@ def _start_poller():
     threading.Thread(target=_poller_loop, daemon=True).start()
 
 
+@app.post("/api/sync/falabella/reprocess")
+def falabella_reprocess(order_id: str = "", user: dict = Depends(_admin)):
+    """Sana UNA orden Falabella puntual (p.ej. saltada por el piso/ventana del
+    poller) reprocesándola por el MISMO camino que el poller (_process_sale).
+    Es idempotente: si ya está en evento_venta=procesado NO descuenta de nuevo,
+    y al marcarla el poller jamás la volverá a tocar (cero doble descuento).
+    Devuelve diagnóstico: piso, conexión, estado previo, items y mapeo."""
+    import falabella as fb
+    import sync as _sync
+    oid = str(order_id or "").strip()
+    out = {"order_id": oid,
+           "floor": db.get_setting("sync_falabella_since", ""),
+           "connected": bool(fb.is_connected())}
+    if not oid:
+        out["ok"] = False
+        out["error"] = "order_id requerido"
+        return out
+    ev = db._sb_get("evento_venta?canal=eq.falabella&order_id=eq.%s&"
+                    "select=estado" % _q_(oid)) or []
+    out["evento_previo"] = ev[0].get("estado") if ev else None
+    if ev and ev[0].get("estado") == "procesado":
+        out["ok"] = True
+        out["ya_procesada"] = True
+        return out
+    try:
+        items_map = fb._items_by_order([oid])
+    except Exception as e:
+        out["ok"] = False
+        out["error"] = "items: " + str(e)[:200]
+        return out
+    raw = items_map.get(oid, [])
+    out["items_raw"] = raw
+    agg = {}
+    for _nm, sku in raw:
+        code = _sync.FAL_SKU_TO_BOUN.get(sku)
+        if code:
+            agg[code] = agg.get(code, 0) + 1
+    out["agg"] = [[k, v] for k, v in agg.items()]
+    if not agg:
+        out["ok"] = False
+        out["error"] = "sin items mapeables (revisar SKU)"
+        return out
+    _process_sale("falabella", oid, list(agg.items()),
+                  {"poller": "reprocess-manual", "created": ""})
+    out["ok"] = True
+    out["reprocesada"] = True
+    return out
+
+
 @app.get("/api/sync/simular")
 def sync_simular(key: str = "", canal: str = "test", order_id: str = "",
                  codigo: str = "", cantidad: int = 1, full: str = ""):
