@@ -1726,7 +1726,10 @@ def _compute_plan(codigo: str, disponible: int, reactivate: bool = False) -> dic
     pid = prows[0]["id"] if prows else None
     disp_ml = disponible
     if prows and _ml_solo_bogota():
-        disp_ml = max(0, disponible - int(prows[0].get("qty_yopal") or 0))
+        if _combo_components(codigo):
+            disp_ml = _combo_armable(codigo)[0]   # combo: solo armables en Bogotá
+        else:
+            disp_ml = max(0, disponible - int(prows[0].get("qty_yopal") or 0))
     # MercadoLibre (usa disp_ml: solo Bogotá si la regla temporal está activa)
     if pid:
         ml_act, ml_excl = _ml_active_pubs(pid, include_paused_oos=reactivate)
@@ -1780,13 +1783,13 @@ def _combo_components(codigo: str):
     return c if (isinstance(c, list) and c) else None
 
 
-def _combo_disponible(codigo: str) -> int:
-    """Cuántos combos se pueden ARMAR según el inventario de los componentes:
-    min sobre los componentes de floor(disponible_componente / cant)."""
+def _combo_armable(codigo: str):
+    """(armables_en_Bogotá, armables_en_Yopal). Un combo se arma con componentes
+    de UNA sola bodega → se calcula el mínimo por bodega (no se mezclan)."""
     comps = _combo_components(codigo)
     if not comps:
-        return 0
-    best = None
+        return (0, 0)
+    bb = yy = None
     for comp in comps:
         ccod = str(comp.get("codigo") or "").strip()
         cq = max(1, int(comp.get("cant") or 1))
@@ -1795,13 +1798,19 @@ def _combo_disponible(codigo: str) -> int:
         rows = db._sb_get("inventory_products?code=eq.%s&select=qty_bogota,"
                           "qty_yopal" % _q_(ccod)) or []
         if not rows:
-            return 0   # falta un componente en inventario → no se puede armar
-        cbog = int(rows[0].get("qty_bogota") or 0)
-        cyop = int(rows[0].get("qty_yopal") or 0)
-        cavail = max(0, cbog + cyop - _pending_cola(ccod))
-        canmake = cavail // cq
-        best = canmake if best is None else min(best, canmake)
-    return max(0, best or 0)
+            return (0, 0)   # falta un componente → no se puede armar en ninguna
+        b = int(rows[0].get("qty_bogota") or 0) // cq
+        y = int(rows[0].get("qty_yopal") or 0) // cq
+        bb = b if bb is None else min(bb, b)
+        yy = y if yy is None else min(yy, y)
+    return (max(0, bb or 0), max(0, yy or 0))
+
+
+def _combo_disponible(codigo: str) -> int:
+    """Total de combos armables = armables en Bogotá + armables en Yopal (cada
+    combo se arma con componentes de una sola bodega; no se mezclan bodegas)."""
+    b, y = _combo_armable(codigo)
+    return b + y
 
 
 def _sync_apply_channels() -> set:
@@ -1988,35 +1997,87 @@ def _propagar(codigo, disp, order_id):
 
 
 def _combo_vender(canal, order_id, codigo, cantidad, es_full):
-    """Venta de un COMBO: descuenta sus componentes (cant × cantidad vendida),
-    propaga el stock de cada componente y del propio combo (= armable)."""
+    """Venta de un COMBO: descuenta sus componentes desde la MISMA bodega (un
+    combo solo se arma si todos sus componentes están juntos). Decide cuántos
+    salen de Bogotá y cuántos de Yopal; descuenta y propaga cada componente y el
+    propio combo (= armables totales)."""
     comps = _combo_components(codigo) or []
-    res_comp = []
+    items = []
     for comp in comps:
         ccod = str(comp.get("codigo") or "").strip()
         cq = max(1, int(comp.get("cant") or 1))
-        ccant = cantidad * cq
-        cprows = db._sb_get("inventory_products?code=eq.%s&select=id,code,name,"
-                            "qty_bogota,qty_yopal" % _q_(ccod)) or []
-        if not cprows:
+        rows = db._sb_get("inventory_products?code=eq.%s&select=id,code,name,"
+                          "qty_bogota,qty_yopal" % _q_(ccod)) or []
+        items.append({"codigo": ccod, "cant": cq,
+                      "row": (rows[0] if rows else None)})
+    # ── Decidir de qué bodega(s) sale el combo (componentes de la MISMA) ──────
+    plan_bog = plan_yop = 0
+    if es_full is not True:
+        def _cap(wh):
+            best = None
+            for it in items:
+                if not it["row"]:
+                    return 0
+                mk = int(it["row"].get(wh) or 0) // it["cant"]
+                best = mk if best is None else min(best, mk)
+            return max(0, best or 0)
+        cap_bog = _cap("qty_bogota")
+        cap_yop = 0 if (canal == "mercadolibre" and _ml_solo_bogota()) \
+            else _cap("qty_yopal")
+        if cap_bog >= cantidad:           # cabe todo en Bogotá
+            plan_bog = cantidad
+        elif cap_yop >= cantidad:         # cabe todo en Yopal
+            plan_yop = cantidad
+        else:                             # ninguna sola alcanza → divide lo posible
+            plan_bog = min(cantidad, cap_bog)
+            plan_yop = min(cantidad - plan_bog, cap_yop)
+    faltante = cantidad - (plan_bog + plan_yop)   # >0 = sobreventa (no había stock junto)
+    # ── Descontar cada componente de la(s) bodega(s) decidida(s) ─────────────
+    res_comp = []
+    for it in items:
+        ccod = it["codigo"]; cq = it["cant"]; row = it["row"]; ccant = cantidad * cq
+        if not row:
             res_comp.append({"componente": ccod, "skip": True,
                              "motivo": "no_en_inventario"})
             continue
-        asg, cbog, cyop = _descontar_una(canal, order_id, cprows[0], ccant, es_full)
-        cdisp = max(0, cbog + cyop - _pending_cola(ccod))
+        pid = row["id"]
+        db._sb_post("movimiento_stock", {
+            "codigo_boun": ccod, "delta": -ccant,
+            "motivo": "venta_combo_%s" % canal, "canal": canal,
+            "order_id": str(order_id)})
+        if es_full is True:
+            res_comp.append({"componente": ccod, "cantidad": ccant, "bodega": "full"})
+            continue
+        nb = int(row.get("qty_bogota") or 0); ny = int(row.get("qty_yopal") or 0)
+        from_bog = plan_bog * cq; from_yop = plan_yop * cq
+        if from_bog:
+            nb = max(0, nb - from_bog)
+            db._sb_patch("inventory_products", "id=eq.%d" % pid, {"qty_bogota": nb})
+            db._sb_post("movimiento_stock", {
+                "codigo_boun": ccod, "delta": -from_bog,
+                "motivo": "asignacion_bodega_bogota_combo", "canal": canal,
+                "order_id": str(order_id)})
+        if from_yop:
+            ny = max(0, ny - from_yop)
+            db._sb_patch("inventory_products", "id=eq.%d" % pid, {"qty_yopal": ny})
+            db._sb_post("movimiento_stock", {
+                "codigo_boun": ccod, "delta": -from_yop,
+                "motivo": "asignacion_bodega_yopal_combo", "canal": canal,
+                "order_id": str(order_id)})
+        cdisp = max(0, nb + ny - _pending_cola(ccod))
         _propagar(ccod, cdisp, order_id)
-        res_comp.append({"componente": ccod, "cantidad": ccant, "bodega": asg,
-                         "disponible": cdisp})
-    # Audita la venta del combo (sin descuento de bodega propia del combo).
+        res_comp.append({"componente": ccod, "cantidad": ccant,
+                         "bogota": from_bog, "yopal": from_yop, "disponible": cdisp})
     db._sb_post("movimiento_stock", {
         "codigo_boun": codigo, "delta": -cantidad,
         "motivo": "venta_combo_%s" % canal, "canal": canal,
         "order_id": str(order_id)})
-    # Propaga el stock del combo (= cuántos se pueden armar) a sus publicaciones.
     combo_disp = _combo_disponible(codigo)
     plan, aplicado = _propagar(codigo, combo_disp, order_id)
     return {"codigo": codigo, "combo": True, "cantidad": cantidad,
             "componentes": res_comp, "disponible_combo": combo_disp,
+            "reparto_bodega": {"bogota": plan_bog, "yopal": plan_yop,
+                               "faltante": max(0, faltante)},
             "plan": plan, "aplicado": aplicado}
 
 
