@@ -1282,10 +1282,51 @@ function scanResultHTML(s){
 // ── Combos (kits) ───────────────────────────────────────────────────────────
 let COMBOS={};                       // {codigo_combo: [{codigo,cant}, …]}
 let COMBO_DRAFT=[{codigo:"",cant:1}];// componentes del combo en edición
+let COMBO_PRODUCTS=[];               // [{code,name,thumb}] para los buscadores
+let COMBO_CODE="";                   // código del combo seleccionado en el form
+function prodName(code){ const p=COMBO_PRODUCTS.find(x=>x.code===code); return p?p.name:""; }
+// Buscador desplegable de producto con foto. id único por campo.
+function pickInput(id, code, ph){
+  const nm=code?(esc(code)+" — "+esc(prodName(code))):"";
+  return `<div style="position:relative;flex:1">
+    <input id="${id}" class="field" style="margin:0;width:100%" autocomplete="off" placeholder="${ph}" value="${nm}"
+      oninput="pickFilter('${id}',this.value)" onfocus="pickFilter('${id}',this.value)" onblur="pickBlur('${id}')">
+    <div id="${id}-drop" style="display:none;position:absolute;left:0;right:0;top:44px;z-index:30;max-height:260px;overflow:auto;background:var(--surf);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.45)"></div>
+  </div>`;
+}
+function pickFilter(id, q){
+  const drop=document.getElementById(id+"-drop"); if(!drop) return;
+  q=(q||"").toLowerCase().trim();
+  let list=COMBO_PRODUCTS;
+  if(q) list=list.filter(p=>((p.code||"")+" "+(p.name||"")).toLowerCase().includes(q));
+  list=list.slice(0,20);
+  if(!list.length){ drop.innerHTML='<div style="padding:8px;font-size:12px;color:var(--muted)">Sin resultados</div>'; drop.style.display="block"; return; }
+  drop.innerHTML=list.map(p=>{
+    const img=p.thumb?`<img src="${esc(p.thumb)}" style="width:36px;height:36px;border-radius:5px;object-fit:cover;flex:0 0 auto">`:`<div style="width:36px;height:36px;border-radius:5px;background:var(--bg);flex:0 0 auto"></div>`;
+    return `<div onmousedown="pickChoose('${id}','${esc(p.code)}')" style="display:flex;align-items:center;gap:8px;padding:6px 8px;cursor:pointer;border-bottom:1px solid var(--border)" onmouseover="this.style.background='var(--hov)'" onmouseout="this.style.background=''">
+      ${img}<span class="code-chip" style="font-size:10px">${esc(p.code)}</span><span style="font-size:12px;flex:1">${esc(p.name)}</span></div>`;
+  }).join("");
+  drop.style.display="block";
+}
+function pickChoose(id, code){
+  if(id==="pkComboCode"){ COMBO_CODE=code; }
+  else if(id.indexOf("pkComp-")===0){ const i=parseInt(id.split("-")[1],10); if(COMBO_DRAFT[i]) COMBO_DRAFT[i].codigo=code; }
+  const inp=document.getElementById(id); if(inp) inp.value=code+" — "+prodName(code);
+  const drop=document.getElementById(id+"-drop"); if(drop) drop.style.display="none";
+}
+function pickBlur(id){
+  setTimeout(()=>{
+    const d=document.getElementById(id+"-drop"); if(d) d.style.display="none";
+    const inp=document.getElementById(id); if(!inp) return;
+    let code = id==="pkComboCode" ? COMBO_CODE
+      : (id.indexOf("pkComp-")===0 ? ((COMBO_DRAFT[parseInt(id.split("-")[1],10)]||{}).codigo||"") : "");
+    inp.value = code ? (code+" — "+prodName(code)) : "";   // restaura el elegido
+  },150);
+}
 function combosHTML(){
   return `<div class="set-sec" style="margin-top:24px">COMBOS (KITS)</div>
     <div class="muted" style="font-size:12px;margin-bottom:8px">Define combos: al vender un combo, el sistema <b>descuenta del inventario los productos que lo componen</b>. El stock del combo se calcula solo (cuántos puedes armar). El producto-combo debe existir en tu inventario con sus publicaciones asignadas.</div>
-    <div class="inv-card" style="padding:16px;max-width:680px">
+    <div class="inv-card" style="padding:16px;max-width:680px;overflow:visible">
       <div id="combosList"></div>
       <div id="combosForm"></div>
     </div>`;
@@ -1293,7 +1334,8 @@ function combosHTML(){
 async function combosInit(){
   if(!document.getElementById("combosList")) return;
   try{ const r=await api("/combos"); COMBOS=r.combos||{}; }catch(e){ COMBOS={}; }
-  COMBO_DRAFT=[{codigo:"",cant:1}];
+  try{ const inv=await api("/inventory"); COMBO_PRODUCTS=(inv||[]).map(p=>({code:p.code,name:p.name,thumb:p.thumb})); }catch(e){ COMBO_PRODUCTS=[]; }
+  COMBO_DRAFT=[{codigo:"",cant:1}]; COMBO_CODE="";
   combosRenderList(); combosRenderForm();
 }
 function combosRenderList(){
@@ -1314,8 +1356,8 @@ function combosRenderForm(){
   const el=document.getElementById("combosForm"); if(!el) return;
   el.innerHTML=`<div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">
     <div style="font-size:13px;font-weight:600;margin-bottom:8px">Agregar / editar combo</div>
-    <div class="set-row" style="margin-bottom:10px"><label style="width:150px">Código del combo</label>
-      <input id="comboCode" class="field" style="margin:0;flex:1" placeholder="Ej. PACK-DUO (debe existir en inventario)"></div>
+    <div class="set-row" style="margin-bottom:10px;align-items:flex-start"><label style="width:150px;padding-top:10px">Producto-combo</label>
+      ${pickInput("pkComboCode", COMBO_CODE, "Buscar combo por código o nombre…")}</div>
     <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Componentes (producto + cuántas unidades lleva el combo):</div>
     <div id="comboComps"></div>
     <button type="button" class="btn-ghost" style="margin-top:6px" onclick="comboDraftAdd()">+ Agregar componente</button>
@@ -1327,32 +1369,32 @@ function combosRenderForm(){
 function comboCompsRender(){
   const el=document.getElementById("comboComps"); if(!el) return;
   el.innerHTML=COMBO_DRAFT.map((c,i)=>`<div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
-      <input class="field" style="margin:0;flex:1" placeholder="Código del producto componente" value="${esc(c.codigo)}" oninput="COMBO_DRAFT[${i}].codigo=this.value">
-      <input class="field" style="margin:0;width:72px" type="number" min="1" value="${c.cant}" oninput="COMBO_DRAFT[${i}].cant=parseInt(this.value)||1" title="unidades por combo">
-      <button type="button" class="btn-ghost" onclick="comboDraftDel(${i})">✕</button>
+      ${pickInput("pkComp-"+i, c.codigo, "Buscar producto componente…")}
+      <input class="field" style="margin:0;width:72px;flex:0 0 auto" type="number" min="1" value="${c.cant}" oninput="COMBO_DRAFT[${i}].cant=parseInt(this.value)||1" title="unidades por combo">
+      <button type="button" class="btn-ghost" style="flex:0 0 auto" onclick="comboDraftDel(${i})">✕</button>
     </div>`).join("");
 }
 function comboDraftAdd(){ COMBO_DRAFT.push({codigo:"",cant:1}); comboCompsRender(); }
 function comboDraftDel(i){ COMBO_DRAFT.splice(i,1); if(!COMBO_DRAFT.length)COMBO_DRAFT.push({codigo:"",cant:1}); comboCompsRender(); }
 function combosEdit(code){
-  document.getElementById("comboCode").value=code;
+  COMBO_CODE=code;
   COMBO_DRAFT=(COMBOS[code]||[]).map(c=>({codigo:c.codigo,cant:c.cant}));
   if(!COMBO_DRAFT.length)COMBO_DRAFT=[{codigo:"",cant:1}];
-  comboCompsRender();
+  combosRenderForm();
 }
 async function combosSaveDraft(){
-  const code=(val("comboCode")||"").trim();
+  const code=(COMBO_CODE||"").trim();
   const comps=COMBO_DRAFT.map(c=>({codigo:(c.codigo||"").trim(),cant:parseInt(c.cant)||1})).filter(c=>c.codigo);
   const msg=document.getElementById("combosMsg");
-  if(!code){ if(msg){msg.textContent="Pon el código del combo"; msg.className="red";} return; }
+  if(!code){ if(msg){msg.textContent="Elige el producto-combo"; msg.className="red";} return; }
   if(!comps.length){ if(msg){msg.textContent="Agrega al menos un componente"; msg.className="red";} return; }
   COMBOS[code]=comps;
   try{
     const r=await api("/combos",{method:"POST",body:JSON.stringify({combos:COMBOS})});
     COMBOS=r.combos||COMBOS;
     if(msg){msg.textContent="✓ guardado"; msg.className="green"; setTimeout(()=>{if(msg)msg.textContent="";},2000);}
-    document.getElementById("comboCode").value=""; COMBO_DRAFT=[{codigo:"",cant:1}];
-    combosRenderList(); comboCompsRender();
+    COMBO_CODE=""; COMBO_DRAFT=[{codigo:"",cant:1}];
+    combosRenderList(); combosRenderForm();
   }catch(e){ if(msg){msg.textContent=e.message; msg.className="red";} }
 }
 async function combosDelete(code){
