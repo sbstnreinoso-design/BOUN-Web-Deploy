@@ -2751,19 +2751,61 @@ _CEREBRO_SKILLS = [
              "formato profesional."},
 ]
 
-# Alertas/pendientes por defecto (se pueden sobrescribir con el setting JSON
-# `cerebro_alertas`). Cada una: {sev: 'err'|'warn', title, txt}.
-_CEREBRO_ALERTAS_DEFAULT = [
-    {"sev": "err", "title": "Reintento de alineación ML → BOUN",
-     "txt": "La alineación de eventos de MercadoLibre a la BOUN del mes quedó "
-            "bloqueada por un error de descarga de ML. El reintento está en pausa."},
-    {"sev": "err", "title": "Reintento de corrida Falabella",
-     "txt": "La corrida diaria de Falabella se bloqueó por mantención de Seller "
-            "Center y sesiones cerradas. Reintento en pausa."},
-    {"sev": "warn", "title": "Bug de permisos en Chrome",
-     "txt": "Se detectó denegación automática de acciones en el navegador. Puede "
-            "frenar tareas que dependen de Claude en Chrome."},
-]
+# Pendientes MANUALES extra (opcional): se añaden vía el setting JSON
+# `cerebro_alertas` (lista de {sev:'err'|'warn', title, txt}). Por defecto VACÍO:
+# los pendientes ya NO se hardcodean. La fuente principal de "Pendientes de la IA"
+# son ahora los heartbeats — ver `_cerebro_pendientes()`: cualquier tarea/skill que
+# reporte `warn`/`err` aparece como pendiente y, cuando vuelve a correr en `ok`,
+# desaparece sola. Así Sebastián solo ve fallas vigentes (regla 16-jun-2026).
+_CEREBRO_ALERTAS_DEFAULT = []
+
+
+def _cerebro_pendientes(tasks: list) -> list:
+    """Construye la lista de "Pendientes de la IA" que ve Sebastián.
+
+    Regla (16-jun-2026): toda tarea/skill reporta a Cerebro y los pendientes se
+    auto-actualizan. Fuente:
+      1) DERIVADOS de los heartbeats: cada tarea cuyo último estado sea `warn` o
+         `err` se convierte en pendiente; al reportar `ok`/`run` deja de aparecer
+         (auto-limpieza en la siguiente corrida, sin pendientes obsoletos).
+      2) MANUALES: lo que haya en el setting `cerebro_alertas` (para pendientes que
+         no estén atados a una tarea). Se pueden auto-limpiar si llevan `task_id`
+         y esa tarea ya reportó `ok`.
+    """
+    pend, vistos = [], set()
+    # 1) derivados de heartbeats
+    for t in tasks:
+        hb = t.get("heartbeat") or {}
+        st = hb.get("status")
+        if st in ("warn", "err"):
+            tid = t.get("id")
+            vistos.add(tid)
+            cuando = hb.get("last_run") or ""
+            txt = hb.get("msg") or t.get("desc") or "Sin detalle."
+            if cuando:
+                txt = f"{txt} · último reporte {cuando}"
+            pend.append({"sev": st, "title": t.get("nombre") or tid,
+                         "txt": txt, "task_id": tid, "auto": True})
+    # 2) manuales del setting (si su task_id ya reportó ok/run, se omite = limpio)
+    try:
+        raw = db.get_setting("cerebro_alertas", "")
+        manuales = json.loads(raw) if raw else []
+        if not isinstance(manuales, list):
+            manuales = []
+    except Exception:
+        manuales = []
+    estados = {t.get("id"): (t.get("heartbeat") or {}).get("status") for t in tasks}
+    for a in manuales:
+        if not isinstance(a, dict):
+            continue
+        tid = a.get("task_id")
+        if tid:
+            if tid in vistos:        # ya está como derivado
+                continue
+            if estados.get(tid) in ("ok", "run"):  # resuelto → no mostrar
+                continue
+        pend.append(a)
+    return pend
 
 
 def _cerebro_estado() -> dict:
@@ -2835,7 +2877,7 @@ def cerebro(user: dict = Depends(_current_user)):
     return {"ok": True,
             "now_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "motor": motor, "tasks": tasks,
-            "skills": _CEREBRO_SKILLS, "alertas": _cerebro_alertas()}
+            "skills": _CEREBRO_SKILLS, "alertas": _cerebro_pendientes(tasks)}
 
 
 class HeartbeatIn(BaseModel):
