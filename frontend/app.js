@@ -1741,8 +1741,8 @@ function drawCerebro(data){
     const label= hb.status? ({ok:"Hecha",run:"Corriendo",warn:"Atención",err:"Falló"}[hb.status]||st.label) : st.label;
     const sc= hb.status? ({ok:"ok",run:"run",warn:"warn",err:"err"}[hb.status]||st.s) : st.s;
     const msg= hb.msg || st.msg;
-    const accent=t.canal==="mercadolibre"?"ml":"fala";
-    const nm=t.canal==="mercadolibre"?"MercadoLibre":"Falabella";
+    const accent=t.canal==="mercadolibre"?"ml":t.canal==="falabella"?"fala":"otro";
+    const nm=t.canal==="mercadolibre"?"MercadoLibre":t.canal==="falabella"?"Falabella":(t.canal?t.canal.charAt(0).toUpperCase()+t.canal.slice(1):"Proceso");
     const nowic= sc==="run"?'<span class="cb-rdot"></span>': sc==="ok"?`<span style="color:var(--cb-ok)">${cbSvg("clock",16,2.2)}</span>`: sc==="err"||sc==="warn"?`<span style="color:var(--cb-${sc==="err"?"err":"warn"})">${cbSvg("alert",16,2)}</span>`:`<span class="muted">${cbSvg("clock",16,2)}</span>`;
     const next=st.next!=null?("Próxima "+cbHHMM(st.next)):"—";
     return `<div class="cb-card">
@@ -1755,11 +1755,14 @@ function drawCerebro(data){
     </div>`;
   };
   const ml=tasks.filter(t=>t.canal==="mercadolibre"),fa=tasks.filter(t=>t.canal==="falabella");
+  const otros=tasks.filter(t=>t.canal!=="mercadolibre"&&t.canal!=="falabella");
   const tasksHtml=`
     <div class="cb-sec ml">${cbSvg("box",16)}<h3>Tareas programadas · MercadoLibre</h3><span class="cb-tag">cuenta BOUN COL</span></div>
     <div class="cb-grid">${ml.map(cardHtml).join("")}</div>
     <div class="cb-sec fa">${cbSvg("chart",16)}<h3>Tareas programadas · Falabella</h3><span class="cb-tag">Seller Center + Retail Media</span></div>
-    <div class="cb-grid">${fa.map(cardHtml).join("")}</div>`;
+    <div class="cb-grid">${fa.map(cardHtml).join("")}</div>`
+    + (otros.length?`<div class="cb-sec"><span style="color:var(--cb)">${cbSvg("bolt",16)}</span><h3>Otros procesos · nuevos</h3><span class="cb-tag">se suman solos al reportar al Cerebro</span></div>
+    <div class="cb-grid">${otros.map(cardHtml).join("")}</div>`:"");
 
   // — skills —
   const skillsHtml=`<div class="cb-sec">${cbSvg("star",16)}<h3>Skills disponibles</h3><span class="cb-tag">capacidades que la IA puede invocar</span></div>
