@@ -2853,13 +2853,22 @@ class HeartbeatIn(BaseModel):
 
 
 @app.post("/api/cerebro/heartbeat")
-def cerebro_heartbeat(data: HeartbeatIn, key: str = ""):
-    """Las tareas/procesos reportan aquí su estado real tras correr. Pública con
-    ?key=<BOUN_EXPORT_TOKEN> (igual que los demás endpoints externos) para que el
-    planificador la llame sin sesión. Un proceso NUEVO que mande nombre/canal/desc
-    se auto-registra y aparece solo en el Cerebro. status='remove' borra el reporte."""
+def cerebro_heartbeat(data: HeartbeatIn, key: str = "",
+                      authorization: Optional[str] = Header(None)):
+    """Las tareas/procesos reportan aquí su estado real tras correr. Acepta DOS
+    formas de auth: (1) ?key=<BOUN_EXPORT_TOKEN> para el planificador sin sesión, o
+    (2) sesión admin (Authorization: Bearer) para que las tareas que ya operan la
+    web logueadas reporten sin manejar el secreto. Un proceso NUEVO que mande
+    nombre/canal/desc se auto-registra y aparece solo. status='remove' lo borra."""
     token = os.environ.get("BOUN_EXPORT_TOKEN", "")
-    if not token or key != token:
+    authed = bool(token and key == token)
+    if not authed:
+        try:
+            u = _current_user(authorization)
+            authed = bool(u and u.get("role") == "admin")
+        except Exception:
+            authed = False
+    if not authed:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     estado = _cerebro_estado()
     if data.status == "remove":
