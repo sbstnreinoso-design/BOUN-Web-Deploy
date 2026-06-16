@@ -2372,36 +2372,69 @@ def _start_poller():
 
 
 @app.post("/api/sync/falabella/reprocess")
-def falabella_reprocess(order_id: str = "", user: dict = Depends(_admin)):
+def falabella_reprocess(order_id: str = "", dias: int = 30,
+                        user: dict = Depends(_admin)):
     """Sana UNA orden Falabella puntual (p.ej. saltada por el piso/ventana del
     poller) reprocesándola por el MISMO camino que el poller (_process_sale).
+    Acepta el OrderId interno O el OrderNumber visible al cliente: busca la
+    orden en los últimos `dias` días y usa su OrderId canónico.
     Es idempotente: si ya está en evento_venta=procesado NO descuenta de nuevo,
     y al marcarla el poller jamás la volverá a tocar (cero doble descuento).
-    Devuelve diagnóstico: piso, conexión, estado previo, items y mapeo."""
+    Devuelve diagnóstico: piso, conexión, estado previo, orden hallada e items."""
     import falabella as fb
     import sync as _sync
-    oid = str(order_id or "").strip()
-    out = {"order_id": oid,
+    q = str(order_id or "").strip()
+    out = {"buscado": q,
            "floor": db.get_setting("sync_falabella_since", ""),
            "connected": bool(fb.is_connected())}
-    if not oid:
+    if not q:
         out["ok"] = False
         out["error"] = "order_id requerido"
         return out
+    # 1) Ubicar la orden por OrderId o por OrderNumber en la ventana dada.
+    co = timezone(timedelta(hours=-5))
+    after = (datetime.now(co) - timedelta(days=max(1, int(dias)))).isoformat()
+    canonical = q
+    created = ""
+    try:
+        orders = fb.get_orders(after)
+    except Exception as e:
+        orders = []
+        out["warn_get_orders"] = str(e)[:160]
+    match = None
+    for o in orders:
+        if str(o.get("OrderId") or "") == q or \
+           str(o.get("OrderNumber") or "") == q:
+            match = o
+            break
+    if match:
+        canonical = str(match.get("OrderId") or q)
+        created = str(match.get("CreatedAt") or "")
+        out["hallada"] = {"order_id": canonical,
+                          "order_number": str(match.get("OrderNumber") or ""),
+                          "created": created,
+                          "status": str(match.get("Status") or "")}
+    else:
+        out["hallada"] = None
+        out["nota"] = ("no aparece en los últimos %d días; puede ser más "
+                       "antigua o un id distinto" % int(dias))
+    out["order_id"] = canonical
+    # 2) Idempotencia sobre el OrderId canónico.
     ev = db._sb_get("evento_venta?canal=eq.falabella&order_id=eq.%s&"
-                    "select=estado" % _q_(oid)) or []
+                    "select=estado" % _q_(canonical)) or []
     out["evento_previo"] = ev[0].get("estado") if ev else None
     if ev and ev[0].get("estado") == "procesado":
         out["ok"] = True
         out["ya_procesada"] = True
         return out
+    # 3) Traer items de la orden canónica.
     try:
-        items_map = fb._items_by_order([oid])
+        items_map = fb._items_by_order([canonical])
     except Exception as e:
         out["ok"] = False
         out["error"] = "items: " + str(e)[:200]
         return out
-    raw = items_map.get(oid, [])
+    raw = items_map.get(canonical, [])
     out["items_raw"] = raw
     agg = {}
     for _nm, sku in raw:
@@ -2411,10 +2444,10 @@ def falabella_reprocess(order_id: str = "", user: dict = Depends(_admin)):
     out["agg"] = [[k, v] for k, v in agg.items()]
     if not agg:
         out["ok"] = False
-        out["error"] = "sin items mapeables (revisar SKU)"
+        out["error"] = "sin items mapeables (revisar SKU/orden)"
         return out
-    _process_sale("falabella", oid, list(agg.items()),
-                  {"poller": "reprocess-manual", "created": ""})
+    _process_sale("falabella", canonical, list(agg.items()),
+                  {"poller": "reprocess-manual", "created": created})
     out["ok"] = True
     out["reprocesada"] = True
     return out
