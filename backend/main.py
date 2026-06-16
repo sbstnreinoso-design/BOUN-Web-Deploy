@@ -1715,16 +1715,22 @@ def _ml_active_pubs(product_id: int, include_paused_oos: bool = False) -> tuple:
 
 def _compute_plan(codigo: str, disponible: int, reactivate: bool = False) -> dict:
     """Reparto del disponible entre publicaciones activas de los 4 canales.
-    Si reactivate=True, ML incluye también las pausadas por falta de stock."""
+    Si reactivate=True, ML incluye también las pausadas por falta de stock.
+    REGLA TEMPORAL `ml_solo_bogota`: cuando está activa, MercadoLibre reparte
+    SOLO el stock de Bogotá (disponible − Yopal); los demás canales siguen
+    usando el disponible completo (ambas bodegas)."""
     import sync as _sync
     out = {}
-    prows = db._sb_get("inventory_products?code=eq.%s&select=id"
+    prows = db._sb_get("inventory_products?code=eq.%s&select=id,qty_yopal"
                        % _q_(codigo)) or []
     pid = prows[0]["id"] if prows else None
-    # MercadoLibre
+    disp_ml = disponible
+    if prows and _ml_solo_bogota():
+        disp_ml = max(0, disponible - int(prows[0].get("qty_yopal") or 0))
+    # MercadoLibre (usa disp_ml: solo Bogotá si la regla temporal está activa)
     if pid:
         ml_act, ml_excl = _ml_active_pubs(pid, include_paused_oos=reactivate)
-        out["mercadolibre"] = {"reparto": _sync.reparto(disponible, ml_act),
+        out["mercadolibre"] = {"reparto": _sync.reparto(disp_ml, ml_act),
                                "excluidas": ml_excl}
     else:
         out["mercadolibre"] = {"reparto": {}, "excluidas": []}
@@ -1914,6 +1920,20 @@ def _process_sale(canal: str, order_id: str, items: list,
             cola.update({"estado": "full"})
             db._sb_post("cola_bodega", cola)
             asignado = "full"
+        elif canal == "mercadolibre" and _ml_solo_bogota() and bog > 0:
+            # Regla temporal: ML solo vende stock de Bogotá → la venta salió de
+            # ahí (sin pendiente, aunque Yopal tenga stock).
+            bog = max(0, bog - cantidad)
+            db._sb_patch("inventory_products", "id=eq.%d" % pid,
+                         {"qty_bogota": bog})
+            db._sb_post("movimiento_stock", {
+                "codigo_boun": codigo, "delta": -cantidad,
+                "motivo": "asignacion_bodega_bogota_ml", "canal": canal,
+                "order_id": str(order_id)})
+            cola.update({"estado": "confirmado", "bodega_asignada": "bogota",
+                         "auto": True})
+            db._sb_post("cola_bodega", cola)
+            asignado = "bogota(auto-ml)"
         elif bog > 0 and yop > 0:
             # Ambas bodegas con stock → ambiguo, lo confirma una persona.
             cola.update({"estado": "pendiente"})
@@ -2281,6 +2301,7 @@ def sync_apply_status(user: dict = Depends(_admin)):
             "scan_daily": _scan_daily_enabled(),
             "scan_daily_hour": _scan_daily_hour(),
             "scan_reactivate": _scan_reactivate_enabled(),
+            "ml_solo_bogota": _ml_solo_bogota(),
             "validos": sorted(_APPLY_CHANNELS_VALIDOS)}
 
 
@@ -2290,6 +2311,7 @@ class ApplyConfigIn(BaseModel):
     scan_daily: Optional[bool] = None     # escaneo de reconciliación automático diario
     scan_daily_hour: Optional[int] = None # hora local Colombia (0-23) del escaneo diario
     scan_reactivate: Optional[bool] = None # reactivar publicaciones ML agotadas en el escaneo
+    ml_solo_bogota: Optional[bool] = None  # regla temporal: ML solo vende bodega Bogotá
 
 
 @app.post("/api/sync/apply-config")
@@ -2319,12 +2341,15 @@ def sync_apply_config(data: ApplyConfigIn, user: dict = Depends(_admin)):
         db.set_setting("sync_scan_daily_hour", str(h))
     if data.scan_reactivate is not None:
         db.set_setting("sync_scan_reactivate", "1" if data.scan_reactivate else "0")
+    if data.ml_solo_bogota is not None:
+        db.set_setting("ml_solo_bogota", "1" if data.ml_solo_bogota else "0")
     canales = sorted(_sync_apply_channels())
     return {"ok": True, "channels": canales,
             "max_delta": _sync_apply_max_delta(),
             "scan_daily": _scan_daily_enabled(),
             "scan_daily_hour": _scan_daily_hour(),
             "scan_reactivate": _scan_reactivate_enabled(),
+            "ml_solo_bogota": _ml_solo_bogota(),
             "dry_run": not bool(canales)}
 
 
@@ -2501,6 +2526,12 @@ def _scan_reactivate_enabled() -> bool:
     """Si el escaneo reactiva las publicaciones ML pausadas por falta de stock.
     Default ON (solo se desactiva poniendo el setting en '0')."""
     return db.get_setting("sync_scan_reactivate", "1") != "0"
+
+
+def _ml_solo_bogota() -> bool:
+    """Regla TEMPORAL: si está activa, MercadoLibre solo vende/refleja el stock de
+    la bodega Bogotá (Yopal no cuenta para ML). Los demás canales usan ambas."""
+    return db.get_setting("ml_solo_bogota", "") == "1"
 
 
 def _scan_daily_hour() -> int:
