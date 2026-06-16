@@ -105,6 +105,7 @@ async function renderInventory(){
       <button class="btn-acc" onclick="newProduct()">＋ Nuevo producto</button></div></div>
     <div id="invKpis" class="kpis"></div>
     <div id="invList"><div class="loading"><span class="spinner"></span> Cargando inventario…</div></div>`;
+  try{ const cr=await api("/combos"); COMBOS=cr.combos||{}; }catch(e){ COMBOS={}; }
   try{ INV=await api("/inventory"); drawInventory(); }
   catch(e){ document.getElementById("invList").innerHTML=`<div class="red">${e.message}</div>`; }
 }
@@ -173,18 +174,29 @@ function drawInventory(){
   el.innerHTML=INV.map(p=>invCard(p)).join("");
 }
 
+const COMBO_COLOR="#C58CE6";
 function invCard(p){
   const u=prodUnits(p), unit=prodCostUnit(p);
   const sug=Math.max(0,Math.ceil((+p.sold60_total||0)/60*90 - u));
   const photo=p.thumb?`<img class="inv-photo" src="${bigImg(p.thumb)}">`:`<div class="inv-photo"></div>`;
-  return `<div class="inv-card" data-pid="${p.id}">
+  const comps=(typeof COMBOS!=="undefined"&&COMBOS)?COMBOS[p.code]:null;
+  const isCombo=Array.isArray(comps)&&comps.length;
+  const cardStyle=isCombo?`style="border-color:${COMBO_COLOR};border-left:4px solid ${COMBO_COLOR}"`:"";
+  const chip=isCombo
+    ? `<span class="code-chip" style="background:${COMBO_COLOR};color:#0A0A0A" title="Este producto es un combo">🧩 ${esc(p.code)}</span>`
+    : `<span class="code-chip">📦 ${esc(p.code)}</span>`;
+  const comboLine=isCombo
+    ? `<div class="inv-meta" style="color:${COMBO_COLOR};font-weight:700;margin-top:3px">🧩 Combo = ${comps.map(c=>esc(c.codigo)+" ×"+c.cant).join(" + ")} <span class="muted" style="font-weight:400">(stock = lo que se pueda armar)</span></div>`
+    : "";
+  return `<div class="inv-card" data-pid="${p.id}" ${cardStyle}>
     <div class="inv-head">
       <span class="expand" onclick="togglePanel(${p.id})">▸</span>
       ${photo}
-      <span class="code-chip">📦 ${esc(p.code)}</span>
+      ${chip}
       <div style="flex:1">
         <div class="inv-name">${esc(p.name)}</div>
         <div class="inv-meta">${p.n_links} publicación${p.n_links!==1?"es":""} asignada${p.n_links!==1?"s":""} ${chCounts(p.n_by_channel)}${p.created_by?" · creado por "+esc(p.created_by):""}</div>
+        ${comboLine}
       </div>
       <button class="btn-ghost" onclick="assignDialog(${p.id})">Asignar publicaciones</button>
       <button class="btn-ghost" onclick="editProduct(${p.id})">✏</button>
