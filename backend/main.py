@@ -2812,10 +2812,26 @@ def cerebro(user: dict = Depends(_current_user)):
         "scan_last": scan_last,
     }
     estado = _cerebro_estado()
+    ids_estaticos = {t["id"] for t in _CEREBRO_TASKS}
     tasks = []
     for t in _CEREBRO_TASKS:
         hb = estado.get(t["id"], {}) if isinstance(estado, dict) else {}
         tasks.append({**t, "heartbeat": hb})
+    # AUTO-DESCUBRIMIENTO: cualquier proceso que haya reportado un heartbeat y no
+    # esté en la ficha estática aparece solo (se auto-registra desde lo que envió).
+    for tid, hb in (estado.items() if isinstance(estado, dict) else []):
+        if tid in ids_estaticos or not isinstance(hb, dict):
+            continue
+        tasks.append({
+            "id": tid,
+            "canal": hb.get("canal") or "sistema",
+            "nombre": hb.get("nombre") or tid,
+            "icon": hb.get("icon") or "bolt",
+            "cad": hb.get("cad") or "proceso dinámico",
+            "hours": None, "days": None,
+            "desc": hb.get("desc") or "Proceso reportado automáticamente al Cerebro.",
+            "auto": True, "heartbeat": hb,
+        })
     return {"ok": True,
             "now_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "motor": motor, "tasks": tasks,
@@ -2824,25 +2840,42 @@ def cerebro(user: dict = Depends(_current_user)):
 
 class HeartbeatIn(BaseModel):
     task_id: str
-    status: str = "ok"          # ok | run | warn | err
+    status: str = "ok"          # ok | run | warn | err | remove (borra el reporte)
     msg: str = ""               # qué hizo / qué está haciendo
     next_run: Optional[str] = None
+    # Auto-registro de procesos NUEVOS (opcionales): si un proceso que no está en
+    # la ficha estática manda estos campos, aparece solo en el Cerebro.
+    nombre: Optional[str] = None
+    canal: Optional[str] = None   # mercadolibre | falabella | shopify | sistema | …
+    desc: Optional[str] = None
+    cad: Optional[str] = None     # cadencia legible, ej. "Diario · 6:00 AM"
+    icon: Optional[str] = None    # box|chat|tag|spark|chart|target|search|star|file|bolt|clock
 
 
 @app.post("/api/cerebro/heartbeat")
 def cerebro_heartbeat(data: HeartbeatIn, key: str = ""):
-    """Las tareas programadas (Cowork) reportan aquí su estado real tras correr.
-    Pública con ?key=<BOUN_EXPORT_TOKEN> (igual que los demás endpoints externos)
-    para que el planificador la llame sin sesión."""
+    """Las tareas/procesos reportan aquí su estado real tras correr. Pública con
+    ?key=<BOUN_EXPORT_TOKEN> (igual que los demás endpoints externos) para que el
+    planificador la llame sin sesión. Un proceso NUEVO que mande nombre/canal/desc
+    se auto-registra y aparece solo en el Cerebro. status='remove' borra el reporte."""
     token = os.environ.get("BOUN_EXPORT_TOKEN", "")
     if not token or key != token:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
     estado = _cerebro_estado()
-    estado[data.task_id] = {
-        "status": data.status, "msg": data.msg,
-        "next_run": data.next_run,
+    if data.status == "remove":
+        estado.pop(data.task_id, None)
+        db.set_setting("cerebro_estado", json.dumps(estado, ensure_ascii=False))
+        return {"ok": True, "task_id": data.task_id, "removed": True}
+    entry = dict(estado.get(data.task_id, {}))   # conserva meta previa
+    entry.update({
+        "status": data.status, "msg": data.msg, "next_run": data.next_run,
         "last_run": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-    }
+    })
+    for k, v in (("nombre", data.nombre), ("canal", data.canal),
+                 ("desc", data.desc), ("cad", data.cad), ("icon", data.icon)):
+        if v:
+            entry[k] = v
+    estado[data.task_id] = entry
     db.set_setting("cerebro_estado", json.dumps(estado, ensure_ascii=False))
     return {"ok": True, "task_id": data.task_id}
 
