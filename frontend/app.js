@@ -180,21 +180,23 @@ const COMBO_COLOR="#C58CE6";
 // ROAS y ACOS NO se calculan aquí: salen de las propias publicaciones del combo.
 function comboCalc(p){
   const comps=(COMBOS&&COMBOS[p.code])||[];
-  let cp=0, cs=0, valU=0, netU=0, armable=null;
+  let cp=0, cs=0, valU=0, netU=0, armBog=null, armYop=null;
   comps.forEach(c=>{
     const comp=(INV||[]).find(x=>x.code===c.codigo);
     const cant=+c.cant||1;
-    if(!comp){ armable=0; return; }
+    if(!comp){ armBog=0; armYop=0; return; }
     cp  += (+comp.cost_product||0)*cant;
     cs  += (+comp.cost_shipping||0)*cant;
     valU+= (+comp.avg_price||0)*cant;
     netU+= (+comp.avg_net||0)*cant;
-    const avail=(+comp.qty_bogota||0)+(+comp.qty_yopal||0);
-    const mk=Math.floor(avail/cant);
-    armable = armable===null?mk:Math.min(armable,mk);
+    // Armables POR bodega (no se mezclan: el combo se arma con piezas juntas).
+    const mb=Math.floor((+comp.qty_bogota||0)/cant), my=Math.floor((+comp.qty_yopal||0)/cant);
+    armBog = armBog===null?mb:Math.min(armBog,mb);
+    armYop = armYop===null?my:Math.min(armYop,my);
   });
+  armBog=Math.max(0,armBog||0); armYop=Math.max(0,armYop||0);
   return {cost_product:cp, cost_shipping:cs, unit:cp+cs,
-          invTotal:Math.max(0,armable||0), avg_price:valU, avg_net:netU};
+          invTotal:armBog+armYop, armBog, armYop, avg_price:valU, avg_net:netU};
 }
 function invCard(p){
   const photo=p.thumb?`<img class="inv-photo" src="${bigImg(p.thumb)}">`:`<div class="inv-photo"></div>`;
@@ -211,7 +213,7 @@ function invCard(p){
     ? `<span class="code-chip" style="background:${COMBO_COLOR};color:#0A0A0A" title="Este producto es un combo">🧩 ${esc(p.code)}</span>`
     : `<span class="code-chip">📦 ${esc(p.code)}</span>`;
   const comboLine=isCombo
-    ? `<div class="inv-meta" style="color:${COMBO_COLOR};font-weight:700;margin-top:3px">🧩 Combo = ${comps.map(c=>esc(c.codigo)+" ×"+c.cant).join(" + ")} <span class="muted" style="font-weight:400">(costos e inventario calculados de los componentes)</span></div>`
+    ? `<div class="inv-meta" style="color:${COMBO_COLOR};font-weight:700;margin-top:3px">🧩 Combo = ${comps.map(c=>esc(c.codigo)+" ×"+c.cant).join(" + ")} <span class="muted" style="font-weight:400">· armables: <b style="color:${COMBO_COLOR}">${cc.invTotal}</b> (Bogotá ${cc.armBog} + Yopal ${cc.armYop}) — solo se arma con componentes de la misma bodega</span></div>`
     : "";
   // Combo: costo/envío/bodegas BLOQUEADOS (se derivan de los componentes).
   const fCosto = isCombo? fcolRO("Costo prod.","🔒 "+cop(cc.cost_product),"acc")
