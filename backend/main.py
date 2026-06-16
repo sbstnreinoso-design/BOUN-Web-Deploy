@@ -1757,6 +1757,53 @@ def _pending_cola(codigo: str) -> int:
     return sum(int(r.get("cantidad") or 0) for r in rows)
 
 
+# ── COMBOS (kits) ────────────────────────────────────────────────────────────
+# Un combo es un producto publicado cuyo stock se calcula de sus componentes y
+# que, al venderse, descuenta del inventario los productos que lo componen.
+# Definición guardada como JSON en el setting `combos_def`:
+#   {"PACK-DUO": [{"codigo": "PA002", "cant": 1}, {"codigo": "PA003", "cant": 1}]}
+
+def _combos_def() -> dict:
+    raw = db.get_setting("combos_def", "")
+    if not raw:
+        return {}
+    try:
+        d = json.loads(raw)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _combo_components(codigo: str):
+    """[{codigo, cant}, …] de un combo, o None si el código NO es un combo."""
+    c = _combos_def().get(codigo)
+    return c if (isinstance(c, list) and c) else None
+
+
+def _combo_disponible(codigo: str) -> int:
+    """Cuántos combos se pueden ARMAR según el inventario de los componentes:
+    min sobre los componentes de floor(disponible_componente / cant)."""
+    comps = _combo_components(codigo)
+    if not comps:
+        return 0
+    best = None
+    for comp in comps:
+        ccod = str(comp.get("codigo") or "").strip()
+        cq = max(1, int(comp.get("cant") or 1))
+        if not ccod:
+            continue
+        rows = db._sb_get("inventory_products?code=eq.%s&select=qty_bogota,"
+                          "qty_yopal" % _q_(ccod)) or []
+        if not rows:
+            return 0   # falta un componente en inventario → no se puede armar
+        cbog = int(rows[0].get("qty_bogota") or 0)
+        cyop = int(rows[0].get("qty_yopal") or 0)
+        cavail = max(0, cbog + cyop - _pending_cola(ccod))
+        canmake = cavail // cq
+        best = canmake if best is None else min(best, canmake)
+    return max(0, best or 0)
+
+
 def _sync_apply_channels() -> set:
     """Lista blanca de canales habilitados para ESCRITURA real. Separada de
     `sync_enabled` (que solo controla la ingesta de ventas). Vacío = nadie
@@ -1870,11 +1917,115 @@ def _apply_plan(codigo: str, plan: dict, order_id: str = "",
     return out
 
 
+def _descontar_una(canal, order_id, p, cantidad, es_full):
+    """Registra la venta de UN producto y asigna/descuenta bodega (misma lógica
+    del motor: Full / regla ML-Bogotá / ambas→pendiente / una→auto / sin stock).
+    Devuelve (asignado, bog, yop) con las bodegas ya actualizadas en memoria."""
+    pid = p["id"]
+    codigo = p.get("code")
+    bog = int(p.get("qty_bogota") or 0)
+    yop = int(p.get("qty_yopal") or 0)
+    mov = db._sb_post("movimiento_stock", {
+        "codigo_boun": codigo, "delta": -cantidad,
+        "motivo": "venta_%s%s" % (canal, "_full" if es_full else ""),
+        "canal": canal, "order_id": str(order_id)})
+    cola = {"movimiento_id": (mov or {}).get("id"), "codigo_boun": codigo,
+            "nombre": p.get("name"), "cantidad": cantidad,
+            "canal": canal, "order_id": str(order_id)}
+    if es_full is True:
+        cola.update({"estado": "full"})
+        db._sb_post("cola_bodega", cola)
+        asignado = "full"
+    elif canal == "mercadolibre" and _ml_solo_bogota() and bog > 0:
+        bog = max(0, bog - cantidad)
+        db._sb_patch("inventory_products", "id=eq.%d" % pid, {"qty_bogota": bog})
+        db._sb_post("movimiento_stock", {
+            "codigo_boun": codigo, "delta": -cantidad,
+            "motivo": "asignacion_bodega_bogota_ml", "canal": canal,
+            "order_id": str(order_id)})
+        cola.update({"estado": "confirmado", "bodega_asignada": "bogota",
+                     "auto": True})
+        db._sb_post("cola_bodega", cola)
+        asignado = "bogota(auto-ml)"
+    elif bog > 0 and yop > 0:
+        cola.update({"estado": "pendiente"})
+        db._sb_post("cola_bodega", cola)
+        asignado = "pendiente"
+    elif bog > 0:
+        bog = max(0, bog - cantidad)
+        db._sb_patch("inventory_products", "id=eq.%d" % pid, {"qty_bogota": bog})
+        db._sb_post("movimiento_stock", {
+            "codigo_boun": codigo, "delta": -cantidad,
+            "motivo": "asignacion_bodega_bogota", "canal": canal,
+            "order_id": str(order_id)})
+        cola.update({"estado": "confirmado", "bodega_asignada": "bogota",
+                     "auto": True})
+        db._sb_post("cola_bodega", cola)
+        asignado = "bogota(auto)"
+    elif yop > 0:
+        yop = max(0, yop - cantidad)
+        db._sb_patch("inventory_products", "id=eq.%d" % pid, {"qty_yopal": yop})
+        db._sb_post("movimiento_stock", {
+            "codigo_boun": codigo, "delta": -cantidad,
+            "motivo": "asignacion_bodega_yopal", "canal": canal,
+            "order_id": str(order_id)})
+        cola.update({"estado": "confirmado", "bodega_asignada": "yopal",
+                     "auto": True})
+        db._sb_post("cola_bodega", cola)
+        asignado = "yopal(auto)"
+    else:
+        cola.update({"estado": "pendiente"})
+        db._sb_post("cola_bodega", cola)
+        asignado = "pendiente(sin stock)"
+    return asignado, bog, yop
+
+
+def _propagar(codigo, disp, order_id):
+    """Calcula el plan para un código y lo aplica a sus canales (lista blanca)."""
+    plan = _compute_plan(codigo, disp)
+    aplicado = _apply_plan(codigo, plan, order_id=order_id)
+    return plan, aplicado
+
+
+def _combo_vender(canal, order_id, codigo, cantidad, es_full):
+    """Venta de un COMBO: descuenta sus componentes (cant × cantidad vendida),
+    propaga el stock de cada componente y del propio combo (= armable)."""
+    comps = _combo_components(codigo) or []
+    res_comp = []
+    for comp in comps:
+        ccod = str(comp.get("codigo") or "").strip()
+        cq = max(1, int(comp.get("cant") or 1))
+        ccant = cantidad * cq
+        cprows = db._sb_get("inventory_products?code=eq.%s&select=id,code,name,"
+                            "qty_bogota,qty_yopal" % _q_(ccod)) or []
+        if not cprows:
+            res_comp.append({"componente": ccod, "skip": True,
+                             "motivo": "no_en_inventario"})
+            continue
+        asg, cbog, cyop = _descontar_una(canal, order_id, cprows[0], ccant, es_full)
+        cdisp = max(0, cbog + cyop - _pending_cola(ccod))
+        _propagar(ccod, cdisp, order_id)
+        res_comp.append({"componente": ccod, "cantidad": ccant, "bodega": asg,
+                         "disponible": cdisp})
+    # Audita la venta del combo (sin descuento de bodega propia del combo).
+    db._sb_post("movimiento_stock", {
+        "codigo_boun": codigo, "delta": -cantidad,
+        "motivo": "venta_combo_%s" % canal, "canal": canal,
+        "order_id": str(order_id)})
+    # Propaga el stock del combo (= cuántos se pueden armar) a sus publicaciones.
+    combo_disp = _combo_disponible(codigo)
+    plan, aplicado = _propagar(codigo, combo_disp, order_id)
+    return {"codigo": codigo, "combo": True, "cantidad": cantidad,
+            "componentes": res_comp, "disponible_combo": combo_disp,
+            "plan": plan, "aplicado": aplicado}
+
+
 def _process_sale(canal: str, order_id: str, items: list,
                   payload=None) -> dict:
     """Pipeline (DRY-RUN): idempotencia → descuento central (cola_bodega) →
     recalcula disponible → plan de reparto a los 4 canales. NO escribe en
-    los canales. items = [(codigo_boun, cantidad), …]."""
+    los canales. items = [(codigo_boun, cantidad), …]. Si el código vendido es
+    un COMBO, descuenta sus componentes en vez de la bodega del combo."""
     import datetime as _dt
     ev = db._sb_get("evento_venta?canal=eq.%s&order_id=eq.%s&select=id,estado"
                     % (_q_(canal), _q_(order_id))) or []
@@ -1895,88 +2046,24 @@ def _process_sale(canal: str, order_id: str, items: list,
         # =fulfillment); None = desconocido → se decide por stock de bodega.
         codigo, cantidad = raw[0], int(raw[1])
         es_full = raw[2] if len(raw) >= 3 else None
+        # COMBO: descuenta sus componentes en vez de la bodega del propio combo.
+        if _combo_components(codigo):
+            resultados.append(_combo_vender(canal, order_id, codigo, cantidad,
+                                            es_full))
+            continue
         prows = db._sb_get("inventory_products?code=eq.%s&select=id,code,name,"
                            "qty_bogota,qty_yopal" % _q_(codigo)) or []
         if not prows:
             resultados.append({"codigo": codigo, "skip": True,
                                "motivo": "no_en_inventario_central"})
             continue
-        p = prows[0]
-        pid = p["id"]
-        bog = int(p.get("qty_bogota") or 0)
-        yop = int(p.get("qty_yopal") or 0)
-        # Registro de la venta (descuento del total). Audita el origen del evento.
-        mov = db._sb_post("movimiento_stock", {
-            "codigo_boun": codigo, "delta": -cantidad,
-            "motivo": "venta_%s%s" % (canal, "_full" if es_full else ""),
-            "canal": canal, "order_id": str(order_id)})
-        cola = {"movimiento_id": (mov or {}).get("id"), "codigo_boun": codigo,
-                "nombre": p.get("name"), "cantidad": cantidad,
-                "canal": canal, "order_id": str(order_id)}
-        # ── Asignación de bodega ──────────────────────────────────────────────
-        if es_full is True:
-            # El canal confirma Full: el envío salió de la bodega de ML, no de la
-            # nuestra → no descuenta bodega propia.
-            cola.update({"estado": "full"})
-            db._sb_post("cola_bodega", cola)
-            asignado = "full"
-        elif canal == "mercadolibre" and _ml_solo_bogota() and bog > 0:
-            # Regla temporal: ML solo vende stock de Bogotá → la venta salió de
-            # ahí (sin pendiente, aunque Yopal tenga stock).
-            bog = max(0, bog - cantidad)
-            db._sb_patch("inventory_products", "id=eq.%d" % pid,
-                         {"qty_bogota": bog})
-            db._sb_post("movimiento_stock", {
-                "codigo_boun": codigo, "delta": -cantidad,
-                "motivo": "asignacion_bodega_bogota_ml", "canal": canal,
-                "order_id": str(order_id)})
-            cola.update({"estado": "confirmado", "bodega_asignada": "bogota",
-                         "auto": True})
-            db._sb_post("cola_bodega", cola)
-            asignado = "bogota(auto-ml)"
-        elif bog > 0 and yop > 0:
-            # Ambas bodegas con stock → ambiguo, lo confirma una persona.
-            cola.update({"estado": "pendiente"})
-            db._sb_post("cola_bodega", cola)
-            asignado = "pendiente"
-        elif bog > 0:
-            # Solo Bogotá tiene stock → deducción: salió de ahí.
-            bog = max(0, bog - cantidad)
-            db._sb_patch("inventory_products", "id=eq.%d" % pid,
-                         {"qty_bogota": bog})
-            db._sb_post("movimiento_stock", {
-                "codigo_boun": codigo, "delta": -cantidad,
-                "motivo": "asignacion_bodega_bogota", "canal": canal,
-                "order_id": str(order_id)})
-            cola.update({"estado": "confirmado", "bodega_asignada": "bogota",
-                         "auto": True})
-            db._sb_post("cola_bodega", cola)
-            asignado = "bogota(auto)"
-        elif yop > 0:
-            # Solo Yopal tiene stock.
-            yop = max(0, yop - cantidad)
-            db._sb_patch("inventory_products", "id=eq.%d" % pid,
-                         {"qty_yopal": yop})
-            db._sb_post("movimiento_stock", {
-                "codigo_boun": codigo, "delta": -cantidad,
-                "motivo": "asignacion_bodega_yopal", "canal": canal,
-                "order_id": str(order_id)})
-            cola.update({"estado": "confirmado", "bodega_asignada": "yopal",
-                         "auto": True})
-            db._sb_post("cola_bodega", cola)
-            asignado = "yopal(auto)"
-        else:
-            # Sin stock en ninguna bodega y el canal NO confirmó Full → puede ser
-            # Full (con logística sin marcar) o sobreventa. Lo dejamos pendiente
-            # para que una persona lo revise (puede marcarlo Full con el botón).
-            cola.update({"estado": "pendiente"})
-            db._sb_post("cola_bodega", cola)
-            asignado = "pendiente(sin stock)"
+        # Descuento de bodega + registro (helper reutilizable, también para combos)
+        asignado, bog, yop = _descontar_una(canal, order_id, prows[0], cantidad,
+                                            es_full)
         disp = max(0, bog + yop - _pending_cola(codigo))
-        plan = _compute_plan(codigo, disp)
-        # Propagación a canales: escribe SOLO los canales de la lista blanca
-        # (_sync_apply_channels). Si está vacía, sigue siendo DRY-RUN.
-        aplicado = _apply_plan(codigo, plan, order_id=order_id)
+        # Propagación a canales: escribe SOLO los de la lista blanca (si vacía,
+        # sigue en DRY-RUN).
+        plan, aplicado = _propagar(codigo, disp, order_id)
         resultados.append({"codigo": codigo, "cantidad": cantidad,
                            "es_full": bool(es_full), "bodega": asignado,
                            "disponible_tras_venta": disp,
@@ -2270,9 +2357,12 @@ def sync_apply_preview(key: str = "", codigo: str = "", vendidos: int = 0,
             return JSONResponse({"error": "codigo_no_encontrado",
                                  "codigo": codigo}, status_code=404,
                                 headers=_EXPORT_CORS)
-        bog = int(prows[0].get("qty_bogota") or 0)
-        yop = int(prows[0].get("qty_yopal") or 0)
-        disp = max(0, bog + yop - _pending_cola(codigo) - int(vendidos or 0))
+        if _combo_components(codigo):
+            disp = max(0, _combo_disponible(codigo) - int(vendidos or 0))
+        else:
+            bog = int(prows[0].get("qty_bogota") or 0)
+            yop = int(prows[0].get("qty_yopal") or 0)
+            disp = max(0, bog + yop - _pending_cola(codigo) - int(vendidos or 0))
         plan = _compute_plan(codigo, disp)
         prev = _apply_plan(codigo, plan, dry=True, force={canal})
         return JSONResponse({"ok": True, "codigo": codigo, "disponible": disp,
@@ -2353,6 +2443,42 @@ def sync_apply_config(data: ApplyConfigIn, user: dict = Depends(_admin)):
             "dry_run": not bool(canales)}
 
 
+# ── COMBOS (kits) — definición vía UI ────────────────────────────────────────
+
+@app.get("/api/combos")
+def combos_get(user: dict = Depends(_admin)):
+    """Devuelve el mapa de combos: {codigo_combo: [{codigo, cant}, …]}."""
+    return {"ok": True, "combos": _combos_def()}
+
+
+class CombosIn(BaseModel):
+    combos: dict = {}     # {codigo_combo: [{codigo, cant}, …]} — reemplaza todo
+
+
+@app.post("/api/combos")
+def combos_set(data: CombosIn, user: dict = Depends(_admin)):
+    """Reemplaza el mapa completo de combos (valida y limpia la entrada)."""
+    clean = {}
+    for combo, comps in (data.combos or {}).items():
+        combo = str(combo).strip()
+        if not combo or not isinstance(comps, list):
+            continue
+        lst = []
+        for c in comps:
+            cc = str((c or {}).get("codigo") or "").strip()
+            rc = (c or {}).get("cant")
+            try:
+                cant = int(rc) if rc not in (None, "") else 1
+            except Exception:
+                cant = 1
+            if cc and cant > 0:    # cant<=0 (p.ej. 0) → componente inválido, se omite
+                lst.append({"codigo": cc, "cant": cant})
+        if lst:
+            clean[combo] = lst
+    db.set_setting("combos_def", json.dumps(clean, ensure_ascii=False))
+    return {"ok": True, "combos": clean}
+
+
 # ── Motor de sincronización — ESCANEO de reconciliación (Web → canales) ───────
 # Recorre TODO el inventario central y alinea cada publicación de los canales
 # elegidos al disponible vendible (Bogotá+Yopal−pendientes) de la web BOUN, que
@@ -2407,9 +2533,13 @@ def _scan_reconcile(channels: set, dry: bool, tag: str = "scan"):
         "started_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")})
     for i, p in enumerate(prods, 1):
         codigo = p.get("code") or ""
-        bog = int(p.get("qty_bogota") or 0)
-        yop = int(p.get("qty_yopal") or 0)
-        disp = max(0, bog + yop - _pending_cola(codigo))
+        if _combo_components(codigo):
+            # Combo: disponible = cuántos se pueden armar de los componentes.
+            disp = _combo_disponible(codigo)
+        else:
+            bog = int(p.get("qty_bogota") or 0)
+            yop = int(p.get("qty_yopal") or 0)
+            disp = max(0, bog + yop - _pending_cola(codigo))
         try:
             plan = _compute_plan(codigo, disp, reactivate=reactivate)
             res = _apply_plan(codigo, plan, order_id=tag, dry=dry,
