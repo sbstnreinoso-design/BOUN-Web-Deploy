@@ -47,6 +47,7 @@ document.addEventListener("keydown",e=>{ if(e.key==="Enter" && document.getEleme
 // ── Navegación ─────────────────────────────────────────────────────────────
 const NAV=[
   ["dashboard","⬛  Dashboard"],
+  ["cerebro","🧠  Cerebro"],
   ["ventas","↗  Ventas"],
   ["inventory","▦  Inventario"],
   ["cola","📦  Pendientes de bodega"],
@@ -76,6 +77,7 @@ async function refreshColaBadge(){
 function go(id){
   document.querySelectorAll(".nav a").forEach(a=>a.classList.toggle("active",a.dataset.nav===id));
   if(id==="dashboard") renderDashboard();
+  else if(id==="cerebro") renderCerebro();
   else if(id==="ventas") renderSales();
   else if(id==="inventory") renderInventory();
   else if(id==="cola") renderCola();
@@ -233,6 +235,7 @@ function invCard(p){
         <div class="inv-meta">${p.n_links} publicación${p.n_links!==1?"es":""} asignada${p.n_links!==1?"s":""} ${chCounts(p.n_by_channel)}${p.created_by?" · creado por "+esc(p.created_by):""}</div>
         ${comboLine}
       </div>
+      ${isCombo?"":`<button class="btn-ghost" onclick="ingresoDialog(${p.id})" title="Sumar mercancía que llegó a bodega">📥 Ingreso</button>`}
       <button class="btn-ghost" onclick="assignDialog(${p.id})">Asignar publicaciones</button>
       <button class="btn-ghost" onclick="editProduct(${p.id})">✏</button>
       ${isAdmin()?`<button class="btn-danger" onclick="delProduct(${p.id})">✕</button>`:""}
@@ -353,6 +356,49 @@ async function delProduct(pid){
   const p=INV.find(x=>x.id===pid);
   if(!confirm(`¿Eliminar "${p.code} · ${p.name}" del inventario? Las publicaciones de ML no se tocan.`)) return;
   try{ await api("/inventory/"+pid,{method:"DELETE"}); renderInventory(); }catch(e){ alert(e.message); }
+}
+
+// ── Ingreso de mercancía (SUMA, no reemplaza) ───────────────────────────────
+function ingresoDialog(pid){
+  const p=INV.find(x=>x.id===pid); if(!p) return;
+  const bog=Math.round(+p.qty_bogota||0), yop=Math.round(+p.qty_yopal||0);
+  openModal(`<h3>📥 Ingreso de mercancía — ${esc(p.code)}</h3>
+    <div class="sub">Suma las unidades que <b>llegaron</b> a la bodega. <b>No reemplaza</b> el total: respeta los descuentos por ventas que el sistema ya aplicó, así no se "revive" stock vendido.</div>
+    <div id="ingErr" class="err"></div>
+    <div class="set-row"><label>Bodega</label>
+      <select id="ingBod" class="field" onchange="ingPreview(${pid})">
+        <option value="bogota">Bogotá (actual: ${bog})</option>
+        <option value="yopal">Yopal (actual: ${yop})</option>
+      </select></div>
+    <div class="set-row"><label>Unidades que llegaron</label>
+      <input id="ingCant" class="field" type="text" placeholder="Ej. 20" autocomplete="off" oninput="ingPreview(${pid})"></div>
+    <div class="set-row"><label>Nota (opcional)</label>
+      <input id="ingNota" class="field" placeholder="Ej. compra proveedor, factura 123"></div>
+    <div id="ingPrev" class="note" style="font-size:13px;min-height:18px"></div>
+    <button class="btn-primary" onclick="saveIngreso(${pid})">Registrar ingreso</button>`);
+  ingPreview(pid);
+}
+function ingPreview(pid){
+  const p=INV.find(x=>x.id===pid); if(!p) return;
+  const bod=val("ingBod");
+  const actual=Math.round(+(bod==="bogota"?p.qty_bogota:p.qty_yopal)||0);
+  const cant=parseInt((document.getElementById("ingCant").value||"").replace(/[^0-9]/g,""))||0;
+  const el=document.getElementById("ingPrev"); if(!el) return;
+  el.innerHTML = cant>0
+    ? `Quedará en <b class="acc">${actual+cant}</b> unidades en ${bod==="bogota"?"Bogotá":"Yopal"} <span class="muted">(${actual} actual + ${cant} ingresadas)</span>.`
+    : "";
+}
+async function saveIngreso(pid){
+  const bod=val("ingBod");
+  const cant=parseInt((document.getElementById("ingCant").value||"").replace(/[^0-9]/g,""))||0;
+  const nota=val("ingNota");
+  const err=document.getElementById("ingErr"); err.textContent="";
+  if(cant<=0){ err.textContent="Ingresa una cantidad mayor a 0."; return; }
+  try{
+    const r=await api("/inventory/"+pid+"/ingreso",{method:"POST",
+      body:JSON.stringify({bodega:bod,cantidad:cant,nota})});
+    closeModal(); renderInventory();
+  }catch(e){ err.textContent=e.message; }
 }
 
 // ── asignar publicaciones (multicanal) ──────────────────────────────────────
@@ -1570,3 +1616,169 @@ async function boot(){
   if(TOKEN && USER){ showApp(); } else { document.getElementById("login").style.display="flex"; }
 }
 boot();
+
+// ── CEREBRO — mapa de trabajo de la IA ───────────────────────────────────────
+let CEREBRO_TIMER=null;
+const CB_ICONS={
+  box:'<path d="M21 8 12 3 3 8v8l9 5 9-5Z"/><path d="m3 8 9 5 9-5M12 13v8"/>',
+  chat:'<path d="M21 11.5a8.4 8.4 0 0 1-9 8.4L3 21l1.1-3.6A8.4 8.4 0 1 1 21 11.5Z"/>',
+  tag:'<path d="M3 7v5l9 9 5-5-9-9H3Z"/><circle cx="7" cy="11" r="1"/>',
+  spark:'<path d="M12 3v6m0 6v6M3 12h6m6 0h6"/><path d="m6 6 3 3m6 6 3 3M18 6l-3 3M9 15l-3 3"/>',
+  chart:'<path d="M3 3v18h18"/><rect x="7" y="11" width="3" height="6"/><rect x="13" y="7" width="3" height="10"/>',
+  target:'<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="4"/><circle cx="12" cy="12" r="1"/>',
+  search:'<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>',
+  star:'<path d="m12 3 2.6 5.6 6.1.7-4.5 4.1 1.2 6L12 16.8 6.6 19.4l1.2-6L3.3 9.3l6.1-.7Z"/>',
+  file:'<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/>',
+  clock:'<circle cx="12" cy="12" r="9"/><path d="M12 8v4l3 2"/>',
+  bolt:'<path d="M13 2 3 14h9l-1 8 10-12h-9l1-8Z"/>',
+  alert:'<path d="M12 9v4m0 4h.01M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0Z"/>',
+};
+const cbSvg=(n,sz=17,sw=1.7)=>`<svg width="${sz}" height="${sz}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round">${CB_ICONS[n]||""}</svg>`;
+function cbCoParts(){
+  const s=new Intl.DateTimeFormat("en-US",{timeZone:"America/Bogota",hour:"2-digit",minute:"2-digit",hour12:false,day:"numeric"}).formatToParts(new Date());
+  const g=t=>+s.find(p=>p.type===t).value;
+  return {h:g("hour")%24,m:g("minute"),day:g("day")};
+}
+function cbHHMM(min){const h=Math.floor(min/60),m=min%60,ap=h<12?"AM":"PM";let hh=h%12;if(hh===0)hh=12;return hh+(m?":"+String(m).padStart(2,"0"):"")+" "+ap;}
+function cbTaskState(t){
+  const {h,m,day}=cbCoParts(),nowMin=h*60+m;
+  if(t.days && !t.days.includes(day)) return {s:"idle",label:"Programada",msg:t.idle,next:null};
+  const sched=(t.hours||[]).map(x=>x*60).sort((a,b)=>a-b);
+  let running=false,lastDone=null,next=null;
+  for(const sm of sched){ if(nowMin>=sm && nowMin<sm+25) running=true; if(nowMin>=sm) lastDone=sm; if(nowMin<sm && next===null) next=sm; }
+  if(running) return {s:"run",label:"Corriendo",msg:t.run||t.idle,next};
+  if(lastDone!==null) return {s:"ok",label:"Hecha hoy",msg:t.done||t.idle,next};
+  return {s:"idle",label:"En espera",msg:t.idle,next};
+}
+function cbClock(){
+  const el=document.getElementById("cbClk"); if(!el) return;
+  const now=new Date();
+  el.textContent=new Intl.DateTimeFormat("es-CO",{timeZone:"America/Bogota",hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false}).format(now);
+  const d=document.getElementById("cbClkD"); if(d) d.textContent=new Intl.DateTimeFormat("es-CO",{timeZone:"America/Bogota",weekday:"long",day:"numeric",month:"long"}).format(now);
+}
+async function renderCerebro(){
+  if(CEREBRO_TIMER){clearInterval(CEREBRO_TIMER);CEREBRO_TIMER=null;}
+  const v=document.getElementById("view");
+  v.innerHTML=`<div class="cb">
+    <div class="cb-top">
+      <div>
+        <div class="page-title">🧠 Cerebro BOUN</div>
+        <div class="page-sub">Mapa de trabajo de la IA en la empresa — automatización en tiempo real</div>
+      </div>
+      <div class="cb-clockbox">
+        <div class="cb-clk" id="cbClk">--:--:--</div>
+        <div class="cb-clkd" id="cbClkD">—</div>
+        <div class="cb-live"><span class="cb-dot"></span> Sistema activo · Colombia (UTC-5)</div>
+      </div>
+    </div>
+    <div id="cbBody"><div class="loading"><span class="spinner"></span> Cargando el cerebro…</div></div>
+  </div>`;
+  cbClock();
+  let data=null;
+  try{ data=await api("/cerebro"); }
+  catch(e){ data={ok:false}; }
+  drawCerebro(data);
+  CEREBRO_TIMER=setInterval(()=>{ cbClock(); if(document.getElementById("cbBody")) drawCerebro(data); },20000);
+  setInterval(cbClock,1000);
+}
+function drawCerebro(data){
+  const body=document.getElementById("cbBody"); if(!body) return;
+  const m=(data&&data.motor)||{};
+  const tasks=(data&&data.tasks)||CB_FALLBACK_TASKS;
+  const skills=(data&&data.skills)||CB_FALLBACK_SKILLS;
+  const alertas=(data&&data.alertas)||[];
+
+  // — estado del motor —
+  const onN='<span class="cb-ndot on"></span>';
+  const warnN='<span class="cb-ndot warn"></span>';
+  const chTxt=(m.apply_channels&&m.apply_channels.length)?m.apply_channels.length+" canales escribiendo":"DRY-RUN (no escribe)";
+  const nodes=[
+    {dot:m.dry_run?warnN:onN,nm:"Sync de stock",d:`Escritura real · ${chTxt} · tope ${m.max_delta||"∞"} u.`,st:m.sync_enabled?"Escuchando ventas":"Ingesta pausada",warn:m.dry_run||!m.sync_enabled},
+    {dot:m.scan_daily?onN:warnN,nm:"Escaneo diario",d:`Reconcilia Web → canales cada día a las ${m.scan_daily_hour!=null?m.scan_daily_hour+":00":"4:00"}.`,st:m.scan_daily?"Activo":"Desactivado",warn:!m.scan_daily},
+    {dot:m.scan_reactivate?onN:warnN,nm:"Reactivación",d:"Revive publicaciones de ML agotadas en cuanto hay stock.",st:m.scan_reactivate?"Vigilando agotados":"Desactivada",warn:!m.scan_reactivate},
+    {dot:'<span class="cb-ndot ml"></span>',nm:"Poller ML",d:"Lee ventas de MercadoLibre cada ~3 min (idempotente).",st:"Sondeando"},
+    {dot:'<span class="cb-ndot fala"></span>',nm:"Poller Falabella",d:"Lee ventas de Seller Center cada ~3 min, con reintentos.",st:"Sondeando"},
+    {dot:'<span class="cb-ndot shop"></span>',nm:"Webhooks Shopify",d:"Ventas de BOUN + KAT entran al instante por webhook (HMAC).",st:"Conectado"},
+    {dot:'<span class="cb-ndot combo"></span>',nm:"Combos / kits",d:"Stock auto-calculado; al venderse descuenta sus componentes.",st:"Activo"},
+    {dot:warnN,nm:"Regla temporal",d:'"ML solo bodega Bogotá" mientras Yopal no esté en ML.',st:m.ml_solo_bogota?"Vigente":"Inactiva",warn:m.ml_solo_bogota},
+  ];
+  const coreHtml=`<div class="cb-core">
+    <div class="cb-core-head"><div class="cb-orb"></div>
+      <div><div class="cb-core-t">Motor de sincronización · 4 canales</div>
+      <div class="cb-core-s">Cada venta descuenta el inventario central y reparte el stock a MercadoLibre, Falabella y Shopify (BOUN + KAT)</div></div></div>
+    <div class="cb-nodes">${nodes.map(n=>`<div class="cb-node"><div class="cb-nh">${n.dot}${n.nm}</div><div class="cb-nd">${n.d}</div><div class="cb-nst ${n.warn?"warn":""}"><span class="cb-pulse ${n.warn?"warn":""}"></span>${n.st}</div></div>`).join("")}</div>
+  </div>`;
+
+  // — KPIs —
+  let runN=0,doneN=0;
+  tasks.forEach(t=>{const s=cbTaskState(t);if(s.s==="run")runN++;if(s.s==="ok")doneN++;});
+  const kpis=`<div class="cb-kpis">
+    <div class="cb-kpi run"><div class="cb-kc">${cbSvg("bolt",13,2)} Procesos activos</div><div class="cb-kv">${tasks.length+8}</div><div class="cb-km">núcleo autónomo + ${tasks.length} tareas</div></div>
+    <div class="cb-kpi"><div class="cb-kc">${cbSvg("clock",13,2)} Corriendo ahora</div><div class="cb-kv">${runN}</div><div class="cb-km">${runN?"ejecutándose ahora":"en espera de la próxima ventana"}</div></div>
+    <div class="cb-kpi"><div class="cb-kc">${cbSvg("clock",13,2)} Completadas hoy</div><div class="cb-kv">${doneN}</div><div class="cb-km">sin errores · últimas 24 h</div></div>
+    <div class="cb-kpi err"><div class="cb-kc">${cbSvg("alert",13,2)} Pendientes / fallas</div><div class="cb-kv">${alertas.length}</div><div class="cb-km">requieren tu decisión</div></div>
+  </div>`;
+
+  // — jornada / timeline —
+  const {h,m:mm}=cbCoParts(),nowMin=h*60+mm,dayMin=1440;
+  const marks=[{hh:4,l:"Escaneo motor"},{hh:8,l:"Inventario ML"},{hh:9,l:"Preguntas ML"},{hh:16,l:"Preguntas ML"},{hh:17,l:"Pauta Falab."},{hh:23,l:"Contenido Falab."}];
+  let nextFound=false;
+  const ticks=marks.map(mk=>{const mn=mk.hh*60,pct=mn/dayMin*100;let cls="";if(mn<=nowMin)cls="done";else if(!nextFound){cls="next";nextFound=true;}return `<div class="cb-tick ${cls}" style="left:${pct}%"><div class="cb-tkh">${cbHHMM(mn)}</div><div class="cb-tkd"></div><div class="cb-tkl">${mk.l}</div></div>`;}).join("");
+  const tl=`<div class="cb-sec">${cbSvg("clock",16)}<h3>Jornada de hoy</h3><span class="cb-tag">cuándo actúa la IA a lo largo del día</span></div>
+    <div class="cb-tl"><div class="cb-track"><div class="cb-line"></div><div class="cb-prog" style="width:${nowMin/dayMin*100}%"></div>${ticks}<div class="cb-now" style="left:${nowMin/dayMin*100}%"></div></div>
+    <div class="cb-legend"><span><i class="lg done"></i> ejecutada</span><span><i class="lg next"></i> próxima</span><span><i class="lg"></i> programada</span></div></div>`;
+
+  // — tarjetas de tareas —
+  const cardHtml=(t)=>{
+    const st=cbTaskState(t), hb=t.heartbeat||{};
+    const label= hb.status? ({ok:"Hecha",run:"Corriendo",warn:"Atención",err:"Falló"}[hb.status]||st.label) : st.label;
+    const sc= hb.status? ({ok:"ok",run:"run",warn:"warn",err:"err"}[hb.status]||st.s) : st.s;
+    const msg= hb.msg || st.msg;
+    const accent=t.canal==="mercadolibre"?"ml":"fala";
+    const nm=t.canal==="mercadolibre"?"MercadoLibre":"Falabella";
+    const nowic= sc==="run"?'<span class="cb-rdot"></span>': sc==="ok"?`<span style="color:var(--cb-ok)">${cbSvg("clock",16,2.2)}</span>`: sc==="err"||sc==="warn"?`<span style="color:var(--cb-${sc==="err"?"err":"warn"})">${cbSvg("alert",16,2)}</span>`:`<span class="muted">${cbSvg("clock",16,2)}</span>`;
+    const next=st.next!=null?("Próxima "+cbHHMM(st.next)):"—";
+    return `<div class="cb-card">
+      <span class="cb-chan ${accent}">${nm}</span>
+      <div class="cb-ch"><div class="cb-cic ${accent}">${cbSvg(t.icon||"box",18)}</div>
+        <div><div class="cb-ct">${t.nombre}</div><div class="cb-ccad">${cbSvg("clock",11,2)} ${t.cad}</div></div></div>
+      <div class="cb-desc">${t.desc}</div>
+      <div class="cb-now-box"><span class="cb-nowic">${nowic}</span><span class="cb-nowt"><b>${sc==="run"?"Ahora mismo":label}</b><span>${msg}</span></span></div>
+      <div class="cb-foot"><span class="cb-st ${sc}"><span class="cb-sdot"></span>${label}</span><span>${next}</span></div>
+    </div>`;
+  };
+  const ml=tasks.filter(t=>t.canal==="mercadolibre"),fa=tasks.filter(t=>t.canal==="falabella");
+  const tasksHtml=`
+    <div class="cb-sec ml">${cbSvg("box",16)}<h3>Tareas programadas · MercadoLibre</h3><span class="cb-tag">cuenta BOUN COL</span></div>
+    <div class="cb-grid">${ml.map(cardHtml).join("")}</div>
+    <div class="cb-sec fa">${cbSvg("chart",16)}<h3>Tareas programadas · Falabella</h3><span class="cb-tag">Seller Center + Retail Media</span></div>
+    <div class="cb-grid">${fa.map(cardHtml).join("")}</div>`;
+
+  // — skills —
+  const skillsHtml=`<div class="cb-sec">${cbSvg("star",16)}<h3>Skills disponibles</h3><span class="cb-tag">capacidades que la IA puede invocar</span></div>
+    <div class="cb-grid sk">${skills.map(s=>`<div class="cb-skill"><div class="cb-sic">${cbSvg(s.icon||"file",17)}</div><div><div class="cb-skt">${s.nombre}</div><div class="cb-skd">${s.desc}</div></div><span class="cb-pill">${s.tag}</span></div>`).join("")}</div>`;
+
+  // — pendientes —
+  const alertsHtml=`<div class="cb-sec err">${cbSvg("alert",16)}<h3>Pendientes de la IA · requieren solución</h3><span class="cb-tag">detectar y resolver</span></div>
+    <div class="cb-grid al">${alertas.map(a=>{const w=a.sev==="warn";return `<div class="cb-alert ${w?"w":""}"><div class="cb-ah"><div class="cb-aic">${cbSvg("alert",16,2)}</div><h4>${a.title}</h4><span class="cb-sev">${w?"Atención":"Bloqueado"}</span></div><p>${a.txt}</p></div>`;}).join("")||'<div class="muted" style="padding:10px">Sin pendientes. Todo en orden. ✅</div>'}</div>`;
+
+  const offline = (data&&data.ok===false)?'<div class="cb-offline">⚠ No se pudo leer el estado del motor (la web puede estar despertando). Mostrando estado por horario.</div>':'';
+
+  body.innerHTML = offline + kpis +
+    `<div class="cb-sec">${cbSvg("bolt",16)}<h3>Núcleo autónomo</h3><span class="cb-tag">Web BOUN · siempre encendido · fuente de verdad del inventario</span></div>` +
+    coreHtml + tl + tasksHtml + skillsHtml + alertsHtml;
+}
+// Respaldo si el backend aún no expone /api/cerebro (cold-start o deploy viejo).
+const CB_FALLBACK_TASKS=[
+  {id:"ml1",canal:"mercadolibre",nombre:"Inventario diario",icon:"box",cad:"Diario · 8:00 AM",hours:[8],days:null,desc:"Revisa publicación por publicación; en las agotadas quita el Full y deja el stock en 0.",run:"Recorriendo publicaciones…",done:"Revisión completa · agotadas marcadas",idle:"Listo hasta mañana 8:00 AM"},
+  {id:"ml2",canal:"mercadolibre",nombre:"Preguntas, reclamos y facturación",icon:"chat",cad:"2× día · 9:00 AM y 4:00 PM",hours:[9,16],days:null,desc:"Responde compradores, gestiona reclamos y envía el RUT a Edgar por WhatsApp.",run:"Leyendo preguntas y reclamos…",done:"Bandeja respondida · facturación al día",idle:"Próxima pasada a las 4:00 PM"},
+  {id:"ml3",canal:"mercadolibre",nombre:"Campaña promo mensual (BOUN)",icon:"tag",cad:"Mensual · día 7, 1:00 PM",hours:[13],days:[7],desc:"Crea la BOUN del mes y alinea promociones a precios del mes anterior.",run:"Armando la BOUN del mes…",done:"BOUN lista para tu revisión",idle:"Programada para el día 7"},
+  {id:"fa1",canal:"falabella",nombre:"Corrida diaria de contenido",icon:"spark",cad:"Diario · 11:00 PM",hours:[23],days:null,desc:"Sube el puntaje de contenido a 100, pide reseñas y aplica el playbook 1★.",run:"Optimizando fichas y reseñas…",done:"Catálogo en puntaje 100 · reporte listo",idle:"Próxima corrida a las 11:00 PM"},
+  {id:"fa2",canal:"falabella",nombre:"Auditoría quincenal",icon:"chart",cad:"Días 1 y 15 · 9:00 AM",hours:[9],days:[1,15],desc:"Audita ventas, productos killers y ROAS contra la línea base.",run:"Auditando ventas y ROAS…",done:"Auditoría lista vs. línea base",idle:"Próxima auditoría el día 1"},
+  {id:"fa3",canal:"falabella",nombre:"Ajuste de pauta quincenal",icon:"target",cad:"Días 1 y 16 · 5:00 PM",hours:[17],days:[1,16],desc:"Optimiza campañas: pausa sin stock, recorta ACOS alto y escala el ROAS sano.",run:"Recalculando campañas…",done:"Pauta optimizada · sin stock pausado",idle:"Próximo ajuste el día 1"},
+];
+const CB_FALLBACK_SKILLS=[
+  {nombre:"Optimizador SEO Falabella",icon:"search",tag:"Chrome",desc:"Optimiza títulos, descripciones y puntaje de contenido con tendencias reales de Colombia."},
+  {nombre:"Playbook reseñas 1★",icon:"star",tag:"Embebida",desc:"Flujo duplicar → corregir → eliminar para neutralizar reseñas de una estrella."},
+  {nombre:"Reportes (Word · Excel · PDF)",icon:"file",tag:"Documentos",desc:"Genera auditorías, resúmenes de ventas y reportes operativos profesionales."},
+];
