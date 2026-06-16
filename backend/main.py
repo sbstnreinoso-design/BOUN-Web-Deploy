@@ -1419,7 +1419,7 @@ def ml_set_stock_preflight():
 
 
 def _ml_set_stock_one(item_id: str, cantidad: int, dry: bool = False,
-                      max_delta=None) -> dict:
+                      max_delta=None, reactivate: bool = False) -> dict:
     """Fija available_quantity de UNA publicación ML al valor ABSOLUTO `cantidad`.
     Devuelve un dict plano (lo usan el endpoint y el motor de propagación).
 
@@ -1428,13 +1428,16 @@ def _ml_set_stock_one(item_id: str, cantidad: int, dry: bool = False,
     - Escritura absoluta → idempotente: reaplicar el mismo plan no descuadra.
     - `max_delta`: si |nuevo-actual| supera el tope, NO escribe (skip=delta_guard).
     - Snapshot del stock `actual` para auditoría y reversión.
+    - `reactivate=True`: si la publicación está PAUSADA por falta de stock
+      (sub_status `out_of_stock`) y hay cantidad>0, la vuelve a poner ACTIVA al
+      escribir el stock. Las pausadas por otra razón se saltan (no se reactivan).
     """
     try:
         c = int(cantidad)
         if c < 0:
             return {"ok": False, "error": "bad_request", "item_id": item_id}
         r = _ml_request(
-            "GET", "/items/%s?attributes=id,status,available_quantity,"
+            "GET", "/items/%s?attributes=id,status,sub_status,available_quantity,"
                    "variations,shipping,catalog_listing" % item_id)
         if r is None:
             return {"ok": False, "error": "ml_not_connected", "item_id": item_id}
@@ -1443,6 +1446,7 @@ def _ml_set_stock_one(item_id: str, cantidad: int, dry: bool = False,
                     "ml_status": r.status_code, "item_id": item_id}
         item = r.json()
         status = item.get("status")
+        sub = item.get("sub_status") or []
         logistic = (item.get("shipping") or {}).get("logistic_type")
         variations = item.get("variations") or []
         # Guardrails: no tocar Full ni cerradas/catálogo (no contar como error).
@@ -1452,6 +1456,15 @@ def _ml_set_stock_one(item_id: str, cantidad: int, dry: bool = False,
         if status == "closed" or item.get("catalog_listing") is True:
             return {"ok": False, "skip": True, "reason": "closed/catalog",
                     "item_id": item_id}
+        # Pausadas: solo se tocan si reactivate=True Y están pausadas por falta de
+        # stock Y hay algo que cargar. Las pausadas a propósito quedan intactas.
+        reactivar = False
+        if status == "paused":
+            if reactivate and ("out_of_stock" in sub) and c > 0:
+                reactivar = True
+            else:
+                return {"ok": False, "skip": True, "reason": "paused",
+                        "item_id": item_id}
         # Con variaciones → fija available_quantity en CADA variación (mismo N
         # por defecto). Sin variaciones → en el ítem. `actual` = snapshot previo.
         if variations:
@@ -1464,6 +1477,8 @@ def _ml_set_stock_one(item_id: str, cantidad: int, dry: bool = False,
             applied_to = "item"
             actual = int(item.get("available_quantity") or 0)
             body = {"available_quantity": c}
+        if reactivar:
+            body["status"] = "active"   # revive la publicación agotada
         # Guardia de salto: evita escrituras desproporcionadas por un cálculo raro.
         if max_delta is not None and abs(c - actual) > max_delta:
             return {"ok": False, "skip": True, "reason": "delta_guard",
@@ -1471,14 +1486,15 @@ def _ml_set_stock_one(item_id: str, cantidad: int, dry: bool = False,
                     "max_delta": max_delta, "applied_to": applied_to}
         if dry:
             return {"ok": True, "dry_run": True, "item_id": item_id, "set": c,
-                    "actual": actual, "applied_to": applied_to,
+                    "actual": actual, "applied_to": applied_to, "reactivar": reactivar,
                     "status": status, "logistic": logistic, "body": body}
         pr = _ml_request("PUT", "/items/%s" % item_id, json_body=body)
         if pr is None:
             return {"ok": False, "error": "ml_not_connected", "item_id": item_id}
         if pr.status_code in (200, 201):
             return {"ok": True, "item_id": item_id, "set": c, "actual": actual,
-                    "applied_to": applied_to, "ml_status": pr.status_code}
+                    "applied_to": applied_to, "reactivar": reactivar,
+                    "ml_status": pr.status_code}
         txt = (pr.text or "").lower()
         if "not_modifiable" in txt or "catalog_listing" in txt:
             return {"ok": False, "skip": True, "reason": "closed/catalog",
@@ -1666,8 +1682,11 @@ def _shopify_set_inventory(shop: str, tok: str, inv_item: str, location: str,
         return {"ok": False, "error": str(e)[:200], "inv_item": inv_item}
 
 
-def _ml_active_pubs(product_id: int) -> tuple:
-    """(activas[{key,ventas}], excluidas[]) de ML para un producto (no-Full)."""
+def _ml_active_pubs(product_id: int, include_paused_oos: bool = False) -> tuple:
+    """(activas[{key,ventas}], excluidas[]) de ML para un producto (no-Full).
+    Si include_paused_oos=True, también mete en 'activas' las publicaciones
+    pausadas por falta de stock (sub_status out_of_stock) para que el escaneo
+    las reactive; las pausadas por otra razón siguen excluidas."""
     links = db._sb_get("inventory_links?product_id=eq.%d&%sselect=ml_item_id,"
                        "ml_sold60,ml_logistic"
                        % (product_id, db._ml_only_filter())) or []
@@ -1676,22 +1695,27 @@ def _ml_active_pubs(product_id: int) -> tuple:
         iid = l.get("ml_item_id")
         if not iid:
             continue
-        r = _ml_request("GET", "/items/%s?attributes=id,status,shipping" % iid)
-        st = lg = None
+        r = _ml_request("GET", "/items/%s?attributes=id,status,sub_status,shipping" % iid)
+        st = lg = None; sub = []
         if r is not None and r.status_code == 200:
             jd = r.json(); st = jd.get("status")
             lg = (jd.get("shipping") or {}).get("logistic_type")
+            sub = jd.get("sub_status") or []
         if lg == "fulfillment":
             excl.append({"item_id": iid, "motivo": "full"})
-        elif st != "active":
-            excl.append({"item_id": iid, "motivo": st or "?"})
-        else:
+        elif st == "active":
             activas.append({"key": iid, "ventas": int(l.get("ml_sold60") or 0)})
+        elif include_paused_oos and st == "paused" and "out_of_stock" in sub:
+            # agotada → entra al reparto para que el escritor la reactive
+            activas.append({"key": iid, "ventas": int(l.get("ml_sold60") or 0)})
+        else:
+            excl.append({"item_id": iid, "motivo": st or "?"})
     return activas, excl
 
 
-def _compute_plan(codigo: str, disponible: int) -> dict:
-    """Reparto del disponible entre publicaciones activas de los 4 canales."""
+def _compute_plan(codigo: str, disponible: int, reactivate: bool = False) -> dict:
+    """Reparto del disponible entre publicaciones activas de los 4 canales.
+    Si reactivate=True, ML incluye también las pausadas por falta de stock."""
     import sync as _sync
     out = {}
     prows = db._sb_get("inventory_products?code=eq.%s&select=id"
@@ -1699,7 +1723,7 @@ def _compute_plan(codigo: str, disponible: int) -> dict:
     pid = prows[0]["id"] if prows else None
     # MercadoLibre
     if pid:
-        ml_act, ml_excl = _ml_active_pubs(pid)
+        ml_act, ml_excl = _ml_active_pubs(pid, include_paused_oos=reactivate)
         out["mercadolibre"] = {"reparto": _sync.reparto(disponible, ml_act),
                                "excluidas": ml_excl}
     else:
@@ -1749,7 +1773,8 @@ def _sync_apply_max_delta():
 
 
 def _apply_plan(codigo: str, plan: dict, order_id: str = "",
-                dry: bool = False, force=None, ignore_delta: bool = False) -> dict:
+                dry: bool = False, force=None, ignore_delta: bool = False,
+                reactivate: bool = False) -> dict:
     """Aplica el plan de reparto SOLO a los canales en la lista blanca
     (`_sync_apply_channels`), o a `force` si se pasa (para previsualizar).
 
@@ -1772,7 +1797,7 @@ def _apply_plan(codigo: str, plan: dict, order_id: str = "",
         reparto = (plan.get("mercadolibre", {}) or {}).get("reparto", {}) or {}
         for item_id, cant in reparto.items():
             r = _ml_set_stock_one(str(item_id), int(cant), dry=dry,
-                                  max_delta=max_delta)
+                                  max_delta=max_delta, reactivate=reactivate)
             ml_res.append(r)
             if not dry:
                 _safe(db._sb_post, "sync_aplicacion", {
@@ -2255,6 +2280,7 @@ def sync_apply_status(user: dict = Depends(_admin)):
             "dry_run": not bool(canales),
             "scan_daily": _scan_daily_enabled(),
             "scan_daily_hour": _scan_daily_hour(),
+            "scan_reactivate": _scan_reactivate_enabled(),
             "validos": sorted(_APPLY_CHANNELS_VALIDOS)}
 
 
@@ -2263,6 +2289,7 @@ class ApplyConfigIn(BaseModel):
     max_delta: Optional[int] = None       # tope de salto por publicación (0/None = sin tope)
     scan_daily: Optional[bool] = None     # escaneo de reconciliación automático diario
     scan_daily_hour: Optional[int] = None # hora local Colombia (0-23) del escaneo diario
+    scan_reactivate: Optional[bool] = None # reactivar publicaciones ML agotadas en el escaneo
 
 
 @app.post("/api/sync/apply-config")
@@ -2290,11 +2317,14 @@ def sync_apply_config(data: ApplyConfigIn, user: dict = Depends(_admin)):
         if not (0 <= h <= 23):
             raise HTTPException(400, "hora debe estar entre 0 y 23")
         db.set_setting("sync_scan_daily_hour", str(h))
+    if data.scan_reactivate is not None:
+        db.set_setting("sync_scan_reactivate", "1" if data.scan_reactivate else "0")
     canales = sorted(_sync_apply_channels())
     return {"ok": True, "channels": canales,
             "max_delta": _sync_apply_max_delta(),
             "scan_daily": _scan_daily_enabled(),
             "scan_daily_hour": _scan_daily_hour(),
+            "scan_reactivate": _scan_reactivate_enabled(),
             "dry_run": not bool(canales)}
 
 
@@ -2320,6 +2350,8 @@ def _scan_row(canal: str, r: dict, dry: bool) -> dict:
         accion = "saltado:%s" % (r.get("reason") or "")
     elif not r.get("ok"):
         accion = "error"
+    elif r.get("reactivar"):
+        accion = "reactivaria" if dry else "reactivada"
     elif actual is not None and objetivo is not None:
         accion = "sin_cambio" if int(actual) == int(objetivo) else \
                  ("cambiaria" if dry else "escrito")
@@ -2338,8 +2370,9 @@ def _scan_reconcile(channels: set, dry: bool, tag: str = "scan"):
     prods = db._sb_get("inventory_products?select=code,qty_bogota,qty_yopal"
                        "&order=code") or []
     total = len(prods)
+    reactivate = _scan_reactivate_enabled()
     counts = {"cambios": 0, "sin_cambio": 0, "saltados": 0,
-              "errores": 0, "escritos": 0}
+              "errores": 0, "escritos": 0, "reactivadas": 0}
     rows = []
     _SCAN_STATE.clear()
     _SCAN_STATE.update({
@@ -2353,9 +2386,10 @@ def _scan_reconcile(channels: set, dry: bool, tag: str = "scan"):
         yop = int(p.get("qty_yopal") or 0)
         disp = max(0, bog + yop - _pending_cola(codigo))
         try:
-            plan = _compute_plan(codigo, disp)
+            plan = _compute_plan(codigo, disp, reactivate=reactivate)
             res = _apply_plan(codigo, plan, order_id=tag, dry=dry,
-                              force=channels, ignore_delta=True)
+                              force=channels, ignore_delta=True,
+                              reactivate=reactivate)
         except Exception as e:
             counts["errores"] += 1
             rows.append({"codigo": codigo, "canal": "-", "ref": "", "actual": None,
@@ -2373,6 +2407,11 @@ def _scan_reconcile(channels: set, dry: bool, tag: str = "scan"):
                 if a == "escrito":
                     counts["cambios"] += 1
                     counts["escritos"] += 1
+                elif a == "reactivada":
+                    counts["cambios"] += 1; counts["escritos"] += 1
+                    counts["reactivadas"] += 1
+                elif a == "reactivaria":
+                    counts["cambios"] += 1; counts["reactivadas"] += 1
                 elif a in ("cambiaria", "escribiria"):
                     counts["cambios"] += 1
                 elif a == "sin_cambio":
@@ -2456,6 +2495,12 @@ def sync_scan_status(user: dict = Depends(_admin)):
 def _scan_daily_enabled() -> bool:
     return (db.get_setting("sync_scan_daily", "") == "1"
             or os.environ.get("SYNC_SCAN_DAILY", "") == "1")
+
+
+def _scan_reactivate_enabled() -> bool:
+    """Si el escaneo reactiva las publicaciones ML pausadas por falta de stock.
+    Default ON (solo se desactiva poniendo el setting en '0')."""
+    return db.get_setting("sync_scan_reactivate", "1") != "0"
 
 
 def _scan_daily_hour() -> int:
