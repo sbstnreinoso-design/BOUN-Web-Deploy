@@ -1124,6 +1124,9 @@ function scanHTML(){
       </div>
       <div id="scanOut" style="margin-top:14px"></div>
       <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">
+        <label style="font-size:13px;display:flex;gap:8px;align-items:center;cursor:pointer;margin-bottom:10px">
+          <input type="checkbox" id="scanReactivate" onchange="scanDailySave()"> Reactivar publicaciones agotadas <span class="muted" style="font-size:11px">(ML pausadas por falta de stock → vuelven a activas con stock)</span>
+        </label>
         <label style="font-size:13px;display:flex;gap:8px;align-items:center;cursor:pointer">
           <input type="checkbox" id="scanDaily" onchange="scanDailySave()"> Escaneo diario automático <span class="muted" style="font-size:11px">(aplica solo, todos los días)</span>
         </label>
@@ -1142,6 +1145,7 @@ async function scanInit(){
     const aps=await api("/sync/apply-status");
     const cb=document.getElementById("scanDaily"); if(cb) cb.checked=!!aps.scan_daily;
     const hr=document.getElementById("scanDailyHour"); if(hr && aps.scan_daily_hour!=null) hr.value=aps.scan_daily_hour;
+    const rc=document.getElementById("scanReactivate"); if(rc) rc.checked=aps.scan_reactivate!==false;
   }catch(e){}
   const out=document.getElementById("scanOut");
   if(!out) return;
@@ -1151,11 +1155,12 @@ async function scanInit(){
 }
 async function scanDailySave(){
   const en=document.getElementById("scanDaily").checked;
+  const rc=document.getElementById("scanReactivate").checked;
   let h=parseInt(document.getElementById("scanDailyHour").value,10); if(isNaN(h))h=4;
   const msg=document.getElementById("scanDailyMsg");
   try{
-    await api("/sync/apply-config",{method:"POST",body:JSON.stringify({scan_daily:en,scan_daily_hour:h})});
-    if(msg){ msg.textContent=en?`✓ activado · ${h}:00`:"✓ desactivado"; msg.className="green"; setTimeout(()=>{if(msg)msg.textContent="";},2500); }
+    await api("/sync/apply-config",{method:"POST",body:JSON.stringify({scan_daily:en,scan_daily_hour:h,scan_reactivate:rc})});
+    if(msg){ msg.textContent="✓ guardado"; msg.className="green"; setTimeout(()=>{if(msg)msg.textContent="";},2000); }
   }catch(e){ if(msg){ msg.textContent=e.message; msg.className="red"; } }
 }
 async function scanStart(mode){
@@ -1214,10 +1219,10 @@ function scanResultHTML(s){
   const rows=(s.rows||[]).filter(r=>r.accion!=="sin_cambio");
   const head=`<div style="font-size:13px;margin-bottom:10px">
       <span class="${dry?"amber":"green"}">●</span> <b>${dry?"Previsualización":"Cambios aplicados"}</b> · ${esc((s.channels||[]).map(scanChLabel).join(", "))}<br>
-      <span style="font-size:12px">${dry?"Cambiarían":"Escritas"}: <b class="green">${c.cambios||0}</b> · Ya alineadas: ${c.sin_cambio||0} · Saltadas (Full/catálogo): ${c.saltados||0} · Errores: <span class="${(c.errores||0)?"red":""}">${c.errores||0}</span></span></div>`;
+      <span style="font-size:12px">${dry?"Cambiarían":"Escritas"}: <b class="green">${c.cambios||0}</b>${(c.reactivadas||0)?` · <b style="color:var(--blue)">${dry?"Reactivaría":"Reactivadas"}: ${c.reactivadas}</b>`:""} · Ya alineadas: ${c.sin_cambio||0} · Saltadas (Full/catálogo): ${c.saltados||0} · Errores: <span class="${(c.errores||0)?"red":""}">${c.errores||0}</span></span></div>`;
   if(!rows.length) return head+`<div class="muted" style="font-size:12px">Todo está alineado con tu inventario. No hay cambios que mostrar.</div>`;
   const trs=rows.slice(0,500).map(r=>{
-    const col=r.accion.startsWith("saltado")?"var(--dim)":r.accion==="error"?"var(--red)":"var(--green)";
+    const col=r.accion.startsWith("saltado")?"var(--dim)":r.accion==="error"?"var(--red)":r.accion.startsWith("reactiv")?"var(--blue)":"var(--green)";
     const arrow=(r.actual!=null&&r.objetivo!=null)?`${r.actual} → <b>${r.objetivo}</b>`:(r.objetivo!=null?`<b>${r.objetivo}</b>`:"—");
     return `<tr>
       <td style="padding:4px 8px"><span class="code-chip" style="font-size:10px">${esc(r.codigo||"")}</span></td>
