@@ -1672,6 +1672,9 @@ function cbPromptFor(t){
 function cbSkillPromptFor(s){
   return `Usa la skill «${s.nombre}» (${s.tag}) para ayudarme con la tienda BOUN ahora.`;
 }
+function cbAlertPromptFor(a){
+  return `Resuelve este pendiente del Cerebro BOUN: «${a.title}». Contexto: ${a.txt} Investiga la causa, propón y/o aplica la solución, y al terminar dime cómo quedó.`;
+}
 function cbFallbackCopy(txt){const ta=document.createElement('textarea');ta.value=txt;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();try{document.execCommand('copy');}catch(e){}document.body.removeChild(ta);}
 function cbCopy(el){
   const txt=decodeURIComponent(el.dataset.p||'');
@@ -1789,7 +1792,7 @@ function drawCerebro(data){
 
   // — pendientes —
   const alertsHtml=`<div class="cb-sec err">${cbSvg("alert",16)}<h3>Pendientes de la IA · requieren solución</h3><span class="cb-tag">detectar y resolver</span></div>
-    <div class="cb-grid al">${alertas.map(a=>{const w=a.sev==="warn";return `<div class="cb-alert ${w?"w":""}"><div class="cb-ah"><div class="cb-aic">${cbSvg("alert",16,2)}</div><h4>${a.title}</h4><span class="cb-sev">${w?"Atención":"Bloqueado"}</span></div><p>${a.txt}</p></div>`;}).join("")||'<div class="muted" style="padding:10px">Sin pendientes. Todo en orden. ✅</div>'}</div>`;
+    <div class="cb-grid al">${alertas.map(a=>{const w=a.sev==="warn";return `<div class="cb-alert ${w?"w":""}"><div class="cb-ah"><div class="cb-aic">${cbSvg("alert",16,2)}</div><h4>${a.title}</h4><span class="cb-sev">${w?"Atención":"Bloqueado"}</span></div><p>${a.txt}</p><button class="cb-open" data-p="${encodeURIComponent(cbAlertPromptFor(a))}" onclick="cbCopy(this)">⧉ Abrir en Claude</button></div>`;}).join("")||'<div class="muted" style="padding:10px">Sin pendientes. Todo en orden. ✅</div>'}</div>`;
 
   const offline = (data&&data.ok===false)?'<div class="cb-offline">⚠ No se pudo leer el estado del motor (la web puede estar despertando). Mostrando estado por horario.</div>':'';
 
