@@ -2446,8 +2446,9 @@ def sync_apply_config(data: ApplyConfigIn, user: dict = Depends(_admin)):
 # ── COMBOS (kits) — definición vía UI ────────────────────────────────────────
 
 @app.get("/api/combos")
-def combos_get(user: dict = Depends(_admin)):
-    """Devuelve el mapa de combos: {codigo_combo: [{codigo, cant}, …]}."""
+def combos_get(user: dict = Depends(_current_user)):
+    """Devuelve el mapa de combos: {codigo_combo: [{codigo, cant}, …]}.
+    Lectura para cualquier usuario (para marcar combos en Inventario)."""
     return {"ok": True, "combos": _combos_def()}
 
 
