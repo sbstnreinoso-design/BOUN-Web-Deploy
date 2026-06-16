@@ -2764,12 +2764,13 @@ def _cerebro_pendientes(tasks: list) -> list:
     """Construye la lista de "Pendientes de la IA" que ve Sebastián.
 
     Regla (16-jun-2026): toda tarea/skill reporta a Cerebro y los pendientes se
-    auto-actualizan. NINGUNA tarea programada se escapa. Fuentes:
+    auto-actualizan y se auto-limpian. Fuentes:
       1) FALLAS: cada tarea cuyo último heartbeat sea `warn` o `err` se muestra;
          al reportar `ok`/`run` deja de aparecer (auto-limpieza).
-      2) WATCHDOG (sin excepción): toda tarea programada que debió correr y NO
-         confirmó un heartbeat fresco (no corrió, falló, o no pudo reportar) se
-         marca como pendiente hasta que confirme una corrida.
+      2) WATCHDOG: una tarea que YA venía reportando y dejó de confirmar sus
+         corridas (heartbeat más viejo que su ventana de cadencia) se marca. NO se
+         marca una tarea que aún no ha reportado nunca (eso no es una falla: se
+         empieza a vigilar tras su primer heartbeat) ni los procesos dinámicos.
       3) MANUALES: lo del setting `cerebro_alertas` (pendientes no atados a tarea).
     """
     pend, vistos = [], set()
@@ -2788,30 +2789,29 @@ def _cerebro_pendientes(tasks: list) -> list:
             pend.append({"sev": st, "title": t.get("nombre") or tid,
                          "txt": txt, "task_id": tid, "auto": True})
             continue
-        # 2) watchdog: solo tareas programadas (las dinámicas no tienen horario)
+        # 2) watchdog: solo tareas programadas que YA reportaron y dejaron de hacerlo
         if t.get("auto"):
             continue
         hours, days = t.get("hours"), t.get("days")
         if not hours and not days:
             continue
+        lr = hb.get("last_run")
+        if not lr:
+            continue  # nunca reportó aún: no es falla; se vigila tras su 1er heartbeat
         if days:
             max_age_h = 18 * 24 if len(days) >= 2 else 34 * 24
         else:
             max_age_h = 20 if (hours and len(hours) >= 2) else 28
-        lr = hb.get("last_run")
-        stale = True
-        if lr:
-            try:
-                last = datetime.strptime(lr, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-                stale = (now - last).total_seconds() > max_age_h * 3600
-            except Exception:
-                stale = True
-        if stale:
+        try:
+            last = datetime.strptime(lr, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+            overdue = (now - last).total_seconds() > max_age_h * 3600
+        except Exception:
+            overdue = False
+        if overdue:
             vistos.add(tid)
-            cuando = lr or "nunca"
             pend.append({"sev": "warn", "title": t.get("nombre") or tid,
-                         "txt": f"No confirmó su última corrida programada (último heartbeat: {cuando}). "
-                                f"Revisa si corrió y si pudo reportar al Cerebro.",
+                         "txt": f"Dejó de confirmar sus corridas (último heartbeat: {lr}). "
+                                f"Estaba reportando y ya no; revisa si sigue corriendo.",
                          "task_id": tid, "auto": True})
     # 3) manuales del setting (si su task_id ya se mostró o reportó ok/run, se omite)
     try:
