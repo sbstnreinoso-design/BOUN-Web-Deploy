@@ -1119,8 +1119,8 @@ function scanHTML(){
         ${Object.keys(SCAN_CH).map(c=>`<label style="font-size:13px;display:flex;gap:6px;align-items:center;cursor:pointer"><input type="checkbox" class="scanch" value="${c}" checked> ${SCAN_CH[c]}</label>`).join("")}
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
-        <button id="scanPrevBtn" class="btn-acc" onclick="scanStart('preview')">🔍 Previsualizar escaneo</button>
-        <button id="scanApplyBtn" class="btn-ghost" onclick="scanStart('apply')">✍ Aplicar correcciones</button>
+        <button type="button" id="scanPrevBtn" class="btn-acc" onclick="scanStart('preview')">🔍 Previsualizar escaneo</button>
+        <button type="button" id="scanApplyBtn" class="btn-ghost" onclick="scanStart('apply')">✍ Aplicar correcciones</button>
       </div>
       <div id="scanOut" style="margin-top:14px"></div>
       <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">
@@ -1163,20 +1163,29 @@ async function scanDailySave(){
     if(msg){ msg.textContent="✓ guardado"; msg.className="green"; setTimeout(()=>{if(msg)msg.textContent="";},2000); }
   }catch(e){ if(msg){ msg.textContent=e.message; msg.className="red"; } }
 }
+let SCAN_ACTIVE=false;   // hay un escaneo iniciado por este usuario en curso
+function scanLoadingHTML(txt){
+  return `<div class="loading" style="padding:22px;text-align:center;border:1px solid var(--border);border-radius:8px;background:var(--surf)">
+      <span class="spinner" style="width:22px;height:22px;border-width:3px"></span>
+      <div style="margin-top:10px;font-size:14px;color:var(--text);font-weight:700">${txt}</div>
+      <div style="margin-top:4px;font-size:11px;color:var(--muted)">Recorre todas las publicaciones de los canales · puede tardar 1–3 minutos</div>
+    </div>`;
+}
 async function scanStart(mode){
   const chans=[...document.querySelectorAll(".scanch:checked")].map(e=>e.value);
   if(!chans.length){ alert("Elige al menos un canal."); return; }
-  if(mode==="apply" && !confirm("Vas a ESCRIBIR stock real en: "+chans.map(scanChLabel).join(", ")+".\n\nCada publicación (excepto Full y catálogo) quedará igualada al disponible de tu inventario, SIN tope de salto. Esto corrige agotadas y desfases en todos los canales elegidos.\n\n¿Confirmas?")) return;
-  const out=document.getElementById("scanOut");
+  if(mode==="apply" && !confirm("Vas a ESCRIBIR stock real en: "+chans.map(scanChLabel).join(", ")+".\n\nCada publicación (excepto Full y catálogo) quedará igualada al disponible de tu inventario, SIN tope de salto. Esto corrige agotadas y desfases, y reactiva las agotadas.\n\n¿Confirmas?")) return;
+  SCAN_ACTIVE=true;
   scanSetBusy(true);
-  if(out) out.innerHTML='<div class="loading"><span class="spinner"></span> Iniciando escaneo…</div>';
+  const out=document.getElementById("scanOut");
+  if(out) out.innerHTML=scanLoadingHTML(mode==="apply"?"Iniciando y aplicando…":"Iniciando escaneo…");
   try{
     await api("/sync/scan-start",{method:"POST",body:JSON.stringify({mode,channels:chans})});
     scanPoll();
   }catch(e){
     // 409 = ya hay un escaneo en curso → engancha su progreso en vez de solo el error.
     if(/curso/i.test(e.message||"")){ scanPoll(); }
-    else { scanSetBusy(false); if(out) out.innerHTML=`<div class="red" style="font-size:12px">${esc(e.message)}</div>`; }
+    else { SCAN_ACTIVE=false; scanSetBusy(false); if(out) out.innerHTML=`<div class="red" style="font-size:12px">${esc(e.message)}</div>`; }
   }
 }
 function scanSetBusy(busy){
@@ -1189,26 +1198,33 @@ function scanSetBusy(busy){
 function scanBar(done,total,mode){
   const pct=total?Math.round((done||0)/total*100):0;
   const verbo = mode==="apply" ? "Aplicando" : "Escaneando";
-  return `<div>
-      <div style="font-size:12px;color:var(--muted);margin-bottom:6px"><span class="spinner"></span> ${verbo}… <b>${done||0}/${total||0}</b> productos · ${pct}%</div>
-      <div style="height:9px;background:var(--surf);border:1px solid var(--border);border-radius:6px;overflow:hidden">
+  return `<div style="padding:16px;border:1px solid var(--border);border-radius:8px;background:var(--surf)">
+      <div style="font-size:13px;color:var(--text);margin-bottom:8px;font-weight:600"><span class="spinner"></span> ${verbo}… <b>${done||0}/${total||0}</b> productos · ${pct}%</div>
+      <div style="height:11px;background:var(--bg);border:1px solid var(--border);border-radius:6px;overflow:hidden">
         <div style="height:100%;width:${pct}%;background:var(--acc);border-radius:6px;transition:width .35s ease"></div>
-      </div></div>`;
+      </div>
+      <div style="margin-top:6px;font-size:11px;color:var(--muted)">No cierres esta sección; al terminar verás el reporte aquí mismo.</div>
+    </div>`;
 }
 async function scanPoll(){
   let s; try{ s=await api("/sync/scan-status"); }
-  catch(e){ scanSetBusy(false); const o=document.getElementById("scanOut"); if(o) o.innerHTML=`<div class="red" style="font-size:12px">${esc(e.message)}</div>`; return; }
+  catch(e){ SCAN_ACTIVE=false; scanSetBusy(false); const o=document.getElementById("scanOut"); if(o) o.innerHTML=`<div class="red" style="font-size:12px">${esc(e.message)}</div>`; return; }
   // Releemos el contenedor en CADA tick: si Configuración se re-renderizó, el
   // <div id="scanOut"> es otro nodo. No cortamos la cadena si está null (el
   // escaneo sigue en el servidor); seguimos sondeando y pintamos cuando reaparezca.
-  if(s.status==="running"){
-    scanSetBusy(true);
-    const out=document.getElementById("scanOut");
-    if(out) out.innerHTML=scanBar(s.done,s.total,s.mode);
-    setTimeout(scanPoll,2000); return;
-  }
-  scanSetBusy(false);
   const out=document.getElementById("scanOut");
+  if(s.status==="running"){
+    SCAN_ACTIVE=true; scanSetBusy(true);
+    if(out) out.innerHTML=scanBar(s.done,s.total,s.mode);
+    setTimeout(scanPoll,1500); return;
+  }
+  // El thread del servidor tarda un instante en marcar "running" tras arrancar:
+  // si lo acabamos de iniciar y aún figura idle, seguimos mostrando la carga.
+  if(s.status==="idle" && SCAN_ACTIVE){
+    if(out) out.innerHTML=scanLoadingHTML("Iniciando escaneo…");
+    setTimeout(scanPoll,1000); return;
+  }
+  SCAN_ACTIVE=false; scanSetBusy(false);
   if(!out) return;
   if(s.status==="error"){ out.innerHTML=`<div class="red" style="font-size:12px">Error: ${esc(s.error||"")}</div>`; return; }
   if(s.status==="idle"){ out.innerHTML=""; return; }
@@ -1241,7 +1257,7 @@ function scanResultHTML(s){
           <th style="padding:6px 8px;text-align:left">Acción</th></tr></thead>
         <tbody>${trs}</tbody></table></div>
       ${rows.length>500?`<div class="muted" style="font-size:11px;margin-top:6px">Mostrando 500 de ${rows.length} filas.</div>`:""}
-      ${dry&&(c.cambios||0)?`<button class="btn-acc" style="margin-top:12px" onclick="scanStart('apply')">✍ Aplicar estas ${c.cambios} correcciones</button>`:""}`;
+      ${dry&&(c.cambios||0)?`<button type="button" class="btn-acc" style="margin-top:12px" onclick="scanStart('apply')">✍ Aplicar estas ${c.cambios} correcciones</button>`:""}`;
 }
 async function mlConnect(){
   try{ const r=await api("/ml/auth-url");
