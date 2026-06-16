@@ -2239,38 +2239,44 @@ async def webhook_ml(request: Request):
 # ── Poller Falabella (cada SYNC_FALABELLA_POLL_SEC) ──────────────────────────
 
 def _falabella_poll_once():
-    """Procesa SOLO órdenes Falabella nuevas (posteriores al watermark), para no
-    reprocesar ventas históricas ya manejadas a mano. Avanza el watermark."""
+    """Procesa órdenes Falabella desde la activación, RE-ESCANEANDO los últimos
+    días en cada ciclo para no perder ninguna por un 503 puntual o una orden que
+    llega tarde/desordenada. La idempotencia (evento_venta=procesado) evita
+    descontar dos veces. `sync_falabella_since` es solo el PISO (no se reprocesa
+    lo anterior a la activación); ya NO avanza saltando órdenes. Las órdenes que
+    aún no mapean a un código no se marcan → se reintentan solas al corregir el SKU."""
     import falabella as fb
     import sync as _sync
     if not _sync_enabled() or not fb.is_connected():
         return
     co = timezone(timedelta(hours=-5))
-    wm = db.get_setting("sync_falabella_since", "")
-    if not wm:
+    floor = db.get_setting("sync_falabella_since", "")
+    if not floor:
         # primera activación: marca "desde ahora", no reprocesa el histórico
         db.set_setting("sync_falabella_since",
                        datetime.now(co).strftime("%Y-%m-%d %H:%M:%S"))
         return
-    try:
-        since_dt = (datetime.strptime(wm, "%Y-%m-%d %H:%M:%S")
-                    .replace(tzinfo=co) - timedelta(days=1))
-    except Exception:
-        since_dt = datetime.now(co) - timedelta(days=1)
-    orders = fb.get_orders(since_dt.isoformat())
-    nuevas = [o for o in orders if (o.get("CreatedAt", "") > wm)
-              and o.get("OrderId")]
-    if not nuevas:
-        return
-    items_map = fb._items_by_order([str(o["OrderId"]) for o in nuevas])
-    newest = wm
-    for o in nuevas:
-        oid = str(o["OrderId"]); ca = o.get("CreatedAt", "")
-        newest = max(newest, ca)
+    _norm = lambda s: str(s or "").replace("T", " ")[:19]  # formatos comparables
+    floor_n = _norm(floor)
+    # Ventana acotada de re-escaneo: últimos N días (>= piso de activación).
+    dias = int(os.environ.get("SYNC_FALABELLA_LOOKBACK_DAYS", "3") or 3)
+    lookback = (datetime.now(co) - timedelta(days=max(1, dias))).isoformat()
+    orders = fb.get_orders(lookback)
+    pend = []
+    for o in orders:
+        oid = str(o.get("OrderId") or "")
+        if not oid or _norm(o.get("CreatedAt", "")) < floor_n:
+            continue                       # sin id o anterior a la activación
         ev = db._sb_get("evento_venta?canal=eq.falabella&order_id=eq.%s&"
                         "select=estado" % _q_(oid)) or []
         if ev and ev[0].get("estado") == "procesado":
-            continue
+            continue                       # idempotencia: ya descontada
+        pend.append(o)
+    if not pend:
+        return
+    items_map = fb._items_by_order([str(o["OrderId"]) for o in pend])
+    for o in pend:
+        oid = str(o["OrderId"]); ca = o.get("CreatedAt", "")
         agg = {}
         for nm, sku in items_map.get(oid, []):
             code = _sync.FAL_SKU_TO_BOUN.get(sku)
@@ -2279,8 +2285,6 @@ def _falabella_poll_once():
         if agg:
             _safe(_process_sale, "falabella", oid, list(agg.items()),
                   {"poller": "falabella", "created": ca})
-    if newest > wm:
-        db.set_setting("sync_falabella_since", newest)
 
 
 def _falabella_poller():
@@ -2449,6 +2453,7 @@ def sync_apply_status(user: dict = Depends(_admin)):
     return {"ok": True, "channels": canales,
             "max_delta": _sync_apply_max_delta(),
             "dry_run": not bool(canales),
+            "sync_enabled": _sync_enabled(),
             "scan_daily": _scan_daily_enabled(),
             "scan_daily_hour": _scan_daily_hour(),
             "scan_reactivate": _scan_reactivate_enabled(),
