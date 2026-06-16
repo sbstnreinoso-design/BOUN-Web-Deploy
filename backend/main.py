@@ -196,6 +196,12 @@ def inv_update(pid: int, data: InvUpdateIn,
     # Solo el administrador puede editar el SKU/código del producto.
     if "code" in fields and user.get("role") != "admin":
         raise HTTPException(403, "Solo el administrador puede editar el SKU.")
+    # Las bodegas (Bogotá/Yopal) solo las edita el admin directamente; los
+    # demás usuarios cargan stock con el botón "Ingreso de mercancía".
+    if user.get("role") != "admin" and ("qty_bogota" in fields or
+                                        "qty_yopal" in fields):
+        raise HTTPException(403, "Solo el administrador puede editar las "
+                                 "bodegas. Usa el botón «Ingreso de mercancía».")
     return {"ok": db.inv_update_product(pid, fields)}
 
 
