@@ -2453,6 +2453,48 @@ def falabella_reprocess(order_id: str = "", dias: int = 30,
     return out
 
 
+@app.get("/api/sync/falabella/find")
+def falabella_find(sku: str = "", dias: int = 30,
+                   user: dict = Depends(_admin)):
+    """Diagnóstico: escanea las órdenes Falabella de los últimos `dias` días y
+    lista las que contienen `sku` (SellerSku), con su OrderId/OrderNumber real,
+    fecha, estado y si ya fueron procesadas en evento_venta. Sirve para ubicar
+    una venta que no se descontó cuando no se conoce su OrderId interno."""
+    import falabella as fb
+    import sync as _sync
+    sku = str(sku or "").strip()
+    co = timezone(timedelta(hours=-5))
+    after = (datetime.now(co) - timedelta(days=max(1, int(dias)))).isoformat()
+    try:
+        orders = fb.get_orders(after)
+    except Exception as e:
+        return {"ok": False, "error": "get_orders: " + str(e)[:200]}
+    ids = [str(o.get("OrderId") or "") for o in orders if o.get("OrderId")]
+    try:
+        items_map = fb._items_by_order(ids)
+    except Exception as e:
+        items_map = {}
+    rows = []
+    for o in orders:
+        oid = str(o.get("OrderId") or "")
+        its = items_map.get(oid, [])
+        skus = [s for _n, s in its]
+        if sku and sku not in skus:
+            continue
+        ev = db._sb_get("evento_venta?canal=eq.falabella&order_id=eq.%s&"
+                        "select=estado" % _q_(oid)) or []
+        rows.append({"order_id": oid,
+                     "order_number": str(o.get("OrderNumber") or ""),
+                     "created": str(o.get("CreatedAt") or ""),
+                     "status": str(o.get("Status") or ""),
+                     "skus": skus,
+                     "boun": [_sync.FAL_SKU_TO_BOUN.get(s) for s in skus],
+                     "evento": ev[0].get("estado") if ev else None})
+    return {"ok": True, "sku": sku, "dias": int(dias),
+            "floor": db.get_setting("sync_falabella_since", ""),
+            "n_orders_total": len(orders), "n_match": len(rows), "rows": rows}
+
+
 @app.get("/api/sync/simular")
 def sync_simular(key: str = "", canal: str = "test", order_id: str = "",
                  codigo: str = "", cantidad: int = 1, full: str = ""):
