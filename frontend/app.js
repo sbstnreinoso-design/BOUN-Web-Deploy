@@ -1036,6 +1036,8 @@ async function renderSettings(){
 
       ${adm?scanHTML():""}
 
+      ${adm?combosHTML():""}
+
       <div class="set-sec" style="margin-top:24px">TU CUENTA</div>
       <div style="font-size:13px">Usuario: <b>${esc(USER.username)}</b> · ${adm?"Administrador":"Colaborador"}</div>
       <button class="btn-ghost" style="margin-top:10px" onclick="changePwDialog()">Cambiar mi contraseña</button>
@@ -1047,6 +1049,7 @@ async function renderSettings(){
         <div class="muted" style="font-size:11px;margin-top:6px">Comisiones ML 2024 · Retención en fuente: 2.8% · IVA comisión: 19%</div>
       </div>`;
     if(adm) scanInit();   // reconecta el progreso si ya hay un escaneo en curso
+    if(adm) combosInit(); // carga los combos definidos
   }catch(e){ document.getElementById("setBody").innerHTML=`<div class="red">${e.message}</div>`; }
 }
 function setField(label,id,val,ro){
@@ -1263,6 +1266,88 @@ function scanResultHTML(s){
         <tbody>${trs}</tbody></table></div>
       ${rows.length>500?`<div class="muted" style="font-size:11px;margin-top:6px">Mostrando 500 de ${rows.length} filas.</div>`:""}
       ${dry&&(c.cambios||0)?`<button type="button" class="btn-acc" style="margin-top:12px" onclick="scanStart('apply')">✍ Aplicar estas ${c.cambios} correcciones</button>`:""}`;
+}
+// ── Combos (kits) ───────────────────────────────────────────────────────────
+let COMBOS={};                       // {codigo_combo: [{codigo,cant}, …]}
+let COMBO_DRAFT=[{codigo:"",cant:1}];// componentes del combo en edición
+function combosHTML(){
+  return `<div class="set-sec" style="margin-top:24px">COMBOS (KITS)</div>
+    <div class="muted" style="font-size:12px;margin-bottom:8px">Define combos: al vender un combo, el sistema <b>descuenta del inventario los productos que lo componen</b>. El stock del combo se calcula solo (cuántos puedes armar). El producto-combo debe existir en tu inventario con sus publicaciones asignadas.</div>
+    <div class="inv-card" style="padding:16px;max-width:680px">
+      <div id="combosList"></div>
+      <div id="combosForm"></div>
+    </div>`;
+}
+async function combosInit(){
+  if(!document.getElementById("combosList")) return;
+  try{ const r=await api("/combos"); COMBOS=r.combos||{}; }catch(e){ COMBOS={}; }
+  COMBO_DRAFT=[{codigo:"",cant:1}];
+  combosRenderList(); combosRenderForm();
+}
+function combosRenderList(){
+  const el=document.getElementById("combosList"); if(!el) return;
+  const keys=Object.keys(COMBOS);
+  if(!keys.length){ el.innerHTML='<div class="muted" style="font-size:12px;margin-bottom:6px">No hay combos definidos todavía.</div>'; return; }
+  el.innerHTML=keys.map(k=>{
+    const comps=(COMBOS[k]||[]).map(c=>`<span class="sku" style="margin:0 4px 2px 0;display:inline-block">${esc(c.codigo)} ×${c.cant}</span>`).join("");
+    return `<div style="display:flex;align-items:center;gap:8px;padding:8px 0;border-bottom:1px solid var(--border)">
+      <span class="code-chip">${esc(k)}</span>
+      <span style="flex:1;font-size:12px">= ${comps}</span>
+      <button type="button" class="btn-danger" onclick="combosEdit('${esc(k)}')" style="margin-right:4px">Editar</button>
+      <button type="button" class="btn-danger" onclick="combosDelete('${esc(k)}')">✕</button>
+    </div>`;
+  }).join("");
+}
+function combosRenderForm(){
+  const el=document.getElementById("combosForm"); if(!el) return;
+  el.innerHTML=`<div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">
+    <div style="font-size:13px;font-weight:600;margin-bottom:8px">Agregar / editar combo</div>
+    <div class="set-row" style="margin-bottom:10px"><label style="width:150px">Código del combo</label>
+      <input id="comboCode" class="field" style="margin:0;flex:1" placeholder="Ej. PACK-DUO (debe existir en inventario)"></div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:6px">Componentes (producto + cuántas unidades lleva el combo):</div>
+    <div id="comboComps"></div>
+    <button type="button" class="btn-ghost" style="margin-top:6px" onclick="comboDraftAdd()">+ Agregar componente</button>
+    <div style="margin-top:12px"><button type="button" class="btn-acc" onclick="combosSaveDraft()">Guardar combo</button>
+      <span id="combosMsg" style="font-size:11px;margin-left:8px"></span></div>
+  </div>`;
+  comboCompsRender();
+}
+function comboCompsRender(){
+  const el=document.getElementById("comboComps"); if(!el) return;
+  el.innerHTML=COMBO_DRAFT.map((c,i)=>`<div style="display:flex;gap:8px;align-items:center;margin-bottom:6px">
+      <input class="field" style="margin:0;flex:1" placeholder="Código del producto componente" value="${esc(c.codigo)}" oninput="COMBO_DRAFT[${i}].codigo=this.value">
+      <input class="field" style="margin:0;width:72px" type="number" min="1" value="${c.cant}" oninput="COMBO_DRAFT[${i}].cant=parseInt(this.value)||1" title="unidades por combo">
+      <button type="button" class="btn-ghost" onclick="comboDraftDel(${i})">✕</button>
+    </div>`).join("");
+}
+function comboDraftAdd(){ COMBO_DRAFT.push({codigo:"",cant:1}); comboCompsRender(); }
+function comboDraftDel(i){ COMBO_DRAFT.splice(i,1); if(!COMBO_DRAFT.length)COMBO_DRAFT.push({codigo:"",cant:1}); comboCompsRender(); }
+function combosEdit(code){
+  document.getElementById("comboCode").value=code;
+  COMBO_DRAFT=(COMBOS[code]||[]).map(c=>({codigo:c.codigo,cant:c.cant}));
+  if(!COMBO_DRAFT.length)COMBO_DRAFT=[{codigo:"",cant:1}];
+  comboCompsRender();
+}
+async function combosSaveDraft(){
+  const code=(val("comboCode")||"").trim();
+  const comps=COMBO_DRAFT.map(c=>({codigo:(c.codigo||"").trim(),cant:parseInt(c.cant)||1})).filter(c=>c.codigo);
+  const msg=document.getElementById("combosMsg");
+  if(!code){ if(msg){msg.textContent="Pon el código del combo"; msg.className="red";} return; }
+  if(!comps.length){ if(msg){msg.textContent="Agrega al menos un componente"; msg.className="red";} return; }
+  COMBOS[code]=comps;
+  try{
+    const r=await api("/combos",{method:"POST",body:JSON.stringify({combos:COMBOS})});
+    COMBOS=r.combos||COMBOS;
+    if(msg){msg.textContent="✓ guardado"; msg.className="green"; setTimeout(()=>{if(msg)msg.textContent="";},2000);}
+    document.getElementById("comboCode").value=""; COMBO_DRAFT=[{codigo:"",cant:1}];
+    combosRenderList(); comboCompsRender();
+  }catch(e){ if(msg){msg.textContent=e.message; msg.className="red";} }
+}
+async function combosDelete(code){
+  if(!confirm("¿Eliminar el combo "+code+"? (no borra el producto, solo su definición de componentes)")) return;
+  delete COMBOS[code];
+  try{ const r=await api("/combos",{method:"POST",body:JSON.stringify({combos:COMBOS})}); COMBOS=r.combos||{}; combosRenderList(); }
+  catch(e){ alert(e.message); }
 }
 async function mlConnect(){
   try{ const r=await api("/ml/auth-url");
