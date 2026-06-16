@@ -175,19 +175,52 @@ function drawInventory(){
 }
 
 const COMBO_COLOR="#C58CE6";
+// Cálculo de un combo a partir de sus componentes: SUMA costos y valores
+// (× cantidad de cada componente); el stock es lo armable (mínimo). El margen,
+// ROAS y ACOS NO se calculan aquí: salen de las propias publicaciones del combo.
+function comboCalc(p){
+  const comps=(COMBOS&&COMBOS[p.code])||[];
+  let cp=0, cs=0, valU=0, netU=0, armable=null;
+  comps.forEach(c=>{
+    const comp=(INV||[]).find(x=>x.code===c.codigo);
+    const cant=+c.cant||1;
+    if(!comp){ armable=0; return; }
+    cp  += (+comp.cost_product||0)*cant;
+    cs  += (+comp.cost_shipping||0)*cant;
+    valU+= (+comp.avg_price||0)*cant;
+    netU+= (+comp.avg_net||0)*cant;
+    const avail=(+comp.qty_bogota||0)+(+comp.qty_yopal||0);
+    const mk=Math.floor(avail/cant);
+    armable = armable===null?mk:Math.min(armable,mk);
+  });
+  return {cost_product:cp, cost_shipping:cs, unit:cp+cs,
+          invTotal:Math.max(0,armable||0), avg_price:valU, avg_net:netU};
+}
 function invCard(p){
-  const u=prodUnits(p), unit=prodCostUnit(p);
-  const sug=Math.max(0,Math.ceil((+p.sold60_total||0)/60*90 - u));
   const photo=p.thumb?`<img class="inv-photo" src="${bigImg(p.thumb)}">`:`<div class="inv-photo"></div>`;
-  const comps=(typeof COMBOS!=="undefined"&&COMBOS)?COMBOS[p.code]:null;
-  const isCombo=Array.isArray(comps)&&comps.length;
+  const comps=(typeof COMBOS!=="undefined"&&COMBOS&&Array.isArray(COMBOS[p.code])&&COMBOS[p.code].length)?COMBOS[p.code]:null;
+  const isCombo=!!comps;
+  const cc=isCombo?comboCalc(p):null;
+  const u=isCombo?cc.invTotal:prodUnits(p);
+  const unit=isCombo?cc.unit:prodCostUnit(p);
+  const aprice=isCombo?cc.avg_price:(+p.avg_price||0);
+  const anet=isCombo?cc.avg_net:(+p.avg_net||0);
+  const sug=Math.max(0,Math.ceil((+p.sold60_total||0)/60*90 - u));
   const cardStyle=isCombo?`style="border-color:${COMBO_COLOR};border-left:4px solid ${COMBO_COLOR}"`:"";
   const chip=isCombo
     ? `<span class="code-chip" style="background:${COMBO_COLOR};color:#0A0A0A" title="Este producto es un combo">🧩 ${esc(p.code)}</span>`
     : `<span class="code-chip">📦 ${esc(p.code)}</span>`;
   const comboLine=isCombo
-    ? `<div class="inv-meta" style="color:${COMBO_COLOR};font-weight:700;margin-top:3px">🧩 Combo = ${comps.map(c=>esc(c.codigo)+" ×"+c.cant).join(" + ")} <span class="muted" style="font-weight:400">(stock = lo que se pueda armar)</span></div>`
+    ? `<div class="inv-meta" style="color:${COMBO_COLOR};font-weight:700;margin-top:3px">🧩 Combo = ${comps.map(c=>esc(c.codigo)+" ×"+c.cant).join(" + ")} <span class="muted" style="font-weight:400">(costos e inventario calculados de los componentes)</span></div>`
     : "";
+  // Combo: costo/envío/bodegas BLOQUEADOS (se derivan de los componentes).
+  const fCosto = isCombo? fcolRO("Costo prod.","🔒 "+cop(cc.cost_product),"acc")
+                        : fcol("Costo prod.",inp(p.id,"cost_product",p.cost_product));
+  const fEnvio = isCombo? fcolRO("Envío","🔒 "+cop(cc.cost_shipping),"acc")
+                        : fcol("Envío",inp(p.id,"cost_shipping",p.cost_shipping));
+  const fBog = isCombo? fcolRO("Bod. Bogotá","🔒","muted") : fcol("Bod. Bogotá",inp(p.id,"qty_bogota",p.qty_bogota,64));
+  const fYop = isCombo? fcolRO("Bod. Yopal","🔒","muted") : fcol("Bod. Yopal",inp(p.id,"qty_yopal",p.qty_yopal,64));
+  const fTra = isCombo? fcolRO("En camino","🔒","muted") : fcol("En camino",inp(p.id,"qty_transit",p.qty_transit,64));
   return `<div class="inv-card" data-pid="${p.id}" ${cardStyle}>
     <div class="inv-head">
       <span class="expand" onclick="togglePanel(${p.id})">▸</span>
@@ -203,25 +236,25 @@ function invCard(p){
       ${isAdmin()?`<button class="btn-danger" onclick="delProduct(${p.id})">✕</button>`:""}
     </div>
     <div class="inv-strip">
-      ${fcol("Costo prod.",inp(p.id,"cost_product",p.cost_product))}
-      ${fcol("Envío",inp(p.id,"cost_shipping",p.cost_shipping))}
+      ${fCosto}
+      ${fEnvio}
       ${fcolRO("Costo total",cop(unit),unit?"acc":"red")}
       <div class="vsep"></div>
-      ${fcol("Bod. Bogotá",inp(p.id,"qty_bogota",p.qty_bogota,64))}
-      ${fcol("Bod. Yopal",inp(p.id,"qty_yopal",p.qty_yopal,64))}
+      ${fBog}
+      ${fYop}
       ${fcolRO("ML Full",p.qty_full||0)}
-      ${fcol("En camino",inp(p.id,"qty_transit",p.qty_transit,64))}
-      ${fcolRO("Inv. total",u,u?"acc":"red")}
+      ${fTra}
+      ${fcolRO(isCombo?"Armables":"Inv. total",u,u?"acc":"red")}
       <div class="vsep"></div>
       ${fcolRO("Costo inv.",cop(unit*u),"amber")}
-      ${fcolRO("Gan. esperada",cop((+p.avg_net||0)*u),"green")}
-      ${fcolRO("Valor venta",cop((+p.avg_price||0)*u))}
+      ${fcolRO("Gan. esperada",cop(anet*u),"green")}
+      ${fcolRO("Valor venta",cop(aprice*u))}
       ${fcolRO("Margen prom.",(+p.avg_margin)?(+p.avg_margin).toFixed(1)+"%":"—",mgColor(+p.avg_margin))}
       ${fcolRO("ROAS prom.",(+p.avg_roas)?(+p.avg_roas).toFixed(2)+"x":"—",roasColor(+p.avg_roas))}
       ${fcolRO("ACOS prom.",(+p.avg_acos)?(+p.avg_acos).toFixed(1)+"%":"—",acosColor(+p.avg_acos))}
       <div class="vsep"></div>
       ${fcolRO("Vend. 60d",p.sold60_total||0)}
-      ${fcolRO("Sug. compra",sug?("+"+sug+" u"):"✓ cubierto",sug?"red":"green")}
+      ${isCombo?fcolRO("Sug. compra","—","muted"):fcolRO("Sug. compra",sug?("+"+sug+" u"):"✓ cubierto",sug?"red":"green")}
     </div>
     <div class="panel" id="panel-${p.id}"></div>
   </div>`;
