@@ -1625,7 +1625,7 @@ async function boot(){
 boot();
 
 // ── CEREBRO — mapa de trabajo de la IA ───────────────────────────────────────
-let CEREBRO_TIMER=null;
+let CEREBRO_TIMER=null, CB_CLOCK_TIMER=null;
 const CB_ICONS={
   box:'<path d="M21 8 12 3 3 8v8l9 5 9-5Z"/><path d="m3 8 9 5 9-5M12 13v8"/>',
   chat:'<path d="M21 11.5a8.4 8.4 0 0 1-9 8.4L3 21l1.1-3.6A8.4 8.4 0 1 1 21 11.5Z"/>',
@@ -1663,8 +1663,25 @@ function cbClock(){
   el.textContent=new Intl.DateTimeFormat("es-CO",{timeZone:"America/Bogota",hour:"2-digit",minute:"2-digit",second:"2-digit",hour12:false}).format(now);
   const d=document.getElementById("cbClkD"); if(d) d.textContent=new Intl.DateTimeFormat("es-CO",{timeZone:"America/Bogota",weekday:"long",day:"numeric",month:"long"}).format(now);
 }
+function cbPromptFor(t){
+  const id=t.id||'';
+  const base=`Ejecuta ahora la tarea automatizada de BOUN «${t.nombre}» (id: ${id}).`;
+  const path=t.auto?'':` Está en /Users/admin/Claude/Scheduled/${id}/SKILL.md — léela y córrela siguiendo sus pasos.`;
+  return `${base}${path} Al terminar dame un resumen y reporta el estado al Cerebro.`;
+}
+function cbSkillPromptFor(s){
+  return `Usa la skill «${s.nombre}» (${s.tag}) para ayudarme con la tienda BOUN ahora.`;
+}
+function cbFallbackCopy(txt){const ta=document.createElement('textarea');ta.value=txt;ta.style.position='fixed';ta.style.opacity='0';document.body.appendChild(ta);ta.select();try{document.execCommand('copy');}catch(e){}document.body.removeChild(ta);}
+function cbCopy(el){
+  const txt=decodeURIComponent(el.dataset.p||'');
+  const done=()=>{el.textContent='✓ ¡Copiado! Pégalo en Claude';el.classList.add('ok');setTimeout(()=>{el.textContent='⧉ Abrir en Claude';el.classList.remove('ok');},2500);};
+  if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(txt).then(done).catch(()=>{cbFallbackCopy(txt);done();});}
+  else{cbFallbackCopy(txt);done();}
+}
 async function renderCerebro(){
   if(CEREBRO_TIMER){clearInterval(CEREBRO_TIMER);CEREBRO_TIMER=null;}
+  if(CB_CLOCK_TIMER){clearInterval(CB_CLOCK_TIMER);CB_CLOCK_TIMER=null;}
   const v=document.getElementById("view");
   v.innerHTML=`<div class="cb">
     <div class="cb-top">
@@ -1681,12 +1698,12 @@ async function renderCerebro(){
     <div id="cbBody"><div class="loading"><span class="spinner"></span> Cargando el cerebro…</div></div>
   </div>`;
   cbClock();
+  CB_CLOCK_TIMER=setInterval(cbClock,1000);   // el reloj corre desde ya (no se congela durante el cold-start)
   let data=null;
   try{ data=await api("/cerebro"); }
   catch(e){ data={ok:false}; }
   drawCerebro(data);
   CEREBRO_TIMER=setInterval(()=>{ cbClock(); if(document.getElementById("cbBody")) drawCerebro(data); },20000);
-  setInterval(cbClock,1000);
 }
 function drawCerebro(data){
   const body=document.getElementById("cbBody"); if(!body) return;
@@ -1730,7 +1747,7 @@ function drawCerebro(data){
   const {h,m:mm}=cbCoParts(),nowMin=h*60+mm,dayMin=1440;
   const marks=[{hh:4,l:"Escaneo motor"},{hh:8,l:"Inventario ML"},{hh:9,l:"Preguntas ML"},{hh:16,l:"Preguntas ML"},{hh:17,l:"Pauta Falab."},{hh:23,l:"Contenido Falab."}];
   let nextFound=false;
-  const ticks=marks.map(mk=>{const mn=mk.hh*60,pct=mn/dayMin*100;let cls="";if(mn<=nowMin)cls="done";else if(!nextFound){cls="next";nextFound=true;}return `<div class="cb-tick ${cls}" style="left:${pct}%"><div class="cb-tkh">${cbHHMM(mn)}</div><div class="cb-tkd"></div><div class="cb-tkl">${mk.l}</div></div>`;}).join("");
+  const ticks=marks.map((mk,i)=>{const mn=mk.hh*60,pct=mn/dayMin*100;let cls=(i%2?"lo":"");if(mn<=nowMin)cls+=" done";else if(!nextFound){cls+=" next";nextFound=true;}return `<div class="cb-tick ${cls}" style="left:${pct}%"><div class="cb-tkh">${cbHHMM(mn)}</div><div class="cb-tkd"></div><div class="cb-tkl">${mk.l}</div></div>`;}).join("");
   const tl=`<div class="cb-sec">${cbSvg("clock",16)}<h3>Jornada de hoy</h3><span class="cb-tag">cuándo actúa la IA a lo largo del día</span></div>
     <div class="cb-tl"><div class="cb-track"><div class="cb-line"></div><div class="cb-prog" style="width:${nowMin/dayMin*100}%"></div>${ticks}<div class="cb-now" style="left:${nowMin/dayMin*100}%"></div></div>
     <div class="cb-legend"><span><i class="lg done"></i> ejecutada</span><span><i class="lg next"></i> próxima</span><span><i class="lg"></i> programada</span></div></div>`;
@@ -1745,6 +1762,7 @@ function drawCerebro(data){
     const nm=t.canal==="mercadolibre"?"MercadoLibre":t.canal==="falabella"?"Falabella":(t.canal?t.canal.charAt(0).toUpperCase()+t.canal.slice(1):"Proceso");
     const nowic= sc==="run"?'<span class="cb-rdot"></span>': sc==="ok"?`<span style="color:var(--cb-ok)">${cbSvg("clock",16,2.2)}</span>`: sc==="err"||sc==="warn"?`<span style="color:var(--cb-${sc==="err"?"err":"warn"})">${cbSvg("alert",16,2)}</span>`:`<span class="muted">${cbSvg("clock",16,2)}</span>`;
     const next=st.next!=null?("Próxima "+cbHHMM(st.next)):"—";
+    const pr=encodeURIComponent(cbPromptFor(t));
     return `<div class="cb-card">
       <span class="cb-chan ${accent}">${nm}</span>
       <div class="cb-ch"><div class="cb-cic ${accent}">${cbSvg(t.icon||"box",18)}</div>
@@ -1752,6 +1770,7 @@ function drawCerebro(data){
       <div class="cb-desc">${t.desc}</div>
       <div class="cb-now-box"><span class="cb-nowic">${nowic}</span><span class="cb-nowt"><b>${sc==="run"?"Ahora mismo":label}</b><span>${msg}</span></span></div>
       <div class="cb-foot"><span class="cb-st ${sc}"><span class="cb-sdot"></span>${label}</span><span>${next}</span></div>
+      <button class="cb-open" data-p="${pr}" onclick="cbCopy(this)">⧉ Abrir en Claude</button>
     </div>`;
   };
   const ml=tasks.filter(t=>t.canal==="mercadolibre"),fa=tasks.filter(t=>t.canal==="falabella");
@@ -1766,7 +1785,7 @@ function drawCerebro(data){
 
   // — skills —
   const skillsHtml=`<div class="cb-sec">${cbSvg("star",16)}<h3>Skills disponibles</h3><span class="cb-tag">capacidades que la IA puede invocar</span></div>
-    <div class="cb-grid sk">${skills.map(s=>`<div class="cb-skill"><div class="cb-sic">${cbSvg(s.icon||"file",17)}</div><div><div class="cb-skt">${s.nombre}</div><div class="cb-skd">${s.desc}</div></div><span class="cb-pill">${s.tag}</span></div>`).join("")}</div>`;
+    <div class="cb-grid sk">${skills.map(s=>`<div class="cb-skill"><div class="cb-sk-top"><div class="cb-sic">${cbSvg(s.icon||"file",17)}</div><div><div class="cb-skt">${s.nombre}</div><div class="cb-skd">${s.desc}</div></div><span class="cb-pill">${s.tag}</span></div><button class="cb-open" data-p="${encodeURIComponent(cbSkillPromptFor(s))}" onclick="cbCopy(this)">⧉ Abrir en Claude</button></div>`).join("")}</div>`;
 
   // — pendientes —
   const alertsHtml=`<div class="cb-sec err">${cbSvg("alert",16)}<h3>Pendientes de la IA · requieren solución</h3><span class="cb-tag">detectar y resolver</span></div>
