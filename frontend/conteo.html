@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BOUN · Conteo físico de inventario</title>
+<style>
+  :root{
+    --navy:#1F3A5F; --swim:#2DC6FF; --ink:#23272E; --muted:#7A8794;
+    --line:#E4E9EF; --bg:#F4F7FA; --card:#FFFFFF; --shade:#F8FAFC;
+    --good:#1FA971; --shadow:0 1px 3px rgba(31,58,95,.08),0 8px 24px rgba(31,58,95,.06);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;background:var(--bg);color:var(--ink);font-size:14px;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 18px 80px}
+
+  header.top{background:linear-gradient(120deg,var(--navy),#2b4f7d);color:#fff;border-radius:0 0 18px 18px;padding:26px 26px 22px;box-shadow:var(--shadow);margin-bottom:18px}
+  .brand{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+  .logo{width:46px;height:46px;border-radius:12px;background:var(--swim);display:flex;align-items:center;justify-content:center;font-weight:800;color:var(--navy);font-size:20px;letter-spacing:-1px}
+  h1{font-size:21px;margin:0;font-weight:700;letter-spacing:-.3px}
+  .sub{color:#cfe6f5;font-size:12.5px;margin-top:2px}
+  .meta{display:flex;gap:18px;flex-wrap:wrap;margin-top:18px}
+  .meta label{display:flex;flex-direction:column;gap:5px;font-size:11.5px;color:#bcd6ea;text-transform:uppercase;letter-spacing:.5px;font-weight:600}
+  .meta input{background:rgba(255,255,255,.12);border:1px solid rgba(255,255,255,.22);border-radius:9px;padding:8px 11px;color:#fff;font-size:14px;min-width:200px}
+  .meta input::placeholder{color:#a9c6dd}
+
+  .toolbar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:14px}
+  .search{flex:1;min-width:220px;position:relative}
+  .search input{width:100%;padding:11px 14px 11px 38px;border:1px solid var(--line);border-radius:11px;font-size:14px;background:var(--card);box-shadow:var(--shadow)}
+  .search svg{position:absolute;left:12px;top:50%;transform:translateY(-50%);opacity:.4}
+  .btn{border:none;border-radius:11px;padding:11px 16px;font-size:13.5px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:7px;transition:.15s}
+  .btn-primary{background:var(--navy);color:#fff}
+  .btn-primary:hover{background:#16304e}
+  .btn-ghost{background:var(--card);color:var(--navy);border:1px solid var(--line);box-shadow:var(--shadow)}
+  .btn-ghost:hover{background:var(--shade)}
+
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:18px}
+  .stat{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:14px 16px;box-shadow:var(--shadow)}
+  .stat .k{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);font-weight:600}
+  .stat .v{font-size:24px;font-weight:750;margin-top:3px;letter-spacing:-.5px}
+  .stat .v small{font-size:13px;color:var(--muted);font-weight:600}
+  .stat.bog .v{color:var(--navy)} .stat.yop .v{color:var(--swim)} .stat.tot .v{color:var(--good)}
+
+  .sheet{background:var(--card);border:1px solid var(--line);border-radius:15px;overflow:hidden;box-shadow:var(--shadow)}
+  table{width:100%;border-collapse:collapse}
+  thead th{position:sticky;top:0;background:var(--navy);color:#fff;font-size:11.5px;text-transform:uppercase;letter-spacing:.5px;font-weight:600;padding:13px 14px;text-align:left;z-index:5}
+  thead th.num{text-align:center}
+  tbody td{padding:9px 14px;border-bottom:1px solid var(--line);vertical-align:middle}
+  tbody tr:nth-child(even){background:var(--shade)}
+  tbody tr:hover{background:#EEF6FD}
+  .thumb{width:54px;height:54px;border-radius:10px;object-fit:cover;background:#EEF2F6;border:1px solid var(--line);display:block}
+  .noimg{width:54px;height:54px;border-radius:10px;background:#EEF2F6;border:1px dashed #C9D3DE;display:flex;align-items:center;justify-content:center;color:#A9B4C0;font-size:9px;text-align:center;line-height:1.1;padding:3px}
+  .sku{font-weight:600;font-size:13.5px;letter-spacing:-.1px}
+  td.num{text-align:center;width:120px}
+  input.cnt{width:78px;text-align:center;padding:8px;border:1px solid var(--line);border-radius:9px;font-size:14px;font-weight:600;color:var(--navy);background:#fff}
+  input.cnt:focus{outline:none;border-color:var(--swim);box-shadow:0 0 0 3px rgba(45,198,255,.18)}
+  td.total{text-align:center;width:80px;font-weight:750;color:var(--good);font-size:15px}
+  .row-done{box-shadow:inset 3px 0 0 var(--good)}
+
+  footer{margin-top:18px;text-align:center;color:var(--muted);font-size:12px}
+  .hint{background:#EAF7FF;border:1px solid #BDE6FA;color:#0F5D7A;border-radius:11px;padding:10px 14px;font-size:12.5px;margin-bottom:16px}
+
+  @media(max-width:680px){
+    .stats{grid-template-columns:repeat(2,1fr)}
+    .meta input{min-width:140px}
+    thead th:nth-child(1),tbody td:nth-child(1){display:none}
+  }
+  @media print{
+    body{background:#fff} .toolbar,.hint,footer{display:none}
+    .stat,.sheet,header.top{box-shadow:none}
+    thead th{background:#1F3A5F !important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <div class="logo">B</div>
+      <div>
+        <h1>Conteo físico de inventario</h1>
+        <div class="sub">BOUN · Bodegas Bogotá &amp; Yopal · 75 referencias</div>
+      </div>
+    </div>
+    <div class="meta">
+      <label>Fecha del conteo<input id="fecha" type="date"></label>
+      <label>Responsable<input id="resp" type="text" placeholder="Nombre"></label>
+    </div>
+  </header>
+
+  <div class="hint">💡 Escribe las unidades contadas en cada bodega. Los totales se calculan solos y <b>tu avance se guarda automáticamente</b> en este navegador. Usa <b>Exportar CSV</b> para abrir en Excel o <b>Imprimir</b> para PDF.</div>
+
+  <div class="toolbar">
+    <div class="search">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1F3A5F" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
+      <input id="q" type="text" placeholder="Buscar SKU…">
+    </div>
+    <button class="btn btn-ghost" onclick="exportCSV()">⬇ Exportar CSV</button>
+    <button class="btn btn-ghost" onclick="window.print()">🖨 Imprimir / PDF</button>
+    <button class="btn btn-ghost" onclick="resetAll()">↺ Reiniciar</button>
+  </div>
+
+  <div class="stats">
+    <div class="stat"><div class="k">Referencias contadas</div><div class="v"><span id="sDone">0</span><small> / 75</small></div></div>
+    <div class="stat bog"><div class="k">Total Bogotá</div><div class="v" id="sBog">0</div></div>
+    <div class="stat yop"><div class="k">Total Yopal</div><div class="v" id="sYop">0</div></div>
+    <div class="stat tot"><div class="k">Total unidades</div><div class="v" id="sTot">0</div></div>
+  </div>
+
+  <div class="sheet">
+    <table>
+      <thead><tr>
+        <th>Foto</th><th>SKU</th>
+        <th class="num">Bodega Bogotá</th><th class="num">Bodega Yopal</th><th class="num">Total</th>
+      </tr></thead>
+      <tbody id="body"></tbody>
+    </table>
+  </div>
+
+  <footer>Generado para BOUN · Las fotos se cargan desde MercadoLibre. Hoja interactiva — guarda tu avance localmente.</footer>
+</div>
+
+<script>
+const DATA = [
+["ARBOLGATOS","https://http2.mlstatic.com/D_784045-MLA110078433918_042026-I.jpg"],
+["BALACLAVA-MOTO-NEGRA","https://http2.mlstatic.com/D_834248-MCO89069425963_072025-I.jpg"],
+["BLC 027","https://http2.mlstatic.com/D_658945-MLA96867349009_102025-I.jpg"],
+["BOLSO-PUMA-TB-BEIGE","https://http2.mlstatic.com/D_874419-MCO110174444664_042026-I.jpg"],
+["BOLSO-PUMA-TB-NEGRO","https://http2.mlstatic.com/D_808113-MCO111095353877_042026-I.jpg"],
+["CAR 029","https://http2.mlstatic.com/D_780923-MLA108369074206_032026-I.jpg"],
+["CG 034 - ROJO","https://http2.mlstatic.com/D_976803-MLA95969948266_102025-I.jpg"],
+["CLLR-GATO-AMARILLO","https://http2.mlstatic.com/D_743529-MLA82642524080_032025-I.jpg"],
+["CLLR-GATO-AZUL","https://http2.mlstatic.com/D_798250-MLA95828823387_102025-I.jpg"],
+["CLLR-GATO-MORADO","https://http2.mlstatic.com/D_703539-MLA99597814444_122025-I.jpg"],
+["CLLR-GATO-NEGRO","https://http2.mlstatic.com/D_660479-MCO92153521953_092025-I.jpg"],
+["CLLR-GATO-ROSA","https://http2.mlstatic.com/D_823074-MCO94226576813_102025-I.jpg"],
+["CNCT-OTG-NARANJA","https://http2.mlstatic.com/D_970059-MLA95728390956_102025-I.jpg"],
+["COCHEBEIGE","https://http2.mlstatic.com/D_972094-MLA110995077441_042026-I.jpg"],
+["COCHEGRIS","https://http2.mlstatic.com/D_621382-MCO111199103369_052026-I.jpg"],
+["COM-020 (MD016+PA001)","https://http2.mlstatic.com/D_771658-MCO110522413329_042026-I.jpg"],
+["COM-030 (PA001BAG-NEGROX3)","https://http2.mlstatic.com/D_668402-MLA110299888448_052026-I.jpg"],
+["COR-SILI-ZAPATOS-BLANCO","https://http2.mlstatic.com/D_796306-MCO78477657732_082024-I.jpg"],
+["COR-SILI-ZAPATOS-NEGRO","https://http2.mlstatic.com/D_872464-MLA95644291776_102025-I.jpg"],
+["CS 033","https://http2.mlstatic.com/D_766967-MCO93930820828_102025-I.jpg"],
+["FND-AIRTAG-MASCOTA-AZUL",""],
+["FND-AIRTAG-MASCOTA-BLANCA","https://http2.mlstatic.com/D_623727-MCO92281304654_092025-I.jpg"],
+["FND-AIRTAG-MASCOTA-ROJA",""],
+["FND-AIRTAG-MASCOTA-ROSA",""],
+["GD 017 ROSADO","https://http2.mlstatic.com/D_705195-MLA92448665224_092025-I.jpg"],
+["GD 018 GRIS","https://http2.mlstatic.com/D_844739-MCO89824681118_082025-I.jpg"],
+["GF021","https://http2.mlstatic.com/D_647861-MCO110719612111_042026-I.jpg"],
+["GP022-BEIGE","https://http2.mlstatic.com/D_691435-MCO70100476641_062023-I.jpg"],
+["GP022-CAMUFLADO","https://http2.mlstatic.com/D_635292-MLA99588812684_122025-I.jpg"],
+["GP023-NEGRO","https://http2.mlstatic.com/D_817042-MLA96414791754_102025-I.jpg"],
+["GSC 026","https://http2.mlstatic.com/D_951918-MCO106384107902_022026-I.jpg"],
+["KAT ASTRO","https://http2.mlstatic.com/D_667551-MCO99517464983_112025-I.jpg"],
+["KAT FLOW","https://http2.mlstatic.com/D_931527-MCO111093941763_042026-I.jpg"],
+["KATCOSMOS","https://http2.mlstatic.com/D_671642-MCO111092601647_042026-I.jpg"],
+["KATKRUNCH","https://http2.mlstatic.com/D_866975-MCO111935946688_062026-I.jpg"],
+["KATLUNA","https://http2.mlstatic.com/D_617975-MLA104658630920_012026-I.jpg"],
+["MA 013","https://http2.mlstatic.com/D_874597-MCO83711610500_042025-I.jpg"],
+["MD 016- NEGRO","https://http2.mlstatic.com/D_807190-MLA110140916112_042026-I.jpg"],
+["MNG-PRTOECCION-BLANCA","https://http2.mlstatic.com/D_756587-MCO70136091106_062023-I.jpg"],
+["MNG-PRTOECCION-NEGRA","https://http2.mlstatic.com/D_999207-MLA110424308929_042026-I.jpg"],
+["PA 003-ARSENISCA","https://http2.mlstatic.com/D_901326-MLA107320752951_022026-I.jpg"],
+["PA 003-ROSA ESPIRAL","https://http2.mlstatic.com/D_625359-MLA106665514424_022026-I.jpg"],
+["PA 014- AZUL","https://http2.mlstatic.com/D_907045-MCO89534054354_082025-I.jpg"],
+["PA 030 - ORO-ROSA","https://http2.mlstatic.com/D_687207-MLA106187949966_022026-I.jpg"],
+["PA 030 - PLATA","https://http2.mlstatic.com/D_902453-MLA106048429356_022026-I.jpg"],
+["PA 030 - VERDE","https://http2.mlstatic.com/D_796200-MLA106047078714_022026-I.jpg"],
+["PA 031 ARSENISCA EDGE","https://http2.mlstatic.com/D_916259-MLA111236752597_052026-I.jpg"],
+["PA 031 NEGRO MATE","https://http2.mlstatic.com/D_909365-MLA110306883240_052026-I.jpg"],
+["PA 031 TURQUESA EDGE","https://http2.mlstatic.com/D_843101-MLA110306949630_052026-I.jpg"],
+["PA-BEBES-AQUA","https://http2.mlstatic.com/D_927082-MLA84536579260_052025-I.jpg"],
+["PA-ESP-120","https://http2.mlstatic.com/D_941119-MCO54959396459_042023-I.jpg"],
+["PA-SILVER","https://media.falabella.com/falabellaCO/150664310_01"],
+["PA001BAG-LILA",""],
+["PA001BAG-NEGRO","https://http2.mlstatic.com/D_820330-MLA110009744434_042026-I.jpg"],
+["PA001BAG-NEGRO-EST-BOUN","https://http2.mlstatic.com/D_746849-MLA110311107796_052026-I.jpg"],
+["PA002","https://http2.mlstatic.com/D_807275-MLA106664830015_022026-I.jpg"],
+["PA002 LILA",""],
+["PA003-NEGRO","https://http2.mlstatic.com/D_904206-MLA104626126090_012026-I.jpg"],
+["PA004-BLANCO-NEGRO","https://http2.mlstatic.com/D_671310-MLA96506908069_102025-I.jpg"],
+["PA005","https://http2.mlstatic.com/D_868346-MCO111711726979_052026-I.jpg"],
+["PA006-NEGRO","https://http2.mlstatic.com/D_938427-MCO89534027210_082025-I.jpg"],
+["PA007","https://http2.mlstatic.com/D_775728-MLA111409289253_052026-I.jpg"],
+["PA008","https://http2.mlstatic.com/D_937534-MLA111136077877_052026-I.jpg"],
+["PA009","https://http2.mlstatic.com/D_769114-MLA96422900262_102025-I.jpg"],
+["PA010",""],
+["PAG 032","https://http2.mlstatic.com/D_849310-MCO84033615431_042025-I.jpg"],
+["PF 015","https://http2.mlstatic.com/D_646517-MCO93880631066_102025-I.jpg"],
+["PLA 028","https://http2.mlstatic.com/D_830976-MLU71098637738_082023-I.jpg"],
+["PP012","https://http2.mlstatic.com/D_831519-MCO70346932510_072023-I.jpg"],
+["PW025","https://http2.mlstatic.com/D_648018-MLA108914716472_032026-I.jpg"],
+["SA 121","https://http2.mlstatic.com/D_658960-MLA111872716844_062026-I.jpg"],
+["SET 011","https://http2.mlstatic.com/D_880871-MCO110311203144_052026-I.jpg"],
+["TAR-RFID-NEGRO",""],
+["TERMOAZUL","https://http2.mlstatic.com/D_883531-MCO110198319058_052026-I.jpg"],
+["TERMOBEIGE","https://http2.mlstatic.com/D_628878-MCO110354008701_042026-I.jpg"]
+];
+
+const KEY="boun_conteo_v1";
+let store = {};
+try{ store = JSON.parse(localStorage.getItem(KEY)||"{}"); }catch(e){ store={}; }
+
+const body=document.getElementById("body");
+const esc=s=>s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/"/g,"&quot;");
+
+function rowHtml(sku,img,i){
+  const v=store[sku]||{};
+  const ph=`<div class="noimg">sin<br>foto</div>`;
+  const im=img?`<img class="thumb" loading="lazy" src="${img}" alt="" onerror="imgFail(this)">`:ph;
+  return `<tr data-sku="${esc(sku)}" id="r${i}">
+    <td>${im}</td>
+    <td class="sku">${esc(sku)}</td>
+    <td class="num"><input class="cnt" inputmode="numeric" data-f="b" value="${v.b??""}"></td>
+    <td class="num"><input class="cnt" inputmode="numeric" data-f="y" value="${v.y??""}"></td>
+    <td class="total" id="t${i}">0</td>
+  </tr>`;
+}
+body.innerHTML = DATA.map((d,i)=>rowHtml(d[0],d[1],i)).join("");
+
+function imgFail(el){ const d=document.createElement("div"); d.className="noimg"; d.innerHTML="sin<br>foto"; el.replaceWith(d); }
+
+function num(x){ const n=parseInt(x,10); return isNaN(n)?0:n; }
+
+function recalc(){
+  let bog=0,yop=0,done=0;
+  DATA.forEach((d,i)=>{
+    const tr=document.getElementById("r"+i);
+    const b=num(tr.querySelector('[data-f=b]').value);
+    const y=num(tr.querySelector('[data-f=y]').value);
+    const has=tr.querySelector('[data-f=b]').value!==""||tr.querySelector('[data-f=y]').value!=="";
+    document.getElementById("t"+i).textContent=b+y;
+    tr.classList.toggle("row-done",has);
+    bog+=b;yop+=y;if(has)done++;
+  });
+  document.getElementById("sBog").textContent=bog.toLocaleString("es-CO");
+  document.getElementById("sYop").textContent=yop.toLocaleString("es-CO");
+  document.getElementById("sTot").textContent=(bog+yop).toLocaleString("es-CO");
+  document.getElementById("sDone").textContent=done;
+}
+
+function save(){
+  store={};
+  DATA.forEach((d,i)=>{
+    const tr=document.getElementById("r"+i);
+    const b=tr.querySelector('[data-f=b]').value;
+    const y=tr.querySelector('[data-f=y]').value;
+    if(b!==""||y!=="") store[d[0]]={b,y};
+  });
+  store.__meta={fecha:document.getElementById("fecha").value,resp:document.getElementById("resp").value};
+  localStorage.setItem(KEY,JSON.stringify(store));
+}
+
+body.addEventListener("input",e=>{ if(e.target.classList.contains("cnt")){ recalc(); save(); }});
+
+// restore meta
+if(store.__meta){ document.getElementById("fecha").value=store.__meta.fecha||""; document.getElementById("resp").value=store.__meta.resp||""; }
+["fecha","resp"].forEach(id=>document.getElementById(id).addEventListener("input",save));
+
+// search
+document.getElementById("q").addEventListener("input",e=>{
+  const t=e.target.value.toLowerCase();
+  DATA.forEach((d,i)=>{ document.getElementById("r"+i).style.display = d[0].toLowerCase().includes(t)?"":"none"; });
+});
+
+function exportCSV(){
+  const meta=store.__meta||{};
+  let rows=[["SKU","Bodega Bogota","Bodega Yopal","Total"]];
+  DATA.forEach((d,i)=>{
+    const tr=document.getElementById("r"+i);
+    const b=tr.querySelector('[data-f=b]').value;
+    const y=tr.querySelector('[data-f=y]').value;
+    rows.push([d[0],b,y,(num(b)+num(y))]);
+  });
+  const csv=rows.map(r=>r.map(c=>`"${String(c).replace(/"/g,'""')}"`).join(",")).join("\r\n");
+  const blob=new Blob(["﻿"+csv],{type:"text/csv;charset=utf-8"});
+  const a=document.createElement("a");
+  a.href=URL.createObjectURL(blob);
+  a.download="Conteo_BOUN_"+(meta.fecha||new Date().toISOString().slice(0,10))+".csv";
+  a.click();
+}
+
+function resetAll(){
+  if(!confirm("¿Borrar todo el conteo ingresado?"))return;
+  localStorage.removeItem(KEY); store={};
+  document.querySelectorAll("input.cnt").forEach(i=>i.value="");
+  document.getElementById("fecha").value=""; document.getElementById("resp").value="";
+  recalc();
+}
+
+recalc();
+</script>
+</body>
+</html>
