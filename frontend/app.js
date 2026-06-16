@@ -1124,6 +1124,9 @@ function scanHTML(){
       </div>
       <div id="scanOut" style="margin-top:14px"></div>
       <div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">
+        <label style="font-size:13px;display:flex;gap:8px;align-items:center;cursor:pointer;margin-bottom:10px;padding:8px 10px;border:1px solid var(--amber);border-radius:8px;background:rgba(224,162,60,.08)">
+          <input type="checkbox" id="mlSoloBogota" onchange="scanDailySave()"> <span class="amber" style="font-weight:700">⏳ Regla temporal:</span> MercadoLibre vende solo bodega Bogotá <span class="muted" style="font-size:11px">(Yopal no cuenta para ML; los demás canales usan ambas)</span>
+        </label>
         <label style="font-size:13px;display:flex;gap:8px;align-items:center;cursor:pointer;margin-bottom:10px">
           <input type="checkbox" id="scanReactivate" onchange="scanDailySave()"> Reactivar publicaciones agotadas <span class="muted" style="font-size:11px">(ML pausadas por falta de stock → vuelven a activas con stock)</span>
         </label>
@@ -1146,6 +1149,7 @@ async function scanInit(){
     const cb=document.getElementById("scanDaily"); if(cb) cb.checked=!!aps.scan_daily;
     const hr=document.getElementById("scanDailyHour"); if(hr && aps.scan_daily_hour!=null) hr.value=aps.scan_daily_hour;
     const rc=document.getElementById("scanReactivate"); if(rc) rc.checked=aps.scan_reactivate!==false;
+    const mb=document.getElementById("mlSoloBogota"); if(mb) mb.checked=!!aps.ml_solo_bogota;
   }catch(e){}
   const out=document.getElementById("scanOut");
   if(!out) return;
@@ -1156,10 +1160,11 @@ async function scanInit(){
 async function scanDailySave(){
   const en=document.getElementById("scanDaily").checked;
   const rc=document.getElementById("scanReactivate").checked;
+  const mb=document.getElementById("mlSoloBogota").checked;
   let h=parseInt(document.getElementById("scanDailyHour").value,10); if(isNaN(h))h=4;
   const msg=document.getElementById("scanDailyMsg");
   try{
-    await api("/sync/apply-config",{method:"POST",body:JSON.stringify({scan_daily:en,scan_daily_hour:h,scan_reactivate:rc})});
+    await api("/sync/apply-config",{method:"POST",body:JSON.stringify({scan_daily:en,scan_daily_hour:h,scan_reactivate:rc,ml_solo_bogota:mb})});
     if(msg){ msg.textContent="✓ guardado"; msg.className="green"; setTimeout(()=>{if(msg)msg.textContent="";},2000); }
   }catch(e){ if(msg){ msg.textContent=e.message; msg.className="red"; } }
 }
