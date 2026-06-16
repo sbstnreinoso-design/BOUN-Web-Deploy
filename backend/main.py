@@ -199,6 +199,47 @@ def inv_update(pid: int, data: InvUpdateIn,
     return {"ok": db.inv_update_product(pid, fields)}
 
 
+class IngresoIn(BaseModel):
+    bodega: str                       # "bogota" | "yopal"
+    cantidad: float                   # > 0 (unidades que LLEGARON)
+    nota: Optional[str] = ""
+
+
+@app.post("/api/inventory/{pid}/ingreso")
+def inv_ingreso(pid: int, data: IngresoIn, user: dict = Depends(_current_user)):
+    """Ingreso de mercancía: SUMA unidades a una bodega (Bogotá o Yopal) sobre
+    el valor ACTUAL del sistema; nunca reemplaza el total. Así no se borran los
+    descuentos que el motor ya aplicó por ventas. Deja registro en
+    movimiento_stock con delta positivo. Los combos no aplican (su stock se
+    deriva de los componentes)."""
+    bod = (data.bodega or "").strip().lower()
+    if bod not in ("bogota", "yopal"):
+        raise HTTPException(400, "bodega debe ser 'bogota' o 'yopal'")
+    cant = int(data.cantidad or 0)
+    if cant <= 0:
+        raise HTTPException(400, "La cantidad debe ser mayor a 0")
+    rows = db._sb_get("inventory_products?id=eq.%d&select=id,code,name,"
+                      "qty_bogota,qty_yopal" % pid) or []
+    if not rows:
+        raise HTTPException(404, "Producto no encontrado")
+    p = rows[0]
+    codigo = p.get("code")
+    if _combo_components(codigo):
+        raise HTTPException(400, "Es un combo: su stock se calcula desde los "
+                                 "componentes. Ingresa la mercancía en ellos.")
+    col = "qty_bogota" if bod == "bogota" else "qty_yopal"
+    actual = int(p.get(col) or 0)
+    nuevo = actual + cant
+    db._sb_patch("inventory_products", "id=eq.%d" % pid, {col: nuevo})
+    nota = (data.nota or "").strip()
+    db._sb_post("movimiento_stock", {
+        "codigo_boun": codigo, "delta": cant,
+        "motivo": "ingreso_%s%s" % (bod, (" (" + nota + ")") if nota else ""),
+        "canal": "manual", "order_id": ""})
+    return {"ok": True, "bodega": bod, "anterior": actual,
+            "ingresado": cant, "nuevo": nuevo, "code": codigo}
+
+
 @app.delete("/api/inventory/{pid}")
 def inv_delete(pid: int, user: dict = Depends(_admin)):
     return {"ok": db.inv_delete_product(pid)}
@@ -2631,6 +2672,173 @@ def sync_apply_config(data: ApplyConfigIn, user: dict = Depends(_admin)):
             "scan_reactivate": _scan_reactivate_enabled(),
             "ml_solo_bogota": _ml_solo_bogota(),
             "dry_run": not bool(canales)}
+
+
+# ── CEREBRO — mapa de trabajo de la IA ───────────────────────────────────────
+# Vista única del trabajo automatizado de BOUN: estado real del motor de
+# sincronización (leído de settings), las tareas programadas (definición + el
+# último reporte que cada una deja vía heartbeat) y los pendientes/fallas que
+# necesitan decisión humana. La página /cerebro consume este JSON.
+
+# Definición de las tareas programadas (corren en Cowork; aquí solo su ficha).
+# `cron` es informativo; el front calcula la ventana de ejecución con `hours`/`days`.
+_CEREBRO_TASKS = [
+    {"id": "mercadolibre-boun-inventario-diario", "canal": "mercadolibre",
+     "nombre": "Inventario diario", "icon": "box",
+     "cad": "Diario · 8:00 AM", "hours": [8], "days": None,
+     "desc": "Revisa publicación por publicación; en las agotadas quita el envío "
+             "Full y deja el stock en 0 (primera medida autorizada).",
+     "run": "Recorriendo publicaciones activas…",
+     "done": "Revisión completa · agotadas marcadas",
+     "idle": "Listo hasta mañana 8:00 AM"},
+    {"id": "mercadolibre-boun-preguntas-reclamos", "canal": "mercadolibre",
+     "nombre": "Preguntas, reclamos y facturación", "icon": "chat",
+     "cad": "2× día · 9:00 AM y 4:00 PM", "hours": [9, 16], "days": None,
+     "desc": "Responde compradores solo con datos de la ficha, gestiona reclamos "
+             "y envía el RUT a Edgar por WhatsApp.",
+     "run": "Leyendo preguntas y reclamos nuevos…",
+     "done": "Bandeja respondida · facturación al día",
+     "idle": "Próxima pasada a las 4:00 PM"},
+    {"id": "mercadolibre-boun-promo-mensual", "canal": "mercadolibre",
+     "nombre": "Campaña promo mensual (BOUN)", "icon": "tag",
+     "cad": "Mensual · día 7, 1:00 PM", "hours": [13], "days": [7],
+     "desc": "Crea la BOUN del mes y alinea las promociones a los precios del mes "
+             "anterior. No sube ni confirma sin tu aprobación.",
+     "run": "Armando la BOUN del mes…",
+     "done": "BOUN del mes lista para tu revisión",
+     "idle": "Programada para el día 7"},
+    {"id": "falabella-boun-inventario-diario", "canal": "falabella",
+     "nombre": "Corrida diaria de contenido", "icon": "spark",
+     "cad": "Diario · 11:00 PM", "hours": [23], "days": None,
+     "desc": "Sube el puntaje de contenido a 100, pide reseñas y aplica el playbook "
+             "de reseñas 1★. El inventario ya NO lo toca (lo hace el motor).",
+     "run": "Optimizando fichas y reseñas…",
+     "done": "Catálogo en puntaje 100 · reporte listo",
+     "idle": "Próxima corrida a las 11:00 PM"},
+    {"id": "falabella-boun-auditoria-quincenal", "canal": "falabella",
+     "nombre": "Auditoría quincenal", "icon": "chart",
+     "cad": "Días 1 y 15 · 9:00 AM", "hours": [9], "days": [1, 15],
+     "desc": "Audita ventas, productos killers y ROAS contra la línea base. Solo "
+             "lee y reporta, no modifica nada.",
+     "run": "Auditando ventas y ROAS…",
+     "done": "Auditoría lista vs. línea base",
+     "idle": "Próxima auditoría el día 1"},
+    {"id": "falabella-boun-ajuste-pauta-quincenal", "canal": "falabella",
+     "nombre": "Ajuste de pauta quincenal", "icon": "target",
+     "cad": "Días 1 y 16 · 5:00 PM", "hours": [17], "days": [1, 16],
+     "desc": "Optimiza campañas con 15 días de resultados: pausa sin stock, recorta "
+             "ACOS alto y escala el ROAS sano.",
+     "run": "Recalculando campañas de Retail Media…",
+     "done": "Pauta optimizada · sin stock pausado",
+     "idle": "Próximo ajuste el día 1"},
+]
+
+_CEREBRO_SKILLS = [
+    {"nombre": "Optimizador SEO Falabella", "icon": "search", "tag": "Chrome",
+     "desc": "Optimiza títulos, descripciones y puntaje de contenido con tendencias "
+             "reales de búsqueda en Colombia."},
+    {"nombre": "Playbook reseñas 1★", "icon": "star", "tag": "Embebida",
+     "desc": "Flujo duplicar → corregir → eliminar para neutralizar reseñas de una "
+             "estrella en Falabella."},
+    {"nombre": "Reportes (Word · Excel · PDF)", "icon": "file", "tag": "Documentos",
+     "desc": "Genera auditorías, resúmenes de ventas y reportes operativos en "
+             "formato profesional."},
+]
+
+# Alertas/pendientes por defecto (se pueden sobrescribir con el setting JSON
+# `cerebro_alertas`). Cada una: {sev: 'err'|'warn', title, txt}.
+_CEREBRO_ALERTAS_DEFAULT = [
+    {"sev": "err", "title": "Reintento de alineación ML → BOUN",
+     "txt": "La alineación de eventos de MercadoLibre a la BOUN del mes quedó "
+            "bloqueada por un error de descarga de ML. El reintento está en pausa."},
+    {"sev": "err", "title": "Reintento de corrida Falabella",
+     "txt": "La corrida diaria de Falabella se bloqueó por mantención de Seller "
+            "Center y sesiones cerradas. Reintento en pausa."},
+    {"sev": "warn", "title": "Bug de permisos en Chrome",
+     "txt": "Se detectó denegación automática de acciones en el navegador. Puede "
+            "frenar tareas que dependen de Claude en Chrome."},
+]
+
+
+def _cerebro_estado() -> dict:
+    """Heartbeats de las tareas: lo que cada skill reporta tras correr.
+    Mapa {task_id: {status, msg, last_run, next_run}} guardado en el setting
+    JSON `cerebro_estado`. Vacío si ninguna ha reportado todavía."""
+    try:
+        raw = db.get_setting("cerebro_estado", "") or "{}"
+        d = json.loads(raw)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _cerebro_alertas() -> list:
+    try:
+        raw = db.get_setting("cerebro_alertas", "")
+        if raw:
+            d = json.loads(raw)
+            if isinstance(d, list):
+                return d
+    except Exception:
+        pass
+    return _CEREBRO_ALERTAS_DEFAULT
+
+
+@app.get("/api/cerebro")
+def cerebro(user: dict = Depends(_current_user)):
+    """Mapa de trabajo de la IA: motor (estado real desde settings), tareas
+    programadas (ficha + último heartbeat) y pendientes. Cualquier usuario."""
+    canales = sorted(_sync_apply_channels())
+    try:
+        scan_last = json.loads(db.get_setting("sync_scan_last", "") or "{}")
+    except Exception:
+        scan_last = {}
+    motor = {
+        "sync_enabled": _sync_enabled(),
+        "apply_channels": canales,
+        "dry_run": not bool(canales),
+        "max_delta": _sync_apply_max_delta(),
+        "scan_daily": _scan_daily_enabled(),
+        "scan_daily_hour": _scan_daily_hour(),
+        "scan_daily_last": db.get_setting("sync_scan_daily_last", "") or None,
+        "scan_reactivate": _scan_reactivate_enabled(),
+        "ml_solo_bogota": _ml_solo_bogota(),
+        "scan_last": scan_last,
+    }
+    estado = _cerebro_estado()
+    tasks = []
+    for t in _CEREBRO_TASKS:
+        hb = estado.get(t["id"], {}) if isinstance(estado, dict) else {}
+        tasks.append({**t, "heartbeat": hb})
+    return {"ok": True,
+            "now_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "motor": motor, "tasks": tasks,
+            "skills": _CEREBRO_SKILLS, "alertas": _cerebro_alertas()}
+
+
+class HeartbeatIn(BaseModel):
+    task_id: str
+    status: str = "ok"          # ok | run | warn | err
+    msg: str = ""               # qué hizo / qué está haciendo
+    next_run: Optional[str] = None
+
+
+@app.post("/api/cerebro/heartbeat")
+def cerebro_heartbeat(data: HeartbeatIn, key: str = ""):
+    """Las tareas programadas (Cowork) reportan aquí su estado real tras correr.
+    Pública con ?key=<BOUN_EXPORT_TOKEN> (igual que los demás endpoints externos)
+    para que el planificador la llame sin sesión."""
+    token = os.environ.get("BOUN_EXPORT_TOKEN", "")
+    if not token or key != token:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    estado = _cerebro_estado()
+    estado[data.task_id] = {
+        "status": data.status, "msg": data.msg,
+        "next_run": data.next_run,
+        "last_run": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    db.set_setting("cerebro_estado", json.dumps(estado, ensure_ascii=False))
+    return {"ok": True, "task_id": data.task_id}
 
 
 # ── COMBOS (kits) — definición vía UI ────────────────────────────────────────
