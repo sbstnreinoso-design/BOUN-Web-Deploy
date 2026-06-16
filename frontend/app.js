@@ -222,8 +222,15 @@ function invCard(p){
                         : fcol("Costo prod.",inp(p.id,"cost_product",p.cost_product));
   const fEnvio = isCombo? fcolRO("Envío","🔒 "+cop(cc.cost_shipping),"acc")
                         : fcol("Envío",inp(p.id,"cost_shipping",p.cost_shipping));
-  const fBog = isCombo? fcolRO("Bod. Bogotá","🔒","muted") : fcol("Bod. Bogotá",inp(p.id,"qty_bogota",p.qty_bogota,64));
-  const fYop = isCombo? fcolRO("Bod. Yopal","🔒","muted") : fcol("Bod. Yopal",inp(p.id,"qty_yopal",p.qty_yopal,64));
+  // Bodegas: combo siempre bloqueado (🔒). Para usuarios normales son solo
+  // lectura (cargan stock con el botón 📥 Ingreso); solo el admin las edita.
+  const adminBod=isAdmin();
+  const fBog = isCombo? fcolRO("Bod. Bogotá","🔒","muted")
+             : adminBod? fcol("Bod. Bogotá",inp(p.id,"qty_bogota",p.qty_bogota,64))
+             : fcolRO("Bod. Bogotá",Math.round(+p.qty_bogota||0));
+  const fYop = isCombo? fcolRO("Bod. Yopal","🔒","muted")
+             : adminBod? fcol("Bod. Yopal",inp(p.id,"qty_yopal",p.qty_yopal,64))
+             : fcolRO("Bod. Yopal",Math.round(+p.qty_yopal||0));
   const fTra = isCombo? fcolRO("En camino","🔒","muted") : fcol("En camino",inp(p.id,"qty_transit",p.qty_transit,64));
   return `<div class="inv-card" data-pid="${p.id}" ${cardStyle}>
     <div class="inv-head">
