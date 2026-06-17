@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BOUN · Publicador SEO Multicanal</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Anton&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --bg:#252427; --bg2:#2e2d31; --card:#34333a; --line:#444; --line2:#3a3940;
+    --cream:#F2ECE0; --muted:#a39e95; --dim:#7d7972;
+    --ml:#FFE600; --fala:#A0CC3A; --ok:#2DC6FF; --green:#3FCB82; --warn:#ffcc66;
+    --sleep:#8B7BD8; --accent:var(--cream); --radius:16px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:radial-gradient(1200px 600px at 80% -10%,rgba(242,236,224,.07),transparent),var(--bg);
+    color:var(--cream);font-family:'Inter',system-ui,sans-serif;line-height:1.5;min-height:100vh;padding:0 0 90px}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 22px}
+  a{color:var(--ok);text-decoration:none}
+  .display{font-family:'Anton',sans-serif;text-transform:uppercase}
+  header{position:sticky;top:0;z-index:30;backdrop-filter:blur(14px);
+    background:rgba(37,36,39,.82);border-bottom:1px solid var(--line2)}
+  .bar{display:flex;align-items:center;gap:16px;padding:14px 0}
+  .logo{font-family:'Anton';font-size:26px;letter-spacing:2px}.logo span{color:var(--accent)}
+  .tagline{font-size:12px;color:var(--muted);border-left:1px solid var(--line);padding-left:16px;line-height:1.3}
+  .tagline b{color:var(--cream);font-weight:600}
+  .seo-chip{margin-left:auto;font-size:11px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;
+    color:#0c1f12;background:linear-gradient(135deg,var(--green),#2bb56e);padding:6px 12px;border-radius:999px}
+  .hero{padding:30px 0 6px}
+  .hero h1{font-family:'Anton';font-size:clamp(26px,4vw,42px);line-height:1.04;letter-spacing:.5px}
+  .hero h1 em{font-style:normal;color:var(--accent)}
+  .hero p{color:var(--muted);max-width:640px;margin-top:11px;font-size:15px}
+  .grid{display:grid;gap:20px}
+  @media(min-width:920px){.cols{grid-template-columns:360px 1fr}}
+  .card{background:linear-gradient(180deg,var(--card),var(--bg2));border:1px solid var(--line2);
+    border-radius:var(--radius);padding:22px}
+  .card h2{font-family:'Anton';font-size:15px;letter-spacing:1px;display:flex;align-items:center;gap:9px;
+    margin-bottom:14px;text-transform:uppercase}
+  .card h2 .n{width:24px;height:24px;border-radius:7px;background:var(--accent);color:#1b1822;display:grid;
+    place-items:center;font-size:13px;font-weight:800;font-family:'Inter'}
+  .card h2 .hint{margin-left:auto;font-family:'Inter';font-weight:500;font-size:11px;color:var(--dim);
+    text-transform:none;letter-spacing:0}
+  label{display:block;font-size:12px;font-weight:600;color:var(--muted);margin:13px 0 6px;
+    text-transform:uppercase;letter-spacing:.5px}
+  select,input,textarea{width:100%;background:#211f24;border:1px solid var(--line);color:var(--cream);
+    border-radius:11px;padding:11px 13px;font-family:inherit;font-size:14px;transition:.15s}
+  select:focus,input:focus,textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(242,236,224,.16)}
+  textarea{resize:vertical;line-height:1.55}
+  .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px}.row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px}
+  .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;cursor:pointer;border:none;
+    border-radius:12px;font-family:inherit;font-weight:700;font-size:14px;padding:13px 18px;transition:.15s;width:100%}
+  .btn-primary{background:linear-gradient(135deg,#F2ECE0,#ddd5c6);color:#252427;box-shadow:0 8px 22px -8px rgba(242,236,224,.4)}
+  .btn-primary:hover{transform:translateY(-1px);filter:brightness(1.07)}
+  .btn-ml{background:var(--ml);color:#2d3277}.btn-fala{background:var(--fala);color:#16240a}
+  .btn-ghost{background:transparent;border:1px solid var(--line);color:var(--cream)}.btn-ghost:hover{border-color:var(--accent)}
+  .btn:disabled{opacity:.4;cursor:not-allowed}
+  /* segmented */
+  .seg{display:grid;grid-template-columns:1fr 1fr;gap:8px;background:#211f24;border:1px solid var(--line);
+    border-radius:12px;padding:5px}
+  .seg button{background:transparent;border:none;color:var(--muted);font-family:inherit;font-weight:600;
+    font-size:13px;padding:10px;border-radius:8px;cursor:pointer;transition:.15s}
+  .seg button.on{background:var(--accent);color:#1b1822}
+  /* acordeón por tienda */
+  .acc{border:1px solid var(--line);border-radius:13px;margin-bottom:10px;overflow:hidden;background:#26242a;transition:.18s}
+  .acc-head{display:flex;align-items:center;gap:11px;padding:13px 14px;cursor:pointer;user-select:none}
+  .acc-title{font-weight:700;font-size:14px;color:var(--cream)}
+  .acc-state{font-size:11px;color:var(--dim);font-weight:600}
+  .chev{margin-left:auto;transition:.2s;color:var(--muted);font-size:13px}
+  .acc.open .chev{transform:rotate(180deg)}
+  .acc-body{max-height:0;overflow:hidden;padding:0 14px;transition:.2s}
+  .acc.open .acc-body{max-height:340px;padding:2px 14px 14px}
+  .acc-chk{margin:0;display:flex} .acc-chk input{width:18px;height:18px;cursor:pointer}
+  .acc.off{opacity:.5}
+  /* ML abierto = amarillo */
+  .acc.ml.open{border-color:#FFE600;box-shadow:0 0 0 1px rgba(255,230,0,.3)}
+  .acc.ml.open .acc-head{background:rgba(255,230,0,.10)} .acc.ml.open .acc-title{color:#FFE600}
+  .acc.ml .acc-chk input{accent-color:#FFE600}
+  .acc.ml.open input:focus{border-color:#FFE600;box-shadow:0 0 0 3px rgba(255,230,0,.2)}
+  .acc.ml.open .seg button.on{background:#FFE600;color:#2d3277}
+  /* Falabella abierto = verde */
+  .acc.fala.open{border-color:#A0CC3A;box-shadow:0 0 0 1px rgba(160,204,58,.3)}
+  .acc.fala.open .acc-head{background:rgba(160,204,58,.10)} .acc.fala.open .acc-title{color:#A0CC3A}
+  .acc.fala .acc-chk input{accent-color:#A0CC3A}
+  .acc.fala.open input:focus{border-color:#A0CC3A;box-shadow:0 0 0 3px rgba(160,204,58,.22)}
+  .checks{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .chk{display:flex;align-items:center;gap:9px;margin:0;text-transform:none;letter-spacing:0;font-size:14px;
+    font-weight:600;color:var(--cream);background:#211f24;border:1px solid var(--line);border-radius:11px;
+    padding:12px 13px;cursor:pointer;transition:.15s}
+  .chk:has(input[data-s=ml]:checked){border-color:#FFE600;background:rgba(255,230,0,.12)}
+  .chk:has(input[data-s=ml]:checked) input{accent-color:#FFE600}
+  .chk:has(input[data-s=fala]:checked){border-color:#A0CC3A;background:rgba(160,204,58,.14)}
+  .chk:has(input[data-s=fala]:checked) input{accent-color:#A0CC3A}
+  .chk input{width:18px;height:18px;flex:0 0 auto;accent-color:var(--accent);cursor:pointer}
+  /* keywords */
+  .kw{margin-bottom:9px}.kw .top{display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px}
+  .kw .top .w{color:var(--dim);font-size:12px;font-variant-numeric:tabular-nums}
+  .kw .top .src{font-size:10px;color:var(--accent);margin-left:7px;font-weight:600}
+  .track{height:7px;background:#211f24;border-radius:99px;overflow:hidden}
+  .fill{height:100%;border-radius:99px;background:linear-gradient(90deg,#bdb6a8,var(--cream))}
+  .src-note{font-size:11.5px;color:var(--dim);margin-top:12px;line-height:1.45}
+  code{font-size:11px;background:#211f24;border:1px solid var(--line);padding:2px 6px;border-radius:6px;color:var(--ok)}
+  /* title editor */
+  .topt{border:1px solid var(--line);border-radius:13px;padding:13px;margin-bottom:11px;background:#26242a;transition:.15s}
+  .topt.sel{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
+  .topt .lbl{font-size:11px;font-weight:700;letter-spacing:.4px;color:var(--accent);text-transform:uppercase;
+    margin-bottom:8px;display:flex;align-items:center;gap:8px}
+  .topt .lbl .use{margin-left:auto;display:flex;align-items:center;gap:6px;color:var(--muted);font-weight:600;
+    text-transform:none;letter-spacing:0;cursor:pointer}
+  .topt input.tin{font-size:15px;font-weight:600;border-color:transparent;background:#211f24}
+  .topt .meta{display:flex;gap:7px;margin-top:8px;flex-wrap:wrap;align-items:center}
+  .pill{font-size:11px;font-weight:600;padding:3px 9px;border-radius:99px;background:#211f24;color:var(--muted);border:1px solid var(--line2)}
+  .pill.ok{color:var(--green);border-color:rgba(63,203,130,.4)}.pill.warn{color:var(--warn);border-color:rgba(255,204,102,.45)}
+  .radio{width:16px;height:16px;border-radius:50%;border:2px solid var(--line);display:inline-grid;place-items:center}
+  .topt.sel .radio{border-color:var(--accent)} .topt.sel .radio::after{content:'';width:8px;height:8px;border-radius:50%;background:var(--accent)}
+  /* photos */
+  .photos{display:grid;grid-template-columns:repeat(auto-fill,minmax(132px,1fr));gap:12px}
+  .ph{border-radius:12px;overflow:hidden;border:1px solid var(--line2);background:#26242a}
+  .ph .img{aspect-ratio:1;background:#fff;position:relative;display:grid;place-items:center}
+  .ph .img img{width:100%;height:100%;object-fit:contain}
+  .ph .img .tag{position:absolute;left:6px;top:6px;font-size:9px;font-weight:700;background:rgba(0,0,0,.6);color:#fff;padding:2px 6px;border-radius:6px}
+  .ph .img .main{position:absolute;left:6px;bottom:6px;font-size:9px;font-weight:700;background:var(--green);color:#0c1f12;padding:2px 6px;border-radius:6px}
+  .ph .img .rm{position:absolute;right:5px;top:5px;width:22px;height:22px;border-radius:50%;border:none;cursor:pointer;
+    background:rgba(0,0,0,.6);color:#fff;font-size:12px;line-height:1;display:grid;place-items:center}
+  .ph .img .rm:hover{background:#ff5b5b}
+  .ph .acts{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line2)}
+  .ph .acts button{background:#2e2d31;border:none;color:var(--cream);font-family:inherit;font-size:11px;font-weight:600;
+    padding:9px 4px;cursor:pointer;transition:.12s}.ph .acts button:hover{background:var(--accent);color:#1b1822}
+  .refbox{background:#211f24;border:1px solid var(--line2);border-radius:12px;padding:13px 14px;margin-bottom:14px}
+  .refhead{font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--cream);margin-bottom:10px;display:flex;gap:8px;align-items:center}
+  .refhead span{font-family:'Inter';font-weight:500;font-size:10px;color:var(--dim);text-transform:none;letter-spacing:0;background:#34333a;padding:2px 8px;border-radius:99px}
+  .refgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(64px,1fr));gap:8px}
+  .refgrid:empty{display:none}
+  .refgrid .rf{aspect-ratio:1;border-radius:9px;overflow:hidden;border:1px solid var(--line2);background:#fff;position:relative}
+  .refgrid .rf img{width:100%;height:100%;object-fit:cover}
+  .refgrid .rf button{position:absolute;right:3px;top:3px;width:18px;height:18px;border-radius:50%;border:none;cursor:pointer;background:rgba(0,0,0,.6);color:#fff;font-size:10px;line-height:1}
+  .addph{border:1.5px dashed var(--line);border-radius:12px;display:grid;place-items:center;cursor:pointer;color:var(--muted);
+    font-size:12px;font-weight:600;text-align:center;padding:10px;min-height:132px;transition:.15s}
+  .addph:hover{border-color:var(--accent);color:var(--accent)}
+  .checklist{margin-top:14px;background:#211f24;border:1px solid var(--line2);border-radius:12px;padding:14px 16px}
+  .shotplan{margin:14px 0;display:grid;gap:6px}
+  .shotplan .ttl{font-size:11px;text-transform:uppercase;letter-spacing:.5px;color:var(--ok);margin-bottom:2px;font-weight:700}
+  .shotplan .sp{display:flex;gap:10px;align-items:center;background:#26242a;border:1px solid var(--line2);border-radius:9px;padding:8px 11px;font-size:12.5px}
+  .shotplan .sp .num{flex:0 0 auto;width:20px;height:20px;border-radius:6px;background:var(--cream);color:#252427;font-weight:800;font-size:11px;display:grid;place-items:center}
+  .shotplan .sp b{color:var(--cream);font-weight:600}.shotplan .sp span{color:var(--muted)}
+  .shotplan .sp .bg{margin-left:auto;font-size:10px;font-weight:700;padding:2px 7px;border-radius:99px;border:1px solid var(--line);white-space:nowrap}
+  .shotplan .sp .bg.blanco{background:#fff;color:#252427}.shotplan .sp .bg.neutro{color:#bbb}
+  .shotplan .sp .bg.ambiente{color:#7fc3ff;border-color:rgba(127,195,255,.4)}.shotplan .sp .bg.info{color:#ffcc66;border-color:rgba(255,204,102,.4)}
+  .ck-tabs{display:flex;gap:6px;margin-bottom:10px}
+  .ck-tabs button{flex:1;background:#2e2d31;border:1px solid var(--line);color:var(--muted);font-family:inherit;
+    font-weight:600;font-size:12px;padding:8px;border-radius:9px;cursor:pointer;transition:.12s}
+  .ck-tabs button[data-ch=ml].on{background:#FFE600;color:#2d3277;border-color:#FFE600}
+  .ck-tabs button[data-ch=fala].on{background:#A0CC3A;color:#16240a;border-color:#A0CC3A}
+  .checklist li{list-style:none;font-size:12.5px;color:var(--muted);padding:3px 0 3px 22px;position:relative}
+  .checklist li::before{content:'✓';position:absolute;left:0;color:var(--green);font-weight:800}
+  /* ficha / features editable */
+  .ficha{display:grid;gap:8px}
+  .ficha .r{display:grid;grid-template-columns:120px 1fr;gap:8px;align-items:center}
+  .ficha .r span{color:var(--muted);font-size:12px}
+  .ficha .r input{padding:8px 11px;font-size:13px}
+  .feat{display:flex;gap:8px;align-items:center;margin-bottom:7px}
+  .feat input{padding:9px 12px;font-size:13px}
+  .feat .del{flex:0 0 auto;width:34px;height:34px;border-radius:9px;background:#211f24;border:1px solid var(--line);
+    color:var(--muted);cursor:pointer}.feat .del:hover{color:#ff6b6b;border-color:#ff6b6b}
+  .addrow{font-size:12px;color:var(--accent);cursor:pointer;font-weight:600;margin-top:4px;display:inline-block}
+  /* channels */
+  .chcard{border-radius:var(--radius);border:1px solid var(--line2);overflow:hidden;background:var(--bg2)}
+  .chcard .head{padding:14px 18px;display:flex;align-items:center;gap:11px;font-weight:700}
+  .chcard.ml{border-color:rgba(255,230,0,.5);box-shadow:0 0 0 1px rgba(255,230,0,.25)}
+  .chcard.fala{border-color:rgba(160,204,58,.55);box-shadow:0 0 0 1px rgba(160,204,58,.3)}
+  .chcard.ml .head{background:linear-gradient(135deg,#ffe600,#ffd400);color:#2d3277}
+  .chcard.fala .head{background:linear-gradient(135deg,#a0cc3a,#8bbf2f);color:#16240a}
+  /* inputs por canal: ML amarillo, Falabella verde */
+  .chcard.ml input{border-color:rgba(255,230,0,.45)}
+  .chcard.ml input:focus{border-color:#FFE600;box-shadow:0 0 0 3px rgba(255,230,0,.2)}
+  .chcard.ml .ptitle{color:#FFE600}
+  .chcard.fala input{border-color:rgba(160,204,58,.5)}
+  .chcard.fala input:focus{border-color:#A0CC3A;box-shadow:0 0 0 3px rgba(160,204,58,.22)}
+  .chcard.fala .ptitle{color:#A0CC3A}
+  .chcard .head .mode{margin-left:auto;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;
+    background:rgba(0,0,0,.16);padding:4px 10px;border-radius:99px}
+  .chcard .body{padding:18px}
+  .chcard .ptitle{font-size:14px;font-weight:600;margin-bottom:8px;line-height:1.35}
+  .kv{font-size:12.5px;color:var(--muted);margin:4px 0}.kv b{color:var(--cream);font-weight:600}
+  .price-edit{display:flex;align-items:center;gap:8px;margin:10px 0}
+  .price-edit label{margin:0;flex:0 0 auto}.price-edit input{max-width:150px}
+  .parent{display:flex;gap:8px;flex-wrap:wrap;margin:8px 0}
+  .safety{display:flex;gap:11px;align-items:flex-start;font-size:13px;color:var(--muted);
+    background:rgba(45,198,255,.06);border:1px solid rgba(45,198,255,.25);border-radius:12px;padding:14px 16px;margin-top:18px}
+  .safety b{color:var(--cream)}
+  .sec-title{font-family:'Anton';font-size:18px;letter-spacing:.8px;margin:36px 0 4px;text-transform:uppercase}
+  .sec-sub{color:var(--muted);font-size:13px;margin-bottom:16px}
+  .counter{font-size:11px;color:var(--dim);font-variant-numeric:tabular-nums}
+  .copybar{display:flex;gap:8px;margin-top:10px}.mini{font-size:12px;padding:8px 12px;width:auto}
+  .hidden{display:none}
+  .flash{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(20px);background:var(--green);
+    color:#0c1f12;font-weight:700;padding:12px 22px;border-radius:12px;opacity:0;transition:.25s;pointer-events:none;z-index:50;font-size:14px}
+  .flash.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  footer{color:var(--dim);font-size:12px;text-align:center;margin-top:46px;line-height:1.6}
+</style>
+</head>
+<body>
+<header><div class="wrap bar">
+  <div class="logo">BOUN<span>·</span></div>
+  <div class="tagline"><b>Publicador SEO</b> Multicanal<br>MercadoLibre · Falabella</div>
+  <div class="seo-chip">⚡ SEO desde competencia</div>
+</div></header>
+
+<div class="wrap">
+  <section class="hero">
+    <h1>De un link de la competencia a tu <em>publicación profesional</em>.</h1>
+    <p>Pega la URL de una publicación que ya rankea (o su título), elige si es publicación
+       nueva o una variante, y el motor extrae las palabras clave, arma el título óptimo
+       (editable), una descripción larga, ficha, características y deja las fotos listas según
+       las buenas prácticas de MercadoLibre.</p>
+  </section>
+
+  <div class="grid cols">
+    <!-- STEP 1 -->
+    <div class="card" style="align-self:start">
+      <h2><span class="n">1</span> Referencia &amp; tipo</h2>
+
+      <label>Link o título de referencia (competencia)</label>
+      <textarea id="ref" rows="3" placeholder="https://articulo.mercadolibre.com.co/...  o pega el título de un competidor">https://listado.mercadolibre.com.co/tapones-para-oidos-para-dormir-silicona-reutilizables-antirruido</textarea>
+
+      <div class="row2">
+        <div><label>Color / variante</label><input id="color" value="Lila"></div>
+        <div><label>SKU</label><input id="sku" value="PA001BAG-LILA"></div>
+      </div>
+      <div style="margin-top:8px;font-size:12px;color:var(--muted)">Marca: <b style="color:var(--cream)">BOUN</b> · fija en todas las publicaciones</div>
+      <div class="row2">
+        <div><label>Precio (COP)</label><input id="price" value="60000" inputmode="numeric"></div>
+        <div><label>Precio lista</label><input id="lprice" value="100000" inputmode="numeric"></div>
+      </div>
+      <label style="margin-top:16px">Configura cada tienda</label>
+
+      <div class="acc ml open" id="accMl">
+        <div class="acc-head" onclick="toggleAcc('ml')">
+          <label class="acc-chk" onclick="event.stopPropagation()"><input type="checkbox" data-s="ml" checked></label>
+          <span class="acc-title">🛒 MercadoLibre</span>
+          <span class="acc-state" id="mlAccState"></span>
+          <span class="chev">▾</span>
+        </div>
+        <div class="acc-body">
+          <label>Tipo de publicación</label>
+          <div class="seg" id="ptype">
+            <button data-v="nueva" class="on">🆕 Publicación nueva</button>
+            <button data-v="variante">➕ Variante nueva</button>
+          </div>
+          <div id="parentWrap" class="hidden">
+            <label>Número(s) MCOU de la publicación (coma)</label>
+            <input id="parents" placeholder="Ej: MCOU3498535615, MCOU2915326292">
+          </div>
+        </div>
+      </div>
+
+      <div class="acc fala" id="accFala">
+        <div class="acc-head" onclick="toggleAcc('fala')">
+          <label class="acc-chk" onclick="event.stopPropagation()"><input type="checkbox" data-s="fala" checked></label>
+          <span class="acc-title">🏬 Falabella</span>
+          <span class="acc-state" id="faAccState"></span>
+          <span class="chev">▾</span>
+        </div>
+        <div class="acc-body">
+          <label>Categoría Falabella</label>
+          <input id="faCat" value="Protección Auditiva">
+          <p class="src-note" style="margin-top:8px">Falabella siempre se crea como producto nuevo.</p>
+        </div>
+      </div>
+
+      <div style="margin-top:18px"></div>
+      <button class="btn btn-primary" id="gen">⚡ Analizar y generar</button>
+      <p class="src-note" style="margin-top:13px">Reutilizable para cualquier producto.
+        En la web en vivo, pegar una URL de MercadoLibre extrae sus keywords reales;
+        las fotos y la ficha base se traen de boun.com.co.</p>
+    </div>
+
+    <!-- STEP 2: keywords + titles -->
+    <div class="grid">
+      <div class="card">
+        <h2><span class="n">2</span> Keywords por relevancia <span class="hint" id="famHint"></span></h2>
+        <div id="kwlist"></div>
+        <p class="src-note">⛏️ Extraídas de la <b>referencia</b> + corpus de búsquedas de
+          MercadoLibre Colombia. <span style="color:var(--accent)">●</span> = viene del link de competencia.</p>
+      </div>
+
+      <div class="card">
+        <h2><span class="n">3</span> Títulos — edítalos a gusto <span class="hint">clic para escribir</span></h2>
+        <div id="titles"></div>
+        <label style="display:flex;justify-content:space-between;align-items:center">
+          Título largo (catálogo · 200) <span class="counter" id="ltCount"></span></label>
+        <textarea id="ltitle" rows="3"></textarea>
+        <p class="src-note">Palabras más relevantes primero, <b>sin conectores</b>.
+          Límite ML estándar 60 · catálogo/ficha hasta 200.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- STEP: package -->
+  <h2 class="sec-title">Paquete de publicación</h2>
+  <p class="sec-sub">Descripción, ficha, características y fotos — todo editable.</p>
+  <div class="grid cols">
+    <div class="grid">
+      <div class="card">
+        <h2><span class="n">4</span> Descripción <span class="counter" id="descCount"></span></h2>
+        <textarea id="desc" rows="16"></textarea>
+        <div class="copybar">
+          <button class="btn btn-ghost mini" onclick="copyEl('desc')">📋 Copiar</button>
+          <button class="btn btn-ghost mini" onclick="regen('desc')">↺ Regenerar</button>
+        </div>
+      </div>
+      <div class="card">
+        <h2><span class="n">5</span> Ficha técnica</h2>
+        <div class="ficha" id="ficha"></div>
+      </div>
+      <div class="card">
+        <h2><span class="n">6</span> Características</h2>
+        <div id="features"></div>
+        <span class="addrow" onclick="addFeature('')">+ Añadir característica</span>
+      </div>
+    </div>
+    <div class="card" style="align-self:start">
+      <h2><span class="n">7</span> Fotos <span class="hint">adjunta, mejora o genera</span></h2>
+
+      <div class="refbox">
+        <div class="refhead">🎯 Referencia del producto real <span>varias vistas</span></div>
+        <input type="file" id="refInput" accept="image/*" multiple class="hidden">
+        <div class="refgrid" id="refGrid"></div>
+        <button class="btn btn-ghost mini" style="width:100%;margin-top:8px" onclick="$('refInput').click()">📎 Adjuntar fotos de referencia (frente, lados, caja nueva)</button>
+        <p class="src-note" style="margin-top:8px">Obligatorias para generar con IA: aseguran que las imágenes salgan <b>idénticas</b> al producto que vas a vender.
+          La <b>portada se genera nueva</b> (el empaque es distinto al de Shopify); las demás fotos del Sleep Lila se reutilizan.</p>
+      </div>
+
+      <input type="file" id="fileInput" accept="image/*" multiple class="hidden">
+      <div class="photos" id="photos"></div>
+      <button class="btn btn-ghost mini" style="width:100%;margin-top:12px" onclick="triggerAttach()">📎 Adjuntar imágenes desde tu equipo</button>
+      <div class="shotplan" id="shotplan"></div>
+      <div class="checklist">
+        <div class="ck-tabs">
+          <button data-ch="ml" class="on">📸 MercadoLibre</button>
+          <button data-ch="fala">🏬 Falabella</button>
+        </div>
+        <ul id="ruleList"></ul>
+        <p class="src-note" id="ruleNote" style="margin-top:8px"></p>
+      </div>
+      <p class="src-note">✨ Mejorar IA = fondo blanco + escala al mínimo del canal (Higgsfield).
+        ➕ Variante = nuevas tomas (ángulo, uso, escala). Te muestro cada una antes de usarla.
+        Las fotos pueden re-exportarse por canal según sus requisitos.</p>
+    </div>
+  </div>
+
+  <!-- STEP: channels -->
+  <h2 class="sec-title">Publicar en los canales</h2>
+  <p class="sec-sub">Revisa y ajusta precios. Nada se publica sin tu OK.</p>
+  <div class="grid cols">
+    <div class="chcard ml" id="mlCard">
+      <div class="head"><span>🛒</span> MercadoLibre <span class="mode" id="mlMode">Nueva</span></div>
+      <div class="body">
+        <div class="ptitle" id="mlTitle">—</div>
+        <div id="mlVariant"></div>
+        <div class="price-edit"><label>Precio ML</label><input id="mlPrice" inputmode="numeric"></div>
+        <div class="kv">Color: <b id="mlColor">—</b> · SKU: <b id="mlSku">—</b></div>
+        <button class="btn btn-ml" id="pubMl" style="margin-top:12px">Publicar en ML</button>
+        <p class="src-note" style="margin-top:10px">ML se publica vía Claude en Chrome
+          (sesión iniciada). El agente arma la publicación/variante con título, color, precio y fotos.</p>
+      </div>
+    </div>
+    <div class="chcard fala" id="faCard">
+      <div class="head"><span>🏬</span> Falabella <span class="mode">Producto nuevo</span></div>
+      <div class="body">
+        <div class="ptitle" id="faTitle">—</div>
+        <div class="kv">SellerSku: <b id="faSku">—</b> · Categoría: <b id="faCatOut">Protección Auditiva</b></div>
+        <div class="price-edit"><label>Precio Fala</label><input id="faPrice" inputmode="numeric"></div>
+        <div class="kv">Marca: <b>BOUN</b></div>
+        <button class="btn btn-fala" id="pubFa" style="margin-top:12px">Crear en Falabella (API)</button>
+        <p class="src-note" style="margin-top:10px">Falabella se crea por API (ProductCreate, HMAC).
+          Primero genera el XML en modo revisión; publica solo al confirmar.</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="safety">
+    <span style="font-size:18px">🔒</span>
+    <div><b>Modo seguro.</b> Esta vista es para aprobación. Publicar muestra primero la vista previa /
+      XML; la publicación real ocurre solo al confirmar y nunca pide logins financieros (esos los haces tú).</div>
+  </div>
+
+  <footer>
+    BOUN · Publicador SEO Multicanal — módulo de la web de inventario.<br>
+    Motor: <code>backend/seo_publisher.py</code> · página: <code>/publicador.html</code>
+  </footer>
+</div>
+
+<div class="flash" id="flash"></div>
+
+<script>
+/* ═══════════ MOTOR SEO (espejo de seo_publisher.py) — funciona standalone ═══════════ */
+const STOP=new Set(("de del para por con sin los las el la un una unos unas y o u e a al en que su sus lo se es tu mi este esta como mas muy the of for and to with").split(" "));
+const FAMILY={
+ sleep:[["tapones oidos dormir",100],["protector auditivo dormir",95],["tapones auditivos dormir",92],["tapones para los oidos",80],["protectores auditivos",78],["tapa oidos dormir",70],["tapones oidos silicona",68],["protectores auditivos silicona",66],["tapones antirruido",60],["tapones aislantes ruido",55],["tapones reutilizables",50]],
+ moto:[["tapones oidos moto",100],["protectores auditivos moto",92],["tapones oidos viento",78],["tapones antirruido moto",75],["protector auditivo motociclista",70],["tapones oidos silicona",60],["tapones reutilizables",48]],
+ music:[["tapones oidos musicos",100],["protectores auditivos conciertos",90],["tapones oidos fiesta",80],["tapones alta fidelidad",75],["protector auditivo musica",70],["tapones reutilizables silicona",55]],
+ swim:[["tapones oidos natacion",100],["tapones oidos agua",92],["protectores auditivos natacion",85],["tapones impermeables oidos",78],["tapones silicona natacion",70],["tapones oidos piscina",65]],
+ industrial:[["protectores auditivos industriales",100],["tapones oidos industriales",95],["proteccion auditiva trabajo",85],["tapones seguridad industrial",80],["tapones oidos 40db",70],["protector auditivo epp",60]]};
+const SPECS={
+ sleep:{atenuacion:"24 dB",uso:"Dormir",material:"Silicona de grado médico"},
+ moto:{atenuacion:"23 dB",uso:"Motociclismo",material:"Silicona de grado médico"},
+ music:{atenuacion:"13/23/45 dB (3 filtros)",uso:"Música y conciertos",material:"Silicona de grado médico"},
+ swim:{atenuacion:"Impermeable",uso:"Natación",material:"Silicona de grado médico"},
+ industrial:{atenuacion:"40 dB (SNR 30, EN-352)",uso:"Industrial",material:"Silicona de grado médico"}};
+const FAMRULES=[["swim",["natacion","agua","piscina","nadar","impermeable","buceo"]],["moto",["moto","motociclista","viento","casco","motociclismo"]],["music",["musico","concierto","fiesta","fidelidad","dj","musica","festival"]],["industrial",["industrial","trabajo","obra","epp","seguridad","taller"]],["sleep",["dormir","sueno","noche","insomnio","descanso","roncar"]]];
+const STEMMAP={auditivo:"auditiv",auditivos:"auditiv",auditiva:"auditiv",protector:"protector",protectores:"protector",tapon:"tapon",tapones:"tapon",oido:"oid",oidos:"oid",tapa:"tapa",reutilizable:"reutiliz",reutilizables:"reutiliz",comodo:"comod",comodos:"comod"};
+const REAC={Oidos:"Oídos",Musica:"Música",Musicos:"Músicos",Comodos:"Cómodos",Natacion:"Natación",Hipoalergenicos:"Hipoalergénicos",Proteccion:"Protección"};
+const RULES={
+ ml:{rules:["PRINCIPAL (foto 1): fondo blanco puro #FFFFFF, SOLO el producto, sin texto/logos","SECUNDARIAS (2–10): NO exigen fondo blanco — ángulos, detalle, escala, uso y lifestyle","Resolución mínima 1200×1200 px (habilita el zoom), cuadrada 1:1","El producto ocupa ~70% del encuadre, centrado, buena luz","Sin marcas de agua, bordes, logos ni varios productos por foto","Mínimo 8 fotos para más relevancia"],
+   note:"Fuente: requisitos de imagen de MercadoLibre. El fondo blanco es obligatorio SOLO en la portada; las secundarias permiten contexto/estilo de vida."},
+ fala:{rules:["PRINCIPAL: fondo blanco puro (RGB 255,255,255), SOLO el producto, JPG","SECUNDARIAS: NO exigen fondo blanco — detalle, otros ángulos y uso real","Recomendado 1500×1500 px (mínimo 762×762), máx. 2 MB, cuadrada 1:1","El producto ocupa ~80% del encuadre, centrado","Sin marcas de agua, promociones, textos, bordes ni collages","En variantes, las imágenes van a nivel de versión/variante"],
+   note:"Fuente: Falabella Seller Center (ayudaseller.falabella.com). Fondo blanco SOLO en la principal; difiere de ML: JPG, mín. 762px, producto ~80%, máx. 2 MB."}};
+/* Plan de 8 fotos según buenas prácticas (1 portada blanca + 7 variadas) */
+const SHOTPLAN=[
+ {t:"Portada",d:"Fondo blanco, producto solo, de frente",bg:"blanco"},
+ {t:"Ángulo 3/4",d:"Vista lateral del par, fondo blanco/neutro",bg:"blanco"},
+ {t:"Detalle material",d:"Macro de la silicona y el filtro",bg:"neutro"},
+ {t:"Par + estuche",d:"Producto con su estuche, fondo blanco",bg:"blanco"},
+ {t:"Escala / en mano",d:"Tamaño real sostenido en la mano",bg:"neutro"},
+ {t:"En uso (lifestyle)",d:"Persona durmiendo con los tapones",bg:"ambiente"},
+ {t:"Empaque nuevo",d:"La caja nueva (referencia que envíes)",bg:"neutro"},
+ {t:"Infografía specs",d:"24dB · silicona · reutilizable (discreta)",bg:"info"}];
+let RULE_CH="ml";
+const FEAT_EXTRA={sleep:["Bloquean ronquidos, tráfico y vecinos para dormir mejor","Ideales para sueño ligero, turnos nocturnos y viajes"],moto:["Reducen la fatiga auditiva por viento a alta velocidad","Compatibles con casco integral"],music:["Filtros que bajan el volumen sin distorsionar la música","Para músicos, conciertos, DJ y festivales"],swim:["Sellan el oído contra el agua","Para natación, ducha y deportes acuáticos"],industrial:["Cumplen referencia de seguridad industrial (EN-352)","Para obra, planta y entornos de alto ruido"]};
+
+const norm=s=>(s||"").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g,"").replace(/[^a-z0-9\s]/g," ").replace(/\s+/g," ").trim();
+const toks=s=>norm(s).split(" ").filter(Boolean);
+const isConn=t=>STOP.has(norm(t));
+function stem(t){const n=norm(t);if(STEMMAP[n])return STEMMAP[n];if(n.endsWith("es")&&n.length>4)return n.slice(0,-2);if(n.endsWith("s")&&n.length>3)return n.slice(0,-1);return n;}
+function tcase(seg){return seg.split(" ").map(t=>{const m=norm(t).match(/^(\d+)\s*db$/);if(m)return m[1]+"dB";if(/^\d+$/.test(norm(t)))return t;const c=t.charAt(0).toUpperCase()+t.slice(1).toLowerCase();return REAC[c]||c;}).join(" ");}
+function detectFamily(text){const t=norm(text);for(const[f,kws]of FAMRULES)if(kws.some(k=>t.includes(k)))return f;return "sleep";}
+function refText(input){input=(input||"").trim();if(/^https?:\/\//i.test(input)){try{const u=new URL(input);let seg=decodeURIComponent((u.pathname.split("/").filter(Boolean).pop()||""));return seg.replace(/-/g," ").replace(/_MCO.*$/i,"");}catch(e){return input.replace(/-/g," ");}}return input;}
+function analyzeReference(input,family){
+  const text=refText(input), fam=family||detectFamily(text);
+  const base=Object.fromEntries(FAMILY[fam]||FAMILY.sleep);
+  const isSpec=t=>/^\d+$/.test(t)||/^\d+db$/.test(t)||t==="db";
+  const rt=toks(text).filter(t=>!isConn(t)&&t.length>1&&!isSpec(t));
+  const rstems=new Set(rt.map(stem)), ranked={};
+  for(const p in base){const ov=toks(p).filter(t=>rstems.has(stem(t))).length;ranked[norm(p)]=[p,base[p]+ov*12,ov>0];}
+  for(let i=0;i<rt.length-1;i++){const bg=rt[i]+" "+rt[i+1],n=norm(bg);if(!ranked[n])ranked[n]=[bg,46-Math.min(i,20),true];}
+  const out=Object.values(ranked).map(([kw,w,fromRef])=>({kw,peso:w,fromRef,tokens:toks(kw)})).sort((a,b)=>b.peso-a.peso);
+  return {family:fam,keywords:out};
+}
+function buildTitle(fam,{color="",brand="BOUN",maxLen=60,includeBrand=true,lead="primary",colorFirst=false,ranked=null}={}){
+  ranked=ranked||analyzeReference("",fam).keywords;
+  const specs=SPECS[fam]||SPECS.sleep, clean=p=>toks(p).filter(t=>!isConn(t));
+  const primary=ranked.length?clean(ranked[0].kw):[];let secondary=[];
+  for(const k of ranked.slice(1)){const t=clean(k.kw);if(t.length&&stem(t[0])!==stem(primary[0]||"")){secondary=t;break;}}
+  const leadToks=(lead==="secondary"&&secondary.length)?secondary:primary;
+  const m=norm(specs.atenuacion).match(/(\d+)\s*db/);const specSeg=m?m[1]+"db":"";
+  const tail=["silicona","reutilizables","antirruido"];if(specSeg)tail.push(specSeg);tail.push("comodos","hipoalergenicos","estuche");
+  const segs=[];if(leadToks.length)segs.push(leadToks);if(colorFirst&&color)segs.push([color]);
+  tail.forEach(t=>segs.push([t]));const other=(leadToks===secondary)?primary:secondary;if(other&&other.length)segs.push(other);
+  if(color)segs.push([color]);if(includeBrand&&brand)segs.push([brand]);
+  const used=new Set(),disp=[];const cur=()=>disp.join(" ").length;
+  for(const seg of segs){const nt=seg.filter(t=>!used.has(stem(t))&&!isConn(t));if(!nt.length)continue;
+    let txt=tcase(nt.join(" "));if(includeBrand&&nt.length===1&&norm(nt[0])===norm(brand))txt=brand.toUpperCase();
+    if(cur()+(disp.length?1:0)+txt.length>maxLen)continue;disp.push(txt);nt.forEach(t=>used.add(stem(t)));}
+  return disp.join(" ");
+}
+function titleVariants(fam,color,ranked){return [
+  buildTitle(fam,{color:"",includeBrand:false,ranked}),
+  buildTitle(fam,{color,includeBrand:false,colorFirst:!!color,ranked}),
+  buildTitle(fam,{color,includeBrand:false,lead:"secondary",ranked})];}
+function buildLongTitle(fam,color,ranked,brand="BOUN",maxLen=200){
+  const specs=SPECS[fam]||SPECS.sleep,used=new Set(),disp=[];
+  const head=(ranked[0]?ranked[0].tokens:[]).filter(t=>!isConn(t));
+  head.forEach(t=>{if(!used.has(stem(t))){used.add(stem(t));disp.push(t);}});
+  const m=norm(specs.atenuacion).match(/(\d+)\s*db/);
+  let extras=(color?[color]:[]).concat(["silicona","reutilizables","antirruido","hipoalergenicos","comodos","estuche"]);
+  if(m)extras.splice(3,0,m[1]+"db");
+  let pool=[];ranked.forEach(k=>pool=pool.concat(k.tokens));pool=pool.concat(extras);if(brand)pool.push(brand);
+  for(const tk of pool){const n=norm(tk);if(!n||isConn(n)||used.has(stem(tk)))continue;
+    const cand=disp.concat([tk]);if(tcase(cand.join(" ")).length>maxLen)continue;used.add(stem(tk));disp.push(tk);}
+  let t=tcase(disp.join(" "));if(brand)t=t.replace(new RegExp("\\b"+brand+"\\b","i"),brand.toUpperCase());return t;
+}
+function buildFeatures(fam,color){const s=SPECS[fam]||SPECS.sleep;const base=[`Atenuación de ruido ${s.atenuacion}`,`${s.material}: suave e hipoalergénica`,"Reutilizables y lavables (no son desechables)","Ajuste ergonómico sin presión en el canal auditivo","Cómodos para uso prolongado, incluso de lado","Incluyen estuche compacto de transporte","Libres de látex"];if(color)base.push(`Color ${color.charAt(0).toUpperCase()+color.slice(1)}`);return (FEAT_EXTRA[fam]||[]).concat(base);}
+function buildDesc(fam,color,ranked){
+  const s=SPECS[fam]||SPECS.sleep;
+  const ben={sleep:"Duerme profundo sin que el ruido te despierte.",moto:"Rueda sin que el viento y el motor te agoten el oído.",music:"Disfruta la música nítida, a un volumen seguro.",swim:"Nada con los oídos protegidos del agua.",industrial:"Trabaja protegido del ruido, todo el turno."}[fam]||"Protege tus oídos con comodidad real.";
+  const c=color?` en color ${color.charAt(0).toUpperCase()+color.slice(1)}`:"";
+  const syn=[];for(const k of ranked.slice(0,6)){if(!syn.map(x=>x.toLowerCase()).includes(k.kw.toLowerCase()))syn.push(k.kw);}
+  const feats=buildFeatures(fam,color),bullets=feats.map(f=>"✔ "+f).join("\n");
+  return `${ben}\n\nLos protectores auditivos BOUN${c} están fabricados en ${s.material.toLowerCase()}: suave, hipoalergénica, sin látex y reutilizable. Se ajustan al canal auditivo sin presión y se sienten cómodos durante horas, ideales para ${s.uso.toLowerCase()}. Bloquean el ruido con una atenuación de ${s.atenuacion}, manteniendo tu oído seguro y descansado.\n\nTambién conocidos como: ${syn.slice(0,5).join(", ")}.\n\nCARACTERÍSTICAS\n${bullets}\n\nFICHA TÉCNICA\n• Atenuación: ${s.atenuacion}\n• Uso: ${s.uso}\n• Material: ${s.material}\n• Color: ${color||"—"}\n• Reutilizables: Sí · Estuche incluido: Sí\n\n¿POR QUÉ BOUN?\nBOUN es una marca colombiana de protección auditiva premium. Tienda Oficial y MercadoLíder, con miles de clientes y excelente calificación. Compra con garantía, factura y envío a todo el país.\n\nHaz tu pedido hoy y protege tus oídos con la comodidad que mereces.`;
+}
+/* fotos demo (en vivo se traen de boun.com.co) */
+const PHOTOS_DEMO=[
+ {u:"https://cdn.shopify.com/s/files/1/1045/0141/2000/files/boun-sleep-lila-v2.png?v=1781226706",t:"Lila",main:true},
+ {u:"https://cdn.shopify.com/s/files/1/1045/0141/2000/files/boun-sleep-hero_782e44d8-f93e-417a-b54e-1858e31225f3.png?v=1779821714",t:"Producto"},
+ {u:"https://cdn.shopify.com/s/files/1/1045/0141/2000/files/boun-sleep-hero_31810de0-bf23-4fde-b85b-da4d7e3e312b.png?v=1779774891",t:"Detalle"}];
+
+/* ═══════════ UI ═══════════ */
+const $=id=>document.getElementById(id);
+const fmt=n=>"$"+(parseInt((""+n).replace(/\D/g,""))||0).toLocaleString("es-CO");
+let S={fam:"sleep",ranked:[],titles:[],sel:0,ptype:"nueva",photos:[],features:[],refs:[],stores:{ml:true,fala:true}};
+
+function generate(){
+  const a=analyzeReference($("ref").value), color=$("color").value.trim();
+  S.fam=a.family; S.ranked=a.keywords;
+  $("famHint").textContent="línea detectada: "+a.family;
+  // keywords
+  const max=a.keywords[0].peso;
+  $("kwlist").innerHTML=a.keywords.slice(0,9).map((k,i)=>`<div class="kw"><div class="top">
+    <b>${i+1}. ${tcase(k.kw)}</b><span><span class="w">${k.peso}</span>${k.fromRef?'<span class="src">● ref</span>':''}</span></div>
+    <div class="track"><div class="fill" style="width:${Math.round(k.peso/max*100)}%"></div></div></div>`).join("");
+  // titles
+  S.titles=titleVariants(a.family,color,a.keywords); S.sel=0; renderTitles();
+  $("ltitle").value=buildLongTitle(a.family,color,a.keywords); ltCount();
+  // desc
+  $("desc").value=buildDesc(a.family,color,a.keywords); descCount();
+  // ficha
+  const s=SPECS[a.family]||SPECS.sleep;
+  S.ficha=[["Atenuación",s.atenuacion],["Uso",s.uso],["Material",s.material],["Color",color||"—"],["Marca","BOUN"],["Garantía","Sí · Tienda Oficial"]];
+  renderFicha();
+  // features
+  S.features=buildFeatures(a.family,color); renderFeatures();
+  // photos
+  S.photos=PHOTOS_DEMO.map(p=>({...p})); renderPhotos();
+  renderRules();
+  $("shotplan").innerHTML='<div class="ttl">📋 Plan de 8 fotos (buenas prácticas)</div>'+
+    SHOTPLAN.map((s,i)=>`<div class="sp"><span class="num">${i+1}</span><div><b>${s.t}</b> <span>· ${s.d}</span></div><span class="bg ${s.bg}">${s.bg==='blanco'?'fondo blanco':s.bg==='ambiente'?'lifestyle':s.bg==='info'?'infografía':'fondo neutro'}</span></div>`).join("");
+  // prices
+  $("mlPrice").value=$("price").value; $("faPrice").value=$("price").value;
+  updateChannels();
+  flashMsg("Publicación SEO generada ✓");
+}
+function renderTitles(){
+  const LBL=["Recomendado · máx SEO","Con color · diferenciación","Cabeza alterna"];
+  $("titles").innerHTML=S.titles.map((t,i)=>`<div class="topt ${i===S.sel?'sel':''}" id="topt${i}">
+    <div class="lbl"><span>${LBL[i]||'Opción'}</span>
+      <span class="use" onclick="selTitle(${i})"><span class="radio"></span> usar</span></div>
+    <input class="tin" value="${t.replace(/"/g,'&quot;')}" oninput="onTitleEdit(${i},this.value)">
+    <div class="meta" id="tmeta${i}"></div></div>`).join("");
+  S.titles.forEach((_,i)=>titleMeta(i));
+}
+function titleMeta(i){const t=S.titles[i],over=t.length>60;
+  $("tmeta"+i).innerHTML=`<span class="pill ${over?'warn':'ok'}">${t.length}/60</span>
+    <span class="pill ${t.split(' ').filter(isConn).length?'warn':'ok'}">sin conectores ${t.split(' ').filter(isConn).length?'✕':'✓'}</span>
+    <span class="pill">${t.split(' ').length} keywords</span>`;}
+function onTitleEdit(i,v){S.titles[i]=v;titleMeta(i);if(i===S.sel)updateChannels();}
+function selTitle(i){S.sel=i;document.querySelectorAll('.topt').forEach((e,j)=>e.classList.toggle('sel',j===i));updateChannels();}
+function ltCount(){const v=$("ltitle").value;$("ltCount").textContent=v.length+"/200";$("ltCount").style.color=v.length>200?'#ff6b6b':'';}
+function descCount(){$("descCount").style.cssText="font-size:11px;color:var(--dim)";$("descCount").textContent=$("desc").value.length+" car.";}
+function renderFicha(){$("ficha").innerHTML=S.ficha.map((r,i)=>`<div class="r"><span>${r[0]}</span>
+  <input value="${(r[1]||'').replace(/"/g,'&quot;')}" oninput="S.ficha[${i}][1]=this.value"></div>`).join("");}
+function renderFeatures(){$("features").innerHTML=S.features.map((f,i)=>`<div class="feat">
+  <input value="${(f||'').replace(/"/g,'&quot;')}" oninput="S.features[${i}]=this.value">
+  <button class="del" onclick="S.features.splice(${i},1);renderFeatures()">✕</button></div>`).join("");}
+function addFeature(v){S.features.push(v||"Nueva característica");renderFeatures();}
+function renderPhotos(){
+  const items=S.photos.map((p,i)=>`<div class="ph"><div class="img">
+    ${p.u?`<img src="${p.u}" alt="">`:'<span style="color:#bbb;font-size:11px">generando…</span>'}
+    <span class="tag">${p.t}</span>${p.main?'<span class="main">PRINCIPAL</span>':''}
+    <button class="rm" title="Quitar" onclick="rmPhoto(${i})">✕</button></div>
+    <div class="acts"><button onclick="enhancePhoto(${i})">✨ Mejorar IA</button>
+    <button onclick="genMore(${i})">➕ Variante</button></div></div>`).join("");
+  $("photos").innerHTML=items
+    +`<div class="addph" onclick="triggerAttach()">📎<br>Adjuntar<br>imagen</div>`
+    +`<div class="addph" onclick="genMore(-1)">✨<br>Generar IA<br>(req. del canal)</div>`;
+}
+function triggerAttach(){$("fileInput").click();}
+function renderRefs(){$("refGrid").innerHTML=S.refs.map((u,i)=>`<div class="rf"><img src="${u}"><button onclick="S.refs.splice(${i},1);renderRefs()">✕</button></div>`).join("");}
+function handleRefFiles(files){let n=0;[...files].forEach(f=>{if(!f.type.startsWith("image/"))return;const r=new FileReader();r.onload=e=>{S.refs.push(e.target.result);renderRefs();};r.readAsDataURL(f);n++;});if(n)flashMsg(n+" referencia(s) adjuntada(s) ✓");}
+function handleFiles(files){
+  let added=0;
+  [...files].forEach(f=>{
+    if(!f.type.startsWith("image/"))return;
+    const r=new FileReader();
+    r.onload=e=>{S.photos.push({u:e.target.result,t:"Adjunta",main:S.photos.length===0,uploaded:true});renderPhotos();};
+    r.readAsDataURL(f);added++;
+  });
+  if(added)flashMsg(added+" imagen(es) adjuntada(s) ✓"); else flashMsg("Selecciona archivos de imagen");
+}
+function rmPhoto(i){const wasMain=S.photos[i]&&S.photos[i].main;S.photos.splice(i,1);
+  if(wasMain&&S.photos.length)S.photos[0].main=true;renderPhotos();}
+function renderRules(){const r=RULES[RULE_CH];$("ruleList").innerHTML=r.rules.map(x=>`<li>${x}</li>`).join("");$("ruleNote").textContent=r.note;}
+function enhancePhoto(i){const min=RULE_CH==="fala"?"1500px (JPG, máx 2MB)":"1200px";flashMsg("Mejora IA → Higgsfield: fondo blanco + escala "+min+" — te muestro el resultado");}
+function genMore(i){
+  if(!S.refs.length){flashMsg("Adjunta primero una foto de referencia del producto (varias vistas)");$("refInput").focus();return;}
+  const next=SHOTPLAN[Math.min(S.photos.length,SHOTPLAN.length-1)];
+  const bg=next.bg==='blanco'?'fondo blanco':next.bg==='ambiente'?'lifestyle ambientado':next.bg==='info'?'infografía discreta':'fondo neutro';
+  flashMsg('Generando "'+next.t+'" ('+bg+') desde tus '+S.refs.length+' referencia(s) — la verás antes de usarla');}
+function updateChannels(){
+  const t=S.titles[S.sel]||"",color=$("color").value.trim(),sku=$("sku").value.trim();
+  // mostrar/ocultar tarjetas y atenuar acordeón según tiendas elegidas
+  $("mlCard").classList.toggle("hidden",!S.stores.ml);
+  $("faCard").classList.toggle("hidden",!S.stores.fala);
+  $("accMl").classList.toggle("off",!S.stores.ml);
+  $("accFala").classList.toggle("off",!S.stores.fala);
+  const fc=$("faCat"); if(fc&&$("faCatOut")) $("faCatOut").textContent=fc.value||"Protección Auditiva";
+  $("mlTitle").textContent=t;$("faTitle").textContent=t;
+  $("mlColor").textContent=color||"—";$("mlSku").textContent=sku;$("faSku").textContent=sku;
+  if(S.ptype==="variante"){$("mlMode").textContent="Variante";
+    const ps=($("parents").value||"").split(",").map(x=>x.trim()).filter(Boolean);
+    $("mlVariant").innerHTML=`<div class="kv">Se agrega como variante a:</div><div class="parent">${ps.length?ps.map(p=>`<code>${p}</code>`).join(""):'<span class="kv" style="color:var(--warn)">⚠ ingresa el número de publicación</span>'}</div>`;
+  }else{$("mlMode").textContent="Nueva";$("mlVariant").innerHTML=`<div class="kv">Se crea como <b>publicación nueva</b>.</div>`;}
+}
+function regen(id){const color=$("color").value.trim();if(id==="desc"){$("desc").value=buildDesc(S.fam,color,S.ranked);descCount();}flashMsg("Regenerado");}
+function copyEl(id){navigator.clipboard.writeText($(id).value||$(id).textContent).then(()=>flashMsg("Copiado"));}
+function flashMsg(m){const f=$("flash");f.textContent=m;f.classList.add("show");clearTimeout(window._ft);window._ft=setTimeout(()=>f.classList.remove("show"),1900);}
+
+/* eventos */
+$("gen").onclick=generate;
+$("fileInput").addEventListener("change",e=>{handleFiles(e.target.files);e.target.value="";});
+$("refInput").addEventListener("change",e=>{handleRefFiles(e.target.files);e.target.value="";});
+$("ltitle").addEventListener("input",ltCount);
+$("desc").addEventListener("input",descCount);
+function toggleAcc(k){$(k==="ml"?"accMl":"accFala").classList.toggle("open");}
+document.querySelectorAll('.acc-chk input[type=checkbox]').forEach(cb=>cb.addEventListener('change',()=>{
+  const k=cb.dataset.s, other=k==="ml"?"fala":"ml";
+  if(!cb.checked&&!S.stores[other]){cb.checked=true;flashMsg("Debe quedar al menos una tienda seleccionada");return;}
+  S.stores[k]=cb.checked;
+  // al marcar abre su acordeón; al desmarcar lo colapsa
+  $(k==="ml"?"accMl":"accFala").classList.toggle("open",cb.checked);
+  updateChannels();}));
+document.querySelectorAll('#ptype button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('#ptype button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+  S.ptype=b.dataset.v;$("parentWrap").classList.toggle('hidden',S.ptype!=="variante");updateChannels();});
+["color","sku"].forEach(id=>$(id).addEventListener("input",()=>S.titles.length&&updateChannels()));
+$("parents").addEventListener("input",updateChannels);
+$("faCat").addEventListener("input",updateChannels);
+$("price").addEventListener("input",()=>{$("mlPrice").value=$("price").value;$("faPrice").value=$("price").value;});
+document.querySelectorAll('.ck-tabs button').forEach(b=>b.onclick=()=>{
+  document.querySelectorAll('.ck-tabs button').forEach(x=>x.classList.remove('on'));b.classList.add('on');
+  RULE_CH=b.dataset.ch;renderRules();});
+/* integración backend: usa la sesión Bearer de la web BOUN si existe */
+function authHeaders(){try{const t=localStorage.getItem('boun_token');return t?{'Authorization':'Bearer '+t}:{};}catch(e){return {};}}
+$("pubMl").onclick=()=>flashMsg(S.ptype==="variante"
+  ? "Variante ML lista — el agente la agrega a la(s) publicación(es) vía Chrome; confirma para publicar"
+  : "Publicación ML lista — el agente la crea vía Chrome; confirma para publicar");
+$("pubFa").onclick=async()=>{
+  const t=S.titles[S.sel]||"";
+  const body={sku:$("sku").value.trim(),title:t,description:$("desc").value,
+    category:($("faCat").value||"Protección Auditiva"),
+    price:parseInt(($("faPrice").value||"").replace(/\D/g,''))||0,
+    images:S.photos.map(p=>p.u).filter(Boolean),family:S.fam,color:$("color").value.trim(),dry:true};
+  try{
+    const r=await fetch('/api/publisher/falabella/create',{method:'POST',
+      headers:{'Content-Type':'application/json',...authHeaders()},body:JSON.stringify(body)});
+    if(r.ok){await r.json();flashMsg("XML Falabella generado (revisión) ✓ — confirma para crear");}
+    else if(r.status===401){flashMsg("Inicia sesión en la web BOUN para publicar en Falabella");}
+    else{flashMsg("Backend respondió "+r.status+" — revisa categoría/credenciales");}
+  }catch(e){flashMsg("XML Falabella generado (modo local) — despliega la web para crear");}
+};
+generate();
+</script>
+</body>
+</html>
