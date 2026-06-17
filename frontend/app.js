@@ -198,9 +198,10 @@ async function doUploadInvXlsx(input){
   const list = document.getElementById("invList");
   if(list) list.innerHTML = `<div class="loading"><span class="spinner"></span> Procesando Excel…</div>`;
   try{
-    const fd = new FormData(); fd.append("file", f, f.name);
     const r = await fetch("/api/inventory/import",
-      { method:"POST", headers: TOKEN ? {"Authorization":"Bearer "+TOKEN} : {}, body: fd });
+      { method:"POST",
+        headers: Object.assign({"Content-Type":"application/octet-stream"}, TOKEN ? {"Authorization":"Bearer "+TOKEN} : {}),
+        body: f });
     const j = await r.json().catch(()=>({}));
     if(!r.ok) throw new Error(j.detail || ("Error "+r.status));
     INV = await api("/inventory"); drawInventory();
