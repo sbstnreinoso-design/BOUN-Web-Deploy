@@ -1310,6 +1310,157 @@ def falabella_set_stock(key: str = "", sku: str = "", cantidad: str = "",
                             status_code=502, headers=_EXPORT_CORS)
 
 
+# ── Publicador SEO multicanal (genera publicaciones) — protegido por token ──
+# Mismas reglas que el export: ?key= vs BOUN_EXPORT_TOKEN, CORS abierto.
+# Reúne el motor SEO (seo_publisher) + creación en Falabella (falabella).
+
+def _pub_guard(key: str, authorization: Optional[str] = None):
+    """Acepta ?key=BOUN_EXPORT_TOKEN O una sesión Bearer válida (como la SPA),
+    así la página publicador.html puede llamar logueada sin exponer el token."""
+    token = os.environ.get("BOUN_EXPORT_TOKEN", "")
+    if token and key == token:
+        return None
+    if authorization and authorization.startswith("Bearer "):
+        if _SESSIONS.get(authorization.split(" ", 1)[1]):
+            return None
+    return JSONResponse({"error": "unauthorized"}, status_code=401,
+                        headers=_EXPORT_CORS)
+
+
+@app.options("/api/publisher/keywords")
+@app.options("/api/publisher/package")
+@app.options("/api/publisher/falabella/categories")
+@app.options("/api/publisher/falabella/attributes")
+@app.options("/api/publisher/falabella/create")
+def publisher_preflight():
+    return Response(status_code=204, headers=_EXPORT_CORS)
+
+
+@app.get("/api/publisher/keywords")
+def publisher_keywords(key: str = "", ref: str = "", family: str = "",
+                       authorization: Optional[str] = Header(None)):
+    g = _pub_guard(key, authorization)
+    if g:
+        return g
+    import seo_publisher as sp
+    try:
+        return JSONResponse(sp.analyze_reference(ref, family or None),
+                            headers=_EXPORT_CORS)
+    except Exception as e:
+        return JSONResponse({"error": str(e)[:200]}, status_code=500,
+                            headers=_EXPORT_CORS)
+
+
+@app.get("/api/publisher/package")
+def publisher_package(key: str = "", sku: str = "", ref: str = "",
+                      family: str = "", color: str = "", price: int = 0,
+                      list_price: int = 0, parents: str = "",
+                      authorization: Optional[str] = Header(None)):
+    g = _pub_guard(key, authorization)
+    if g:
+        return g
+    import seo_publisher as sp
+    fam = family or sp.detect_family(ref or sku or "")
+    ar = sp.analyze_reference(ref, fam)
+    ranked = ar["keywords"]
+    titles = sp.title_variants(fam, color=color, ranked=ranked)
+    long_t = sp.build_long_title(fam, color=color, ranked=ranked)
+    out = {
+        "sku": sku, "familia": fam, "color": color,
+        "precio": price, "precio_lista": list_price,
+        "titulo_recomendado": titles[0] if titles else "",
+        "titulos": titles,
+        "titulo_largo": long_t,
+        "descripcion": sp.build_description(fam, color=color, ranked=ranked),
+        "caracteristicas": sp.build_features(fam, color=color),
+        "atributos": sp.FAMILY_SPECS.get(fam, sp.FAMILY_SPECS["sleep"]),
+        "keywords": ranked[:12],
+        "fotos_reglas": {"mercadolibre": sp.ML_PHOTO_RULES},
+        "ml": {"parent_ids": [p.strip() for p in (parents or "").split(",")
+                              if p.strip()]},
+        "falabella": {"seller_sku": sku},
+    }
+    return JSONResponse(out, headers=_EXPORT_CORS)
+
+
+@app.get("/api/publisher/falabella/categories")
+def publisher_fala_categories(key: str = "", q: str = "",
+                              authorization: Optional[str] = Header(None)):
+    g = _pub_guard(key, authorization)
+    if g:
+        return g
+    import falabella as fb
+    if not fb.is_connected():
+        return JSONResponse({"error": "missing_falabella_credentials"},
+                            status_code=500, headers=_EXPORT_CORS)
+    try:
+        return JSONResponse({"categorias": fb.search_categories(q)[:80]},
+                            headers=_EXPORT_CORS)
+    except Exception as e:
+        return JSONResponse({"error": str(e)[:200]}, status_code=502,
+                            headers=_EXPORT_CORS)
+
+
+@app.get("/api/publisher/falabella/attributes")
+def publisher_fala_attrs(key: str = "", category: str = "",
+                         authorization: Optional[str] = Header(None)):
+    g = _pub_guard(key, authorization)
+    if g:
+        return g
+    import falabella as fb
+    if not fb.is_connected():
+        return JSONResponse({"error": "missing_falabella_credentials"},
+                            status_code=500, headers=_EXPORT_CORS)
+    try:
+        return JSONResponse({"atributos": fb.get_category_attributes(category)},
+                            headers=_EXPORT_CORS)
+    except Exception as e:
+        return JSONResponse({"error": str(e)[:200]}, status_code=502,
+                            headers=_EXPORT_CORS)
+
+
+class FalaCreateIn(BaseModel):
+    sku: str
+    title: str
+    description: str = ""
+    brand: str = "BOUN"
+    category: str
+    price: int = 0
+    images: list = []
+    family: str = "sleep"
+    color: str = ""
+    dry: bool = True
+
+
+@app.post("/api/publisher/falabella/create")
+def publisher_fala_create(data: FalaCreateIn, key: str = "",
+                          authorization: Optional[str] = Header(None)):
+    g = _pub_guard(key, authorization)
+    if g:
+        return g
+    import seo_publisher as sp
+    pkg = {"sku": data.sku, "titulo_recomendado": data.title,
+           "descripcion": data.description, "precio": data.price,
+           "atributos": sp.FAMILY_SPECS.get(data.family,
+                                            sp.FAMILY_SPECS["sleep"]),
+           "fotos": data.images}
+    if data.dry:
+        return JSONResponse(sp.publish_falabella(pkg, category_id=data.category,
+                            brand=data.brand, dry=True), headers=_EXPORT_CORS)
+    import falabella as fb
+    if not fb.is_connected():
+        return JSONResponse({"error": "missing_falabella_credentials"},
+                            status_code=500, headers=_EXPORT_CORS)
+    try:
+        res = sp.publish_falabella(pkg, category_id=data.category,
+                                   brand=data.brand, dry=False)
+        return JSONResponse({"ok": True, "respuesta": res},
+                            headers=_EXPORT_CORS)
+    except Exception as e:
+        return JSONResponse({"ok": False, "error": str(e)[:300]},
+                            status_code=502, headers=_EXPORT_CORS)
+
+
 # ── API MercadoLibre (leer/fijar SELLER_SKU) — protegida por token ───────────
 # Reutiliza el token de ML del backend (mismo que /api/inventory). El access
 # token NUNCA se devuelve. Refresca y reintenta una vez si ML responde 401.
@@ -2764,23 +2915,21 @@ def _cerebro_pendientes(tasks: list) -> list:
     """Construye la lista de "Pendientes de la IA" que ve Sebastián.
 
     Regla (16-jun-2026): toda tarea/skill reporta a Cerebro y los pendientes se
-    auto-actualizan y se auto-limpian. Fuentes:
-      1) FALLAS: cada tarea cuyo último heartbeat sea `warn` o `err` se muestra;
-         al reportar `ok`/`run` deja de aparecer (auto-limpieza).
-      2) WATCHDOG: una tarea que YA venía reportando y dejó de confirmar sus
-         corridas (heartbeat más viejo que su ventana de cadencia) se marca. NO se
-         marca una tarea que aún no ha reportado nunca (eso no es una falla: se
-         empieza a vigilar tras su primer heartbeat) ni los procesos dinámicos.
-      3) MANUALES: lo del setting `cerebro_alertas` (pendientes no atados a tarea).
+    auto-actualizan. Fuente:
+      1) DERIVADOS de los heartbeats: cada tarea cuyo último estado sea `warn` o
+         `err` se convierte en pendiente; al reportar `ok`/`run` deja de aparecer
+         (auto-limpieza en la siguiente corrida, sin pendientes obsoletos).
+      2) MANUALES: lo que haya en el setting `cerebro_alertas` (para pendientes que
+         no estén atados a una tarea). Se pueden auto-limpiar si llevan `task_id`
+         y esa tarea ya reportó `ok`.
     """
     pend, vistos = [], set()
-    now = datetime.now(timezone.utc)
+    # 1) derivados de heartbeats
     for t in tasks:
         hb = t.get("heartbeat") or {}
         st = hb.get("status")
-        tid = t.get("id")
-        # 1) fallas reportadas
         if st in ("warn", "err"):
+            tid = t.get("id")
             vistos.add(tid)
             cuando = hb.get("last_run") or ""
             txt = hb.get("msg") or t.get("desc") or "Sin detalle."
@@ -2788,32 +2937,7 @@ def _cerebro_pendientes(tasks: list) -> list:
                 txt = f"{txt} · último reporte {cuando}"
             pend.append({"sev": st, "title": t.get("nombre") or tid,
                          "txt": txt, "task_id": tid, "auto": True})
-            continue
-        # 2) watchdog: solo tareas programadas que YA reportaron y dejaron de hacerlo
-        if t.get("auto"):
-            continue
-        hours, days = t.get("hours"), t.get("days")
-        if not hours and not days:
-            continue
-        lr = hb.get("last_run")
-        if not lr:
-            continue  # nunca reportó aún: no es falla; se vigila tras su 1er heartbeat
-        if days:
-            max_age_h = 18 * 24 if len(days) >= 2 else 34 * 24
-        else:
-            max_age_h = 20 if (hours and len(hours) >= 2) else 28
-        try:
-            last = datetime.strptime(lr, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
-            overdue = (now - last).total_seconds() > max_age_h * 3600
-        except Exception:
-            overdue = False
-        if overdue:
-            vistos.add(tid)
-            pend.append({"sev": "warn", "title": t.get("nombre") or tid,
-                         "txt": f"Dejó de confirmar sus corridas (último heartbeat: {lr}). "
-                                f"Estaba reportando y ya no; revisa si sigue corriendo.",
-                         "task_id": tid, "auto": True})
-    # 3) manuales del setting (si su task_id ya se mostró o reportó ok/run, se omite)
+    # 2) manuales del setting (si su task_id ya reportó ok/run, se omite = limpio)
     try:
         raw = db.get_setting("cerebro_alertas", "")
         manuales = json.loads(raw) if raw else []
@@ -2827,9 +2951,9 @@ def _cerebro_pendientes(tasks: list) -> list:
             continue
         tid = a.get("task_id")
         if tid:
-            if tid in vistos:
+            if tid in vistos:        # ya está como derivado
                 continue
-            if estados.get(tid) in ("ok", "run"):
+            if estados.get(tid) in ("ok", "run"):  # resuelto → no mostrar
                 continue
         pend.append(a)
     return pend
@@ -2845,18 +2969,6 @@ def _cerebro_estado() -> dict:
         return d if isinstance(d, dict) else {}
     except Exception:
         return {}
-
-
-def _cerebro_alertas() -> list:
-    try:
-        raw = db.get_setting("cerebro_alertas", "")
-        if raw:
-            d = json.loads(raw)
-            if isinstance(d, list):
-                return d
-    except Exception:
-        pass
-    return _CEREBRO_ALERTAS_DEFAULT
 
 
 @app.get("/api/cerebro")
@@ -3529,41 +3641,6 @@ def shopify_status(key: str = ""):
         k = r.get("key", "")
         out[k] = "***" if ("token" in k or "secret" in k) else r.get("value")
     return JSONResponse({"configurado": out}, headers=_EXPORT_CORS)
-
-
-# ── Conteo físico de inventario (hoja compartida, pública) ───────────────────
-# Guarda el avance del conteo en Supabase (app_settings) para que TODO el
-# equipo vea lo mismo desde cualquier dispositivo. Antes vivía solo en
-# localStorage del navegador de quien llenaba, por eso no se compartía.
-
-_CONTEO_KEY = "conteo_v1"
-
-
-@app.get("/api/conteo")
-def conteo_get():
-    raw = db.get_setting(_CONTEO_KEY, "")
-    try:
-        data = json.loads(raw) if raw else {}
-    except Exception:
-        data = {}
-    return JSONResponse(data, headers=_EXPORT_CORS)
-
-
-@app.post("/api/conteo")
-async def conteo_save(request: Request):
-    try:
-        data = await request.json()
-    except Exception:
-        raise HTTPException(status_code=400, detail="JSON invalido")
-    if not isinstance(data, dict):
-        raise HTTPException(status_code=400, detail="Formato invalido")
-    db.set_setting(_CONTEO_KEY, json.dumps(data, ensure_ascii=False))
-    return JSONResponse({"ok": True}, headers=_EXPORT_CORS)
-
-
-@app.options("/api/conteo")
-def conteo_options():
-    return Response(status_code=204, headers=_EXPORT_CORS)
 
 
 # ── Frontend estático ────────────────────────────────────────────────────────

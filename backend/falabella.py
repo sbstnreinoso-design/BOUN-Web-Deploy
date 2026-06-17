@@ -207,6 +207,63 @@ def set_stock(seller_sku, cantidad, dry: bool = False) -> dict:
     return _post("ProductUpdate", xml)
 
 
+def get_category_tree() -> dict:
+    """Árbol de categorías del marketplace (para encontrar PrimaryCategory)."""
+    d = _get("GetCategoryTree")
+    return (d.get("SuccessResponse") or {}).get("Body") or {}
+
+
+def search_categories(query: str = "") -> list:
+    """Aplana el árbol y filtra por nombre. Cada item: {id, name, path}."""
+    body = get_category_tree()
+    out = []
+
+    def walk(node, path):
+        for c in _as_list(node):
+            name = c.get("Name")
+            cid = c.get("CategoryId")
+            p = path + [name] if name else path
+            if cid:
+                out.append({"id": cid, "name": name,
+                            "path": " > ".join([x for x in p if x])})
+            children = (c.get("Children") or {}).get("Category")
+            if children:
+                walk(children, p)
+
+    root = (body.get("Categories") or {}).get("Category")
+    walk(root, [])
+    if query:
+        q = query.lower()
+        return [c for c in out if q in (c.get("name") or "").lower()
+                or q in (c.get("path") or "").lower()]
+    return out
+
+
+def get_category_attributes(category_id) -> list:
+    """Atributos de una categoría (cuáles son OBLIGATORIOS para ProductCreate)."""
+    d = _get("GetCategoryAttributes", {"PrimaryCategory": str(category_id)})
+    body = (d.get("SuccessResponse") or {}).get("Body") or {}
+    out = []
+    for a in _as_list((body.get("Attributes") or {}).get("Attribute")):
+        opts = [o.get("Name") for o in
+                _as_list((a.get("Options") or {}).get("Option"))]
+        out.append({
+            "name": a.get("Name"),
+            "label": a.get("Label") or a.get("Name"),
+            "required": str(a.get("isMandatory")) == "1",
+            "type": a.get("InputType") or a.get("FeedName"),
+            "options": opts[:40],
+        })
+    return out
+
+
+def product_create(xml: str, dry: bool = True) -> dict:
+    """Crea un producto (ProductCreate). dry=True devuelve el XML sin enviar."""
+    if dry:
+        return {"dry_run": True, "xml": xml}
+    return _post("ProductCreate", xml)
+
+
 def get_orders(created_after_iso: str, created_before_iso: str = None,
                limit: int = 100) -> list:
     """Todas las órdenes creadas en un rango de fechas (paginado)."""
