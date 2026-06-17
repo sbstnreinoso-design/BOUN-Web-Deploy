@@ -3531,6 +3531,41 @@ def shopify_status(key: str = ""):
     return JSONResponse({"configurado": out}, headers=_EXPORT_CORS)
 
 
+# ── Conteo físico de inventario (hoja compartida, pública) ───────────────────
+# Guarda el avance del conteo en Supabase (app_settings) para que TODO el
+# equipo vea lo mismo desde cualquier dispositivo. Antes vivía solo en
+# localStorage del navegador de quien llenaba, por eso no se compartía.
+
+_CONTEO_KEY = "conteo_v1"
+
+
+@app.get("/api/conteo")
+def conteo_get():
+    raw = db.get_setting(_CONTEO_KEY, "")
+    try:
+        data = json.loads(raw) if raw else {}
+    except Exception:
+        data = {}
+    return JSONResponse(data, headers=_EXPORT_CORS)
+
+
+@app.post("/api/conteo")
+async def conteo_save(request: Request):
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="JSON invalido")
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=400, detail="Formato invalido")
+    db.set_setting(_CONTEO_KEY, json.dumps(data, ensure_ascii=False))
+    return JSONResponse({"ok": True}, headers=_EXPORT_CORS)
+
+
+@app.options("/api/conteo")
+def conteo_options():
+    return Response(status_code=204, headers=_EXPORT_CORS)
+
+
 # ── Frontend estático ────────────────────────────────────────────────────────
 
 _FRONT = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
