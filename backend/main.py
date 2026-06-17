@@ -5,6 +5,7 @@ ml_fees, scoring) y los mismos datos en Supabase. Expone una API REST y
 sirve el frontend carbón.
 """
 import os
+import io
 import time
 import json
 import base64
@@ -13,10 +14,10 @@ import secrets
 from datetime import datetime, timezone, timedelta
 import hmac as _hmac
 import hashlib as _hashlib
-from fastapi import FastAPI, HTTPException, Depends, Header, Request
+from fastapi import FastAPI, HTTPException, Depends, Header, Request, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import (FileResponse, JSONResponse, Response,
-                               RedirectResponse, HTMLResponse)
+                               RedirectResponse, HTMLResponse, StreamingResponse)
 from pydantic import BaseModel
 from typing import Optional
 
@@ -261,6 +262,233 @@ class AssignIn(BaseModel):
 @app.post("/api/inventory/{pid}/links")
 def inv_assign(pid: int, data: AssignIn, user: dict = Depends(_current_user)):
     return {"ok": db.inv_set_links(pid, data.items, data.channels)}
+
+
+# ── Excel: descargar / subir inventario ──────────────────────────────────────
+# Columnas EDITABLES (las que el import lee, mapeadas por encabezado).
+_XLS_EDIT = [
+    ("Código", "code"),               # llave — NO se modifica, solo empareja
+    ("Producto", "name"),
+    ("Costo producto", "cost_product"),
+    ("Costo envío", "cost_shipping"),
+    ("Bodega Bogotá", "qty_bogota"),
+    ("Bodega Yopal", "qty_yopal"),
+    ("En tránsito", "qty_transit"),
+]
+# Columnas de SOLO LECTURA (referencia; el import las ignora).
+_XLS_READONLY = ["ML Full", "Inventario total", "Vendidas 60d",
+                 "Publicaciones asignadas"]
+
+_CH_LABEL = {"mercadolibre": "ML", "falabella": "Falabella",
+             "shopify_boun": "Shopify BOUN", "shopify_kat": "Shopify KAT"}
+
+
+def _xls_num(v):
+    """Convierte una celda (número o texto '1.234' / '$ 1.234,5') a float.
+    Formato colombiano: '.' = miles, ',' = decimales."""
+    if v is None or v == "":
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    import re as _re
+    s = str(v).strip().replace("$", "").replace(" ", "")
+    if not s:
+        return None
+    if "," in s:
+        # la coma es el decimal; los puntos son miles
+        s = s.replace(".", "").replace(",", ".")
+    elif _re.fullmatch(r"-?\d{1,3}(\.\d{3})+", s):
+        # patrón de agrupación de miles con puntos (1.234 / 1.234.567) → entero
+        s = s.replace(".", "")
+    # en otros casos el '.' se interpreta como decimal (p.ej. '1.5')
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _links_summary(p):
+    """Texto legible de las publicaciones asignadas de un producto."""
+    parts = []
+    for l in p.get("links", []):
+        ch = _CH_LABEL.get(l.get("channel") or "mercadolibre", l.get("channel"))
+        ext = l.get("ml_item_id") or ""
+        title = (l.get("ml_title") or "").strip()
+        qty = int(float(l.get("ml_qty") or 0))
+        sg = l.get("share_group")
+        tag = (" •%s" % sg) if sg else ""
+        parts.append("[%s] %s — %s (%du)%s" % (ch, ext, title, qty, tag))
+    return "\n".join(parts)
+
+
+@app.get("/api/inventory/export.xlsx")
+def inv_export_xlsx(k: str = "", authorization: Optional[str] = Header(None)):
+    """Descarga el inventario completo como Excel (.xlsx). Hoja 'Inventario'
+    (una fila por producto, con costos/bodegas editables y un resumen de las
+    publicaciones asignadas) + hoja 'Publicaciones' (una fila por publicación
+    vinculada, para referencia). El archivo es el mismo formato que acepta el
+    import: editar y volver a subir."""
+    # Auth: header Bearer normal o ?k=<token> (para descarga directa por link).
+    _current_user(authorization if authorization else (("Bearer " + k) if k else None))
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment
+    except Exception:
+        raise HTTPException(500, "Falta la librería openpyxl en el servidor.")
+
+    prods = db.inv_list_products()
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Inventario"
+
+    headers = [h for h, _ in _XLS_EDIT] + _XLS_READONLY
+    ws.append(headers)
+    hdr_fill = PatternFill("solid", fgColor="252427")
+    ro_fill = PatternFill("solid", fgColor="3A3A3D")
+    bold_w = Font(bold=True, color="F2ECE0")
+    n_edit = len(_XLS_EDIT)
+    for ci, _h in enumerate(headers, start=1):
+        c = ws.cell(row=1, column=ci)
+        c.font = bold_w
+        c.fill = hdr_fill if ci <= n_edit else ro_fill
+        c.alignment = Alignment(vertical="center")
+
+    for p in prods:
+        u = (int(p.get("qty_bogota") or 0) + int(p.get("qty_yopal") or 0)
+             + int(p.get("qty_full") or 0) + int(p.get("qty_transit") or 0))
+        ws.append([
+            p.get("code", ""), p.get("name", ""),
+            float(p.get("cost_product") or 0), float(p.get("cost_shipping") or 0),
+            int(p.get("qty_bogota") or 0), int(p.get("qty_yopal") or 0),
+            int(p.get("qty_transit") or 0),
+            int(p.get("qty_full") or 0), u,
+            int(p.get("sold60_total") or 0), _links_summary(p),
+        ])
+
+    widths = [18, 40, 14, 12, 14, 13, 11, 9, 14, 12, 60]
+    from openpyxl.utils import get_column_letter
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[get_column_letter(i)].width = w
+    ws.freeze_panes = "A2"
+
+    # Hoja de detalle de publicaciones
+    ws2 = wb.create_sheet("Publicaciones")
+    ws2.append(["Código producto", "Producto", "Canal", "ID publicación",
+                "Título", "Stock", "Logística", "Comparte stock"])
+    for ci in range(1, 9):
+        ws2.cell(row=1, column=ci).font = bold_w
+        ws2.cell(row=1, column=ci).fill = hdr_fill
+    for p in prods:
+        for l in p.get("links", []):
+            ws2.append([
+                p.get("code", ""), p.get("name", ""),
+                _CH_LABEL.get(l.get("channel") or "mercadolibre",
+                              l.get("channel")),
+                l.get("ml_item_id") or "", (l.get("ml_title") or ""),
+                int(float(l.get("ml_qty") or 0)), l.get("ml_logistic") or "",
+                l.get("share_group") or "",
+            ])
+    for col, w in zip("ABCDEFGH", [18, 36, 13, 18, 46, 9, 14, 14]):
+        ws2.column_dimensions[col].width = w
+    ws2.freeze_panes = "A2"
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    fname = "BOUN_inventario_%s.xlsx" % datetime.now().strftime("%Y-%m-%d")
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument."
+                   "spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="%s"' % fname})
+
+
+@app.post("/api/inventory/import")
+async def inv_import_xlsx(file: UploadFile = File(...),
+                          user: dict = Depends(_admin)):
+    """Sube un Excel (el mismo que entrega export.xlsx) y actualiza los
+    productos existentes emparejando por la columna 'Código'. Solo modifica
+    campos editables: Producto, Costo producto, Costo envío, Bodega Bogotá,
+    Bodega Yopal, En tránsito. NO crea ni borra productos, NO toca las
+    publicaciones asignadas (esas se editan con «Asignar publicaciones»).
+    Los combos no actualizan bodegas (su stock se deriva de los componentes).
+    Solo administrador."""
+    try:
+        from openpyxl import load_workbook
+    except Exception:
+        raise HTTPException(500, "Falta la librería openpyxl en el servidor.")
+    raw = await file.read()
+    if not raw:
+        raise HTTPException(400, "Archivo vacío.")
+    try:
+        wb = load_workbook(io.BytesIO(raw), data_only=True, read_only=True)
+    except Exception as e:
+        raise HTTPException(400, "No se pudo leer el Excel: %s" % e)
+    ws = wb["Inventario"] if "Inventario" in wb.sheetnames else wb.worksheets[0]
+
+    rows = list(ws.iter_rows(values_only=True))
+    if not rows:
+        raise HTTPException(400, "La hoja está vacía.")
+    header = [str(h).strip() if h is not None else "" for h in rows[0]]
+    col_idx = {h: i for i, h in enumerate(header)}
+    if "Código" not in col_idx:
+        raise HTTPException(400, "El Excel no tiene la columna 'Código'. "
+                                 "Usa el archivo descargado con «Excel».")
+
+    # Mapa code → producto (para id + saber si es combo y valores actuales).
+    prods = {str(p.get("code", "")).strip(): p for p in db.inv_list_products()}
+
+    numeric = {"cost_product", "cost_shipping", "qty_bogota", "qty_yopal",
+               "qty_transit"}
+    qty_fields = {"qty_bogota", "qty_yopal", "qty_transit"}
+    updated, unchanged, not_found, errors = [], [], [], []
+
+    for r in rows[1:]:
+        code = r[col_idx["Código"]] if col_idx["Código"] < len(r) else None
+        code = ("" if code is None else str(code)).strip()
+        if not code or code.upper().startswith("TOTAL"):
+            continue
+        p = prods.get(code)
+        if not p:
+            not_found.append(code)
+            continue
+        is_combo = bool(_combo_components(code))
+        fields = {}
+        for hdr, key in _XLS_EDIT:
+            if key == "code" or hdr not in col_idx:
+                continue
+            idx = col_idx[hdr]
+            if idx >= len(r):
+                continue
+            val = r[idx]
+            if key in numeric:
+                nv = _xls_num(val)
+                if nv is None:
+                    continue
+                if is_combo and key in qty_fields:
+                    continue  # combo: stock derivado, no tocar bodegas
+                nv = round(nv, 2) if key.startswith("cost") else int(nv)
+                cur = p.get(key)
+                cur = (round(float(cur or 0), 2) if key.startswith("cost")
+                       else int(float(cur or 0)))
+                if nv != cur:
+                    fields[key] = nv
+            else:  # name
+                sv = ("" if val is None else str(val)).strip()
+                if sv and sv != (p.get("name") or "").strip():
+                    fields[key] = sv
+        if not fields:
+            unchanged.append(code)
+            continue
+        try:
+            db.inv_update_product(p["id"], fields)
+            updated.append({"code": code, "changes": fields})
+        except Exception as e:
+            errors.append({"code": code, "error": str(e)})
+
+    return {"ok": True, "updated": updated, "n_updated": len(updated),
+            "unchanged": len(unchanged), "not_found": not_found,
+            "errors": errors}
 
 
 @app.get("/api/inventory/items")
