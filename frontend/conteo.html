@@ -60,6 +60,10 @@
 
   footer{margin-top:18px;text-align:center;color:var(--muted);font-size:12px}
   .hint{background:#EAF7FF;border:1px solid #BDE6FA;color:#0F5D7A;border-radius:11px;padding:10px 14px;font-size:12.5px;margin-bottom:16px}
+  .sync{font-size:12px;font-weight:600;padding:9px 13px;border-radius:999px;border:1px solid var(--line);background:var(--card);color:var(--muted);box-shadow:var(--shadow);white-space:nowrap;align-self:center}
+  .sync.ok{color:var(--good);border-color:#BFE9D6;background:#F0FBF6}
+  .sync.saving{color:#9A6B00;border-color:#F2E2B0;background:#FFF8E8}
+  .sync.off{color:#B23B3B;border-color:#F2C9C9;background:#FDF1F1}
 
   @media(max-width:680px){
     .stats{grid-template-columns:repeat(2,1fr)}
@@ -89,16 +93,18 @@
     </div>
   </header>
 
-  <div class="hint">💡 Escribe las unidades contadas en cada bodega. Los totales se calculan solos y <b>tu avance se guarda automáticamente</b> en este navegador. Usa <b>Exportar CSV</b> para abrir en Excel o <b>Imprimir</b> para PDF.</div>
+  <div class="hint">💡 Escribe las unidades contadas en cada bodega. Los totales se calculan solos y <b>tu avance se guarda automáticamente y se comparte con todo el equipo</b> (Bogotá y Yopal ven lo mismo). Usa <b>Exportar CSV</b> para abrir en Excel o <b>Imprimir</b> para PDF.</div>
 
   <div class="toolbar">
     <div class="search">
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#1F3A5F" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4-4"/></svg>
       <input id="q" type="text" placeholder="Buscar SKU…">
     </div>
+    <button class="btn btn-ghost" onclick="refreshFromServer()">🔄 Actualizar</button>
     <button class="btn btn-ghost" onclick="exportCSV()">⬇ Exportar CSV</button>
     <button class="btn btn-ghost" onclick="window.print()">🖨 Imprimir / PDF</button>
     <button class="btn btn-ghost" onclick="resetAll()">↺ Reiniciar</button>
+    <span id="sync" class="sync">☁ —</span>
   </div>
 
   <div class="stats">
@@ -118,7 +124,7 @@
     </table>
   </div>
 
-  <footer>Generado para BOUN · Las fotos se cargan desde MercadoLibre. Hoja interactiva — guarda tu avance localmente.</footer>
+  <footer>Generado para BOUN · Las fotos se cargan desde MercadoLibre. Hoja interactiva — el avance se guarda en la nube y lo ve todo el equipo.</footer>
 </div>
 
 <script>
@@ -201,8 +207,10 @@ const DATA = [
 ];
 
 const KEY="boun_conteo_v1";
+const API="/api/conteo";
 let store = {};
 try{ store = JSON.parse(localStorage.getItem(KEY)||"{}"); }catch(e){ store={}; }
+let userEdited=false, pushTimer=null;
 
 const body=document.getElementById("body");
 const esc=s=>s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/"/g,"&quot;");
@@ -242,23 +250,79 @@ function recalc(){
   document.getElementById("sDone").textContent=done;
 }
 
-function save(){
-  store={};
+function collect(){
+  const o={};
   DATA.forEach((d,i)=>{
     const tr=document.getElementById("r"+i);
     const b=tr.querySelector('[data-f=b]').value;
     const y=tr.querySelector('[data-f=y]').value;
-    if(b!==""||y!=="") store[d[0]]={b,y};
+    if(b!==""||y!=="") o[d[0]]={b,y};
   });
-  store.__meta={fecha:document.getElementById("fecha").value,resp:document.getElementById("resp").value};
-  localStorage.setItem(KEY,JSON.stringify(store));
+  o.__meta={fecha:document.getElementById("fecha").value,resp:document.getElementById("resp").value,ts:new Date().toISOString()};
+  return o;
 }
 
-body.addEventListener("input",e=>{ if(e.target.classList.contains("cnt")){ recalc(); save(); }});
+function setSync(state,txt){
+  const el=document.getElementById("sync"); if(!el)return;
+  el.className="sync "+state; el.textContent=txt;
+}
 
-// restore meta
+function save(){
+  store=collect();
+  localStorage.setItem(KEY,JSON.stringify(store));
+  setSync("saving","☁ Guardando…");
+  clearTimeout(pushTimer);
+  pushTimer=setTimeout(pushToServer,800);
+}
+
+async function pushToServer(){
+  try{
+    const r=await fetch(API,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(store)});
+    if(!r.ok) throw 0;
+    const m=store.__meta||{};
+    setSync("ok","☁ Guardado en la nube"+(m.resp?" · "+m.resp:""));
+  }catch(e){ setSync("off","⚠ Sin conexión — guardado local"); }
+}
+
+function applyStore(s){
+  store=s||{};
+  DATA.forEach((d,i)=>{
+    const tr=document.getElementById("r"+i); const v=store[d[0]]||{};
+    tr.querySelector('[data-f=b]').value=v.b??"";
+    tr.querySelector('[data-f=y]').value=v.y??"";
+  });
+  if(store.__meta){ document.getElementById("fecha").value=store.__meta.fecha||""; document.getElementById("resp").value=store.__meta.resp||""; }
+  recalc();
+}
+
+async function loadFromServer(){
+  setSync("saving","☁ Cargando…");
+  try{
+    const r=await fetch(API,{cache:"no-store"});
+    if(!r.ok) throw 0;
+    const srv=await r.json();
+    const srvHas=Object.keys(srv).some(k=>k!=="__meta");
+    const locHas=Object.keys(store).some(k=>k!=="__meta");
+    if(userEdited){
+      // el usuario ya empezó a escribir: sus datos mandan, se subirán solos
+    } else if(srvHas){
+      applyStore(srv); localStorage.setItem(KEY,JSON.stringify(srv));
+    } else if(locHas){
+      // servidor vacío pero hay datos locales (p.ej. Edgar): migrarlos a la nube
+      await pushToServer(); return;
+    }
+    const m=store.__meta||{};
+    setSync("ok","☁ Guardado en la nube"+(m.resp?" · "+m.resp:""));
+  }catch(e){ setSync("off","⚠ Sin conexión — guardado local"); }
+}
+
+async function refreshFromServer(){ userEdited=false; await loadFromServer(); }
+
+body.addEventListener("input",e=>{ if(e.target.classList.contains("cnt")){ userEdited=true; recalc(); save(); }});
+
+// restore meta (cache local)
 if(store.__meta){ document.getElementById("fecha").value=store.__meta.fecha||""; document.getElementById("resp").value=store.__meta.resp||""; }
-["fecha","resp"].forEach(id=>document.getElementById(id).addEventListener("input",save));
+["fecha","resp"].forEach(id=>document.getElementById(id).addEventListener("input",()=>{userEdited=true;save();}));
 
 // search
 document.getElementById("q").addEventListener("input",e=>{
@@ -284,14 +348,19 @@ function exportCSV(){
 }
 
 function resetAll(){
-  if(!confirm("¿Borrar todo el conteo ingresado?"))return;
+  if(!confirm("¿Borrar todo el conteo ingresado? Esto también lo borra para el resto del equipo."))return;
   localStorage.removeItem(KEY); store={};
   document.querySelectorAll("input.cnt").forEach(i=>i.value="");
   document.getElementById("fecha").value=""; document.getElementById("resp").value="";
   recalc();
+  setSync("saving","☁ Reiniciando…");
+  fetch(API,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({})})
+    .then(()=>setSync("ok","☁ Conteo reiniciado"))
+    .catch(()=>setSync("off","⚠ Sin conexión"));
 }
 
 recalc();
+loadFromServer();
 </script>
 </body>
 </html>
