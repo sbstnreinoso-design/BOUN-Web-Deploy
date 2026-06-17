@@ -110,9 +110,12 @@ async function renderInventory(){
   v.innerHTML=`<div class="row-between"><div>
       <div class="page-title">Inventario</div>
       <div class="page-sub">Productos físicos con su código y publicaciones de MercadoLibre.</div>
-    </div><div style="display:flex;gap:8px">
-      <button class="btn-ghost" onclick="exportInv()">⬇ Exportar inventario</button>
+    </div><div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn-ghost" onclick="exportInv()">⬇ CSV</button>
+      <button class="btn-ghost" onclick="downloadInvXlsx(this)">⬇ Excel</button>
+      ${isAdmin()?`<button class="btn-ghost" onclick="uploadInvXlsx()">⬆ Subir Excel</button>`:""}
       <button class="btn-acc" onclick="newProduct()">＋ Nuevo producto</button></div></div>
+    <input type="file" id="invXlsxInput" accept=".xlsx" style="display:none" onchange="doUploadInvXlsx(this)">
     <div id="invKpis" class="kpis"></div>
     <div id="invList"><div class="loading"><span class="spinner"></span> Cargando inventario…</div></div>`;
   try{ const cr=await api("/combos"); COMBOS=cr.combos||{}; }catch(e){ COMBOS={}; }
@@ -156,6 +159,83 @@ function exportInv(){
 }
 function prodUnits(p){ return (+p.qty_bogota||0)+(+p.qty_yopal||0)+(+p.qty_full||0)+(+p.qty_transit||0); }
 function prodCostUnit(p){ return (+p.cost_product||0)+(+p.cost_shipping||0); }
+
+// ── Inventario · Excel (descargar / subir) ──────────────────────────────────
+async function downloadInvXlsx(btn){
+  const old = btn ? btn.textContent : "";
+  if(btn){ btn.textContent="⏳ Generando…"; btn.style.pointerEvents="none"; }
+  try{
+    const r = await fetch("/api/inventory/export.xlsx",
+      { headers: TOKEN ? {"Authorization":"Bearer "+TOKEN} : {} });
+    if(!r.ok){
+      let m="Error "+r.status; try{ m=(await r.json()).detail||m; }catch(e){}
+      throw new Error(m);
+    }
+    const blob = await r.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "BOUN_inventario_"+new Date().toISOString().slice(0,10)+".xlsx";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(a.href), 4000);
+  }catch(e){ alert("No se pudo descargar el Excel: "+e.message); }
+  finally{ if(btn){ btn.textContent=old; btn.style.pointerEvents=""; } }
+}
+
+function uploadInvXlsx(){
+  if(!isAdmin()){ alert("Solo el administrador puede subir el inventario."); return; }
+  document.getElementById("invXlsxInput").click();
+}
+
+async function doUploadInvXlsx(input){
+  const f = input.files && input.files[0];
+  input.value = "";                       // permite re-subir el mismo archivo
+  if(!f) return;
+  if(!confirm("Vas a actualizar el inventario con «"+f.name+"».\n\n"+
+    "Se actualizan por código: Producto, costos y bodegas (Bogotá/Yopal/En tránsito). "+
+    "Las publicaciones asignadas NO se tocan.\n\n⚠ Las bodegas se REEMPLAZAN con el "+
+    "valor del Excel; si el motor descontó ventas después de tu descarga, vuelve a "+
+    "descargar antes de subir. ¿Continuar?")) return;
+  const list = document.getElementById("invList");
+  if(list) list.innerHTML = `<div class="loading"><span class="spinner"></span> Procesando Excel…</div>`;
+  try{
+    const fd = new FormData(); fd.append("file", f, f.name);
+    const r = await fetch("/api/inventory/import",
+      { method:"POST", headers: TOKEN ? {"Authorization":"Bearer "+TOKEN} : {}, body: fd });
+    const j = await r.json().catch(()=>({}));
+    if(!r.ok) throw new Error(j.detail || ("Error "+r.status));
+    INV = await api("/inventory"); drawInventory();
+    showImportSummary(j);
+  }catch(e){
+    if(list) list.innerHTML = `<div class="red">${e.message}</div>`;
+    alert("No se pudo subir el Excel: "+e.message);
+    try{ INV = await api("/inventory"); drawInventory(); }catch(_){}
+  }
+}
+
+function showImportSummary(j){
+  const upd = j.updated || [];
+  const rowsHtml = upd.length ? upd.map(u=>{
+    const ch = Object.entries(u.changes||{}).map(([k,v])=>esc(k)+": "+v).join(", ");
+    return `<tr><td style="padding:4px 8px"><b>${esc(u.code)}</b></td><td style="padding:4px 8px">${esc(ch)}</td></tr>`;
+  }).join("") : `<tr><td colspan="2" style="padding:8px;color:#9a948a">Ningún producto cambió.</td></tr>`;
+  const nf = (j.not_found||[]).length;
+  const er = (j.errors||[]).length;
+  openModal(`<h3>Inventario actualizado</h3>
+    <div class="page-sub" style="margin-bottom:10px">
+      ${j.n_updated} actualizado${j.n_updated!==1?"s":""} ·
+      ${j.unchanged} sin cambios ·
+      ${nf} código${nf!==1?"s":""} no encontrado${nf!==1?"s":""} ·
+      ${er} error${er!==1?"es":""}.</div>
+    <div style="max-height:360px;overflow:auto;border:1px solid #3A3A3D;border-radius:8px">
+      <table style="width:100%;border-collapse:collapse;font-size:13px">
+        <thead><tr style="background:#252427;color:#F2ECE0">
+          <th style="padding:6px 8px;text-align:left">Código</th>
+          <th style="padding:6px 8px;text-align:left">Cambios</th></tr></thead>
+        <tbody>${rowsHtml}</tbody></table></div>
+    ${nf?`<div class="page-sub" style="margin-top:8px">No encontrados: ${esc((j.not_found||[]).join(", "))}</div>`:""}
+    ${er?`<div class="red" style="margin-top:8px">Errores: ${esc((j.errors||[]).map(x=>x.code+" ("+x.error+")").join("; "))}</div>`:""}
+    <div style="margin-top:14px;text-align:right"><button class="btn-acc" onclick="closeModal()">Listo</button></div>`);
+}
 
 function drawKpis(){
   let tCost=0,tProf=0,tSale=0,roas=[],acos=[],marg=[];
