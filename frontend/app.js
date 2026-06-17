@@ -58,7 +58,6 @@ const NAV=[
   ["cerebro","🧠  Cerebro"],
   ["ventas","↗  Ventas"],
   ["inventory","▦  Inventario"],
-  ["publicador","🏷  Publicador SEO"],
   ["cola","📦  Pendientes de bodega"],
   ["my_products","★  Mis Productos"],
   ["products","▤  Productos para comprar"],
@@ -89,23 +88,11 @@ function go(id){
   else if(id==="cerebro") renderCerebro();
   else if(id==="ventas") renderSales();
   else if(id==="inventory") renderInventory();
-  else if(id==="publicador") renderPublicador();
   else if(id==="cola") renderCola();
   else if(id==="my_products") renderMyProducts();
   else if(id==="products") renderProducts();
   else if(id==="settings") renderSettings();
   else if(id==="collaborators") renderCollaborators();
-}
-
-// ── PUBLICADOR SEO (módulo embebido) ─────────────────────────────────────────
-function renderPublicador(){
-  const v=document.getElementById("view");
-  v.innerHTML=`<div class="row-between"><div>
-      <div class="page-title">Publicador SEO Multicanal</div>
-      <div class="page-sub">Genera publicaciones profesionales para MercadoLibre y Falabella desde un link de competencia.</div>
-    </div><div><a class="btn-ghost" href="/publicador.html" target="_blank" rel="noopener">↗ Abrir en pestaña</a></div></div>
-    <iframe src="/publicador.html" title="Publicador SEO"
-      style="width:100%;height:calc(100vh - 130px);min-height:600px;border:1px solid #3a3940;border-radius:14px;display:block;background:#252427;margin-top:10px"></iframe>`;
 }
 
 // ── Modal ───────────────────────────────────────────────────────────────────
