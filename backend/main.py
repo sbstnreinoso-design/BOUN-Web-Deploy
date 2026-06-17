@@ -14,7 +14,7 @@ import secrets
 from datetime import datetime, timezone, timedelta
 import hmac as _hmac
 import hashlib as _hashlib
-from fastapi import FastAPI, HTTPException, Depends, Header, Request, UploadFile, File
+from fastapi import FastAPI, HTTPException, Depends, Header, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import (FileResponse, JSONResponse, Response,
                                RedirectResponse, HTMLResponse, StreamingResponse)
@@ -404,7 +404,7 @@ def inv_export_xlsx(k: str = "", authorization: Optional[str] = Header(None)):
 
 
 @app.post("/api/inventory/import")
-async def inv_import_xlsx(file: UploadFile = File(...),
+async def inv_import_xlsx(request: Request,
                           user: dict = Depends(_admin)):
     """Sube un Excel (el mismo que entrega export.xlsx) y actualiza los
     productos existentes emparejando por la columna 'Código'. Solo modifica
@@ -417,7 +417,7 @@ async def inv_import_xlsx(file: UploadFile = File(...),
         from openpyxl import load_workbook
     except Exception:
         raise HTTPException(500, "Falta la librería openpyxl en el servidor.")
-    raw = await file.read()
+    raw = await request.body()
     if not raw:
         raise HTTPException(400, "Archivo vacío.")
     try:
