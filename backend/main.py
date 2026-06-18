@@ -2253,22 +2253,49 @@ def _ml_active_pubs(product_id: int, include_paused_oos: bool = False) -> tuple:
         iid = l.get("ml_item_id")
         if not iid:
             continue
-        r = _ml_request("GET", "/items/%s?attributes=id,status,sub_status,shipping" % iid)
-        st = lg = None; sub = []
+        r = _ml_request("GET", "/items/%s?attributes=id,status,sub_status,"
+                        "shipping,catalog_listing,user_product_id" % iid)
+        st = lg = None; sub = []; up = ""; cat = False
         if r is not None and r.status_code == 200:
             jd = r.json(); st = jd.get("status")
             lg = (jd.get("shipping") or {}).get("logistic_type")
             sub = jd.get("sub_status") or []
+            up = jd.get("user_product_id") or ""
+            cat = bool(jd.get("catalog_listing"))
         if lg == "fulfillment":
             excl.append({"item_id": iid, "motivo": "full"})
         elif st == "active":
-            activas.append({"key": iid, "ventas": int(l.get("ml_sold60") or 0)})
+            activas.append({"key": iid, "ventas": int(l.get("ml_sold60") or 0),
+                            "upid": up, "catalog": cat})
         elif include_paused_oos and st == "paused" and "out_of_stock" in sub:
             # agotada → entra al reparto para que el escritor la reactive
-            activas.append({"key": iid, "ventas": int(l.get("ml_sold60") or 0)})
+            activas.append({"key": iid, "ventas": int(l.get("ml_sold60") or 0),
+                            "upid": up, "catalog": cat})
         else:
             excl.append({"item_id": iid, "motivo": st or "?"})
     return activas, excl
+
+
+def _reparto_por_userproduct(disp: int, pubs: list) -> dict:
+    """Reparte `disp` entre publicaciones ML AGRUPANDO por user_product: las que
+    comparten upid comparten stock, así que cuentan como UN solo grupo y se
+    escriben UNA vez. Por grupo elige un representante ESCRIBIBLE (no-catálogo,
+    mayor ventas) para mandarle el write por /items; ML propaga al resto del upid
+    (incluida la de catálogo). Los grupos solo-catálogo igual reciben un rep
+    (su write se saltará/bloqueará y se reporta)."""
+    import sync as _sync
+    groups = {}
+    for p in pubs:
+        gk = p.get("upid") or ("__solo__:" + str(p.get("key")))
+        groups.setdefault(gk, []).append(p)
+    reps = []
+    for gk, members in groups.items():
+        escribibles = [x for x in members if not x.get("catalog")]
+        pool = escribibles or members
+        rep = max(pool, key=lambda x: int(x.get("ventas") or 0))
+        reps.append({"key": rep["key"],
+                     "ventas": sum(int(x.get("ventas") or 0) for x in members)})
+    return _sync.reparto(disp, reps)
 
 
 def _compute_plan(codigo: str, disponible: int, reactivate: bool = False) -> dict:
@@ -2291,7 +2318,7 @@ def _compute_plan(codigo: str, disponible: int, reactivate: bool = False) -> dic
     # MercadoLibre (usa disp_ml: solo Bogotá si la regla temporal está activa)
     if pid:
         ml_act, ml_excl = _ml_active_pubs(pid, include_paused_oos=reactivate)
-        out["mercadolibre"] = {"reparto": _sync.reparto(disp_ml, ml_act),
+        out["mercadolibre"] = {"reparto": _reparto_por_userproduct(disp_ml, ml_act),
                                "excluidas": ml_excl}
     else:
         out["mercadolibre"] = {"reparto": {}, "excluidas": []}
