@@ -292,3 +292,27 @@ tr.mpdetail td{background:var(--surf);padding:8px 14px}
 .cb-alert.w .cb-sev{background:rgba(224,162,60,.16);color:var(--amber)}
 .cb-alert p{color:var(--muted);font-size:12px;line-height:1.5}
 @media(max-width:820px){.cb-kpis{grid-template-columns:repeat(2,1fr)}.cb-clockbox{text-align:left}}
+
+
+/* ── Indicador flotante global de escaneo ─────────────────────────────────── */
+.scan-fab{position:fixed;right:22px;bottom:22px;z-index:9999;display:none;
+  align-items:center;gap:13px;background:var(--card);border:1px solid var(--border);
+  border-left:4px solid var(--amber);border-radius:14px;padding:13px 15px;
+  box-shadow:0 12px 38px rgba(0,0,0,.5);cursor:pointer;min-width:248px;max-width:340px;
+  animation:sfIn .28s cubic-bezier(.2,.8,.2,1)}
+.scan-fab.show{display:flex}
+.scan-fab:hover{border-color:var(--amber);transform:translateY(-1px)}
+.scan-fab.apply{border-left-color:var(--green)}
+.sf-spin{width:19px;height:19px;flex:0 0 auto;border:3px solid rgba(245,241,234,.16);
+  border-top-color:var(--amber);border-radius:50%;animation:sfSpin .8s linear infinite}
+.scan-fab.apply .sf-spin{border-top-color:var(--green)}
+.sf-body{flex:1;min-width:0}
+.sf-txt{font-size:12.5px;color:var(--text);font-weight:600;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+.sf-bar{height:6px;margin-top:8px;background:var(--bg);border-radius:5px;overflow:hidden}
+.sf-bar-fill{height:100%;width:0;background:var(--amber);border-radius:5px;
+  transition:width .45s ease}
+.scan-fab.apply .sf-bar-fill{background:var(--green)}
+.sf-arrow{flex:0 0 auto;color:var(--dim);font-size:22px;line-height:1;font-weight:700}
+@keyframes sfSpin{to{transform:rotate(360deg)}}
+@keyframes sfIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}

@@ -74,6 +74,42 @@ function showApp(){
     `<a href="#" data-nav="${id}" onclick="go('${id}');return false">${t}<span class="navbadge" id="badge-${id}"></span></a>`).join("");
   go("dashboard");
   refreshColaBadge();
+  scanGlobalPoll();
+}
+// ── Indicador flotante global de escaneo (badge fijo, cualquier sección) ─────
+let SCAN_FAB_TIMER=null;
+async function scanGlobalPoll(){
+  // Sondea el estado del escaneo de reconciliación y muestra/oculta el badge.
+  // Lo usa cualquier sección: el escaneo puede haberlo lanzado el usuario o una
+  // tarea programada. No usa api() para no forzar logout ante un 401 transitorio.
+  try{
+    const r=await fetch("/api/sync/scan-status",
+      {headers: TOKEN?{"Authorization":"Bearer "+TOKEN}:{}});
+    if(r.ok){
+      const s=await r.json();
+      scanFabRender(s);
+      const running = s && s.status==="running";
+      clearTimeout(SCAN_FAB_TIMER);
+      SCAN_FAB_TIMER=setTimeout(scanGlobalPoll, running?2500:9000);
+      return;
+    }
+  }catch(e){}
+  clearTimeout(SCAN_FAB_TIMER);
+  SCAN_FAB_TIMER=setTimeout(scanGlobalPoll, 12000);
+}
+function scanFabRender(s){
+  const fab=document.getElementById("scanFab");
+  if(!fab) return;
+  if(s && s.status==="running"){
+    const done=s.done||0, total=s.total||0, pct=total?Math.round(done/total*100):0;
+    const verbo = s.mode==="apply" ? "Aplicando stock" : "Escaneando inventario";
+    const t=fab.querySelector(".sf-txt"); if(t) t.innerHTML=verbo+" · <b>"+done+"/"+total+"</b> · "+pct+"%";
+    const bf=fab.querySelector(".sf-bar-fill"); if(bf) bf.style.width=pct+"%";
+    fab.classList.toggle("apply", s.mode==="apply");
+    fab.classList.add("show");
+  } else {
+    fab.classList.remove("show");
+  }
 }
 async function refreshColaBadge(){
   try{

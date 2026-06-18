@@ -43,6 +43,16 @@
   <div id="modal" class="modal"></div>
 </div>
 
+<!-- Indicador flotante global de escaneo (visible desde cualquier sección) -->
+<div id="scanFab" class="scan-fab" onclick="go('settings')" title="Ir al escaneo de reconciliación">
+  <span class="sf-spin"></span>
+  <div class="sf-body">
+    <div class="sf-txt">Escaneo en curso…</div>
+    <div class="sf-bar"><div class="sf-bar-fill"></div></div>
+  </div>
+  <span class="sf-arrow">›</span>
+</div>
+
 <script src="/app.js"></script>
 </body>
 </html>
