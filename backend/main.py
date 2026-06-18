@@ -1705,20 +1705,23 @@ def _ml_guard(key: str):
     return None
 
 
-def _ml_request(method: str, path: str, json_body=None, timeout: int = 20):
+def _ml_request(method: str, path: str, json_body=None, timeout: int = 20,
+                headers=None):
     """Petición a la API de ML con el token del backend; si responde 401,
-    refresca el token y reintenta una vez. Devuelve el Response o None."""
+    refresca el token y reintenta una vez. `headers` mergea headers extra
+    (p. ej. x-version para /user-products/.../stock). Devuelve el Response o None."""
     from ml_scraper import _ml_session_auth, _try_refresh, ML_API
     s, _uid = _ml_session_auth()
     if not s:
         return None
     url = ML_API + path
-    r = s.request(method, url, json=json_body, timeout=timeout)
+    r = s.request(method, url, json=json_body, timeout=timeout, headers=headers)
     if r.status_code == 401:
         tok = _try_refresh()
         if tok:
             s.headers["Authorization"] = "Bearer " + tok
-            r = s.request(method, url, json=json_body, timeout=timeout)
+            r = s.request(method, url, json=json_body, timeout=timeout,
+                          headers=headers)
     return r
 
 
@@ -1864,7 +1867,7 @@ def _ml_set_stock_one(item_id: str, cantidad: int, dry: bool = False,
             return {"ok": False, "error": "bad_request", "item_id": item_id}
         r = _ml_request(
             "GET", "/items/%s?attributes=id,status,sub_status,available_quantity,"
-                   "variations,shipping,catalog_listing" % item_id)
+                   "variations,shipping,catalog_listing,user_product_id" % item_id)
         if r is None:
             return {"ok": False, "error": "ml_not_connected", "item_id": item_id}
         if r.status_code != 200:
@@ -1879,9 +1882,19 @@ def _ml_set_stock_one(item_id: str, cantidad: int, dry: bool = False,
         if logistic == "fulfillment":
             return {"ok": False, "skip": True, "reason": "full",
                     "item_id": item_id}
-        if status == "closed" or item.get("catalog_listing") is True:
-            return {"ok": False, "skip": True, "reason": "closed/catalog",
+        if status == "closed":
+            return {"ok": False, "skip": True, "reason": "closed",
                     "item_id": item_id}
+        if item.get("catalog_listing") is True:
+            # Catálogo: la API /items rechaza stock (not_modifiable). Se escribe
+            # por user_product (selling_address); ML lo propaga a TODAS las
+            # publicaciones ligadas a ese upid (clásica sincronizada + catálogo).
+            upid = item.get("user_product_id") or ""
+            if not upid:
+                return {"ok": False, "skip": True, "reason": "catalog_no_upid",
+                        "item_id": item_id}
+            return _ml_up_stock_one(upid, c, dry=dry, max_delta=max_delta,
+                                    item_id=item_id, reactivate=reactivate)
         # Pausadas: solo se tocan si reactivate=True Y están pausadas por falta de
         # stock Y hay algo que cargar. Las pausadas a propósito quedan intactas.
         reactivar = False
@@ -1933,6 +1946,99 @@ def _ml_set_stock_one(item_id: str, cantidad: int, dry: bool = False,
                 "item_id": item_id}
     except Exception as e:
         return {"ok": False, "error": str(e)[:200], "item_id": item_id}
+
+
+def _ml_up_stock_one(upid, c, dry=False, max_delta=None, item_id="",
+                     reactivate=True):
+    """Stock de depósito vendedor (selling_address) de un user_product vía API
+    oficial. GET /user-products/{upid}/stock (lee x-version + actual); PUT a
+    /user-products/{upid}/stock/type/selling_address con {"quantity": c} y el
+    x-version. ML propaga a todas las publicaciones del upid."""
+    try:
+        c = int(c)
+    except (ValueError, TypeError):
+        return {"ok": False, "error": "bad_request", "upid": upid}
+    g = _ml_request("GET", "/user-products/%s/stock" % upid)
+    if g is None:
+        return {"ok": False, "error": "ml_not_connected", "upid": upid}
+    if g.status_code != 200:
+        return {"ok": False, "error": (g.text or "")[:300],
+                "ml_status": g.status_code, "upid": upid, "reason": "up_get"}
+    xver = g.headers.get("x-version") or g.headers.get("X-Version") or ""
+    try:
+        data = g.json()
+    except Exception:
+        data = {}
+    actual = 0
+    for loc in (data.get("locations") or []):
+        if loc.get("type") == "selling_address":
+            actual = int(loc.get("quantity") or 0)
+            break
+    if max_delta is not None and abs(c - actual) > max_delta:
+        return {"ok": False, "skip": True, "reason": "delta_guard", "upid": upid,
+                "actual": actual, "target": c, "max_delta": max_delta,
+                "applied_to": "user_product", "item_id": item_id}
+    if dry:
+        return {"ok": True, "dry_run": True, "upid": upid, "item_id": item_id,
+                "set": c, "actual": actual, "x_version": xver,
+                "applied_to": "user_product"}
+    hdrs = {"x-version": str(xver)} if xver else None
+    body = {"quantity": c}
+    pr = _ml_request("PUT", "/user-products/%s/stock/type/selling_address" % upid,
+                     json_body=body, headers=hdrs)
+    if pr is None:
+        return {"ok": False, "error": "ml_not_connected", "upid": upid}
+    if pr.status_code in (200, 201, 204):
+        return {"ok": True, "upid": upid, "item_id": item_id, "set": c,
+                "actual": actual, "applied_to": "user_product",
+                "ml_status": pr.status_code}
+    return {"ok": False, "error": (pr.text or "")[:500],
+            "ml_status": pr.status_code, "upid": upid, "reason": "up_put",
+            "sent_body": body, "x_version": xver, "item_id": item_id}
+
+
+@app.get("/api/ml/up-stock")
+def ml_up_stock(key: str = "", upid: str = "", item_id: str = "",
+                cantidad: str = "", dry: str = "1"):
+    """DIAGNÓSTICO/escritura de stock por user_product (catálogo).
+    Sin `cantidad` → solo GET (stock + x-version). Con `cantidad`: dry=1 calcula;
+    dry=0 escribe."""
+    gg = _ml_guard(key)
+    if gg:
+        return gg
+    up = upid
+    if not up and item_id:
+        r = _ml_request("GET", "/items/%s?attributes=user_product_id,"
+                        "catalog_listing" % item_id)
+        if r is not None and r.status_code == 200:
+            up = (r.json() or {}).get("user_product_id") or ""
+    if not up:
+        return JSONResponse({"ok": False, "error": "missing upid/item_id"},
+                            status_code=400, headers=_EXPORT_CORS)
+    if cantidad == "":
+        s = _ml_request("GET", "/user-products/%s/stock" % up)
+        if s is None:
+            return JSONResponse({"ok": False, "error": "ml_not_connected"},
+                                status_code=502, headers=_EXPORT_CORS)
+        try:
+            body = s.json()
+        except Exception:
+            body = (s.text or "")[:1000]
+        return JSONResponse({"ok": s.status_code == 200,
+                             "ml_status": s.status_code,
+                             "x_version": s.headers.get("x-version"),
+                             "upid": up, "stock": body}, status_code=200,
+                            headers=_EXPORT_CORS)
+    try:
+        c = int(cantidad)
+        if c < 0:
+            raise ValueError()
+    except (ValueError, TypeError):
+        return JSONResponse({"ok": False, "error": "bad_request"},
+                            status_code=400, headers=_EXPORT_CORS)
+    res = _ml_up_stock_one(up, c, dry=(dry == "1"), item_id=item_id)
+    code = 200 if (res.get("ok") or res.get("skip")) else 502
+    return JSONResponse(res, status_code=code, headers=_EXPORT_CORS)
 
 
 @app.get("/api/ml/set-stock")
