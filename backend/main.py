@@ -2057,7 +2057,7 @@ def ml_up_stock(key: str = "", upid: str = "", item_id: str = "",
     if via == "items" and item_id:
         # Probar escribir por /items (ruta de publicación normal). Para no-catálogo
         # ML acepta available_quantity; ML propaga al catálogo sincronizado.
-        res = _ml_set_stock_one(item_id, c, dry=(dry == "1"))
+        res = _ml_set_stock_one(item_id, c, dry=(dry == "1"), reactivate=True)
         res["item_info"] = item_info
         code = 200 if (res.get("ok") or res.get("skip")) else 502
         return JSONResponse(res, status_code=code, headers=_EXPORT_CORS)
