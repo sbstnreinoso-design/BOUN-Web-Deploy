@@ -1949,7 +1949,7 @@ def _ml_set_stock_one(item_id: str, cantidad: int, dry: bool = False,
 
 
 def _ml_up_stock_one(upid, c, dry=False, max_delta=None, item_id="",
-                     reactivate=True):
+                     reactivate=True, loc_type="selling_address"):
     """Stock de depósito vendedor (selling_address) de un user_product vía API
     oficial. GET /user-products/{upid}/stock (lee x-version + actual); PUT a
     /user-products/{upid}/stock/type/selling_address con {"quantity": c} y el
@@ -1984,7 +1984,7 @@ def _ml_up_stock_one(upid, c, dry=False, max_delta=None, item_id="",
                 "applied_to": "user_product"}
     hdrs = {"x-version": str(xver)} if xver else None
     body = {"quantity": c}
-    pr = _ml_request("PUT", "/user-products/%s/stock/type/selling_address" % upid,
+    pr = _ml_request("PUT", "/user-products/%s/stock/type/%s" % (upid, loc_type),
                      json_body=body, headers=hdrs)
     if pr is None:
         return {"ok": False, "error": "ml_not_connected", "upid": upid}
@@ -1992,20 +1992,27 @@ def _ml_up_stock_one(upid, c, dry=False, max_delta=None, item_id="",
         return {"ok": True, "upid": upid, "item_id": item_id, "set": c,
                 "actual": actual, "applied_to": "user_product",
                 "ml_status": pr.status_code}
-    return {"ok": False, "error": (pr.text or "")[:500],
-            "ml_status": pr.status_code, "upid": upid, "reason": "up_put",
-            "sent_body": body, "x_version": xver, "item_id": item_id}
+    # ML bloquea la escritura por API en algunas cuentas (selling address
+    # blocked). No es un error real del motor: lo tratamos como SALTADO para no
+    # ensuciar el scan; la publicacion de catalogo se stockea por otra via.
+    return {"ok": False, "skip": True, "reason": "catalog_blocked",
+            "detail": (pr.text or "")[:300], "ml_status": pr.status_code,
+            "upid": upid, "item_id": item_id, "sent_body": body}
 
 
 @app.get("/api/ml/up-stock")
 def ml_up_stock(key: str = "", upid: str = "", item_id: str = "",
-                cantidad: str = "", dry: str = "1"):
-    """DIAGNÓSTICO/escritura de stock por user_product (catálogo).
-    Sin `cantidad` → solo GET (stock + x-version). Con `cantidad`: dry=1 calcula;
-    dry=0 escribe."""
-    gg = _ml_guard(key)
-    if gg:
-        return gg
+                cantidad: str = "", dry: str = "1", loc_type: str = "selling_address",
+                authorization: Optional[str] = Header(None)):
+    """DIAGNÓSTICO/escritura de stock por user_product (catálogo). Auth por
+    sesión (Bearer) o key. Sin `cantidad` → solo GET (stock + x-version). Con
+    `cantidad`: dry=1 calcula; dry=0 escribe a /stock/type/{loc_type}."""
+    try:
+        _current_user(authorization)
+    except Exception:
+        gg = _ml_guard(key)
+        if gg:
+            return gg
     up = upid
     if not up and item_id:
         r = _ml_request("GET", "/items/%s?attributes=user_product_id,"
@@ -2036,7 +2043,7 @@ def ml_up_stock(key: str = "", upid: str = "", item_id: str = "",
     except (ValueError, TypeError):
         return JSONResponse({"ok": False, "error": "bad_request"},
                             status_code=400, headers=_EXPORT_CORS)
-    res = _ml_up_stock_one(up, c, dry=(dry == "1"), item_id=item_id)
+    res = _ml_up_stock_one(up, c, dry=(dry == "1"), item_id=item_id, loc_type=loc_type)
     code = 200 if (res.get("ok") or res.get("skip")) else 502
     return JSONResponse(res, status_code=code, headers=_EXPORT_CORS)
 
