@@ -2003,7 +2003,7 @@ def _ml_up_stock_one(upid, c, dry=False, max_delta=None, item_id="",
 @app.get("/api/ml/up-stock")
 def ml_up_stock(key: str = "", upid: str = "", item_id: str = "",
                 cantidad: str = "", dry: str = "1", loc_type: str = "selling_address",
-                authorization: Optional[str] = Header(None)):
+                via: str = "", authorization: Optional[str] = Header(None)):
     """DIAGNÓSTICO/escritura de stock por user_product (catálogo). Auth por
     sesión (Bearer) o key. Sin `cantidad` → solo GET (stock + x-version). Con
     `cantidad`: dry=1 calcula; dry=0 escribe a /stock/type/{loc_type}."""
@@ -2022,6 +2022,17 @@ def ml_up_stock(key: str = "", upid: str = "", item_id: str = "",
     if not up:
         return JSONResponse({"ok": False, "error": "missing upid/item_id"},
                             status_code=400, headers=_EXPORT_CORS)
+    # Info del item (catalog_listing/logística) para diagnóstico
+    item_info = {}
+    if item_id:
+        ri = _ml_request("GET", "/items/%s?attributes=id,status,catalog_listing,"
+                         "user_product_id,shipping" % item_id)
+        if ri is not None and ri.status_code == 200:
+            ij = ri.json() or {}
+            item_info = {"catalog_listing": ij.get("catalog_listing"),
+                         "status": ij.get("status"),
+                         "user_product_id": ij.get("user_product_id"),
+                         "logistic": (ij.get("shipping") or {}).get("logistic_type")}
     if cantidad == "":
         s = _ml_request("GET", "/user-products/%s/stock" % up)
         if s is None:
@@ -2034,8 +2045,8 @@ def ml_up_stock(key: str = "", upid: str = "", item_id: str = "",
         return JSONResponse({"ok": s.status_code == 200,
                              "ml_status": s.status_code,
                              "x_version": s.headers.get("x-version"),
-                             "upid": up, "stock": body}, status_code=200,
-                            headers=_EXPORT_CORS)
+                             "upid": up, "item": item_info, "stock": body},
+                            status_code=200, headers=_EXPORT_CORS)
     try:
         c = int(cantidad)
         if c < 0:
@@ -2043,7 +2054,15 @@ def ml_up_stock(key: str = "", upid: str = "", item_id: str = "",
     except (ValueError, TypeError):
         return JSONResponse({"ok": False, "error": "bad_request"},
                             status_code=400, headers=_EXPORT_CORS)
+    if via == "items" and item_id:
+        # Probar escribir por /items (ruta de publicación normal). Para no-catálogo
+        # ML acepta available_quantity; ML propaga al catálogo sincronizado.
+        res = _ml_set_stock_one(item_id, c, dry=(dry == "1"))
+        res["item_info"] = item_info
+        code = 200 if (res.get("ok") or res.get("skip")) else 502
+        return JSONResponse(res, status_code=code, headers=_EXPORT_CORS)
     res = _ml_up_stock_one(up, c, dry=(dry == "1"), item_id=item_id, loc_type=loc_type)
+    res["item_info"] = item_info
     code = 200 if (res.get("ok") or res.get("skip")) else 502
     return JSONResponse(res, status_code=code, headers=_EXPORT_CORS)
 
