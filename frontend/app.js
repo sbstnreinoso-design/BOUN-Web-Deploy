@@ -1449,13 +1449,13 @@ async function scanPoll(){
   if(s.status==="running"){
     SCAN_ACTIVE=true; scanSetBusy(true);
     if(out) out.innerHTML=scanBar(s.done,s.total,s.mode);
-    setTimeout(scanPoll,1500); return;
+    setTimeout(scanPoll,3000); return;
   }
   // El thread del servidor tarda un instante en marcar "running" tras arrancar:
   // si lo acabamos de iniciar y aún figura idle, seguimos mostrando la carga.
   if(s.status==="idle" && SCAN_ACTIVE){
     if(out) out.innerHTML=scanLoadingHTML("Iniciando escaneo…");
-    setTimeout(scanPoll,1000); return;
+    setTimeout(scanPoll,2000); return;
   }
   SCAN_ACTIVE=false; scanSetBusy(false);
   if(!out) return;
