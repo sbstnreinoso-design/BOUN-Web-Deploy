@@ -3639,8 +3639,21 @@ def sync_scan_start(data: ScanStartIn, user: dict = Depends(_admin)):
 @app.get("/api/sync/scan-status")
 def sync_scan_status(user: dict = Depends(_admin)):
     """Estado y avance del último escaneo (admin). Para no inflar la respuesta,
-    devuelve solo las filas con cambio o incidencia (omite las 'sin_cambio')."""
+    devuelve solo las filas con cambio o incidencia (omite las 'sin_cambio').
+
+    Mientras el escaneo está corriendo NO se devuelven las filas: el front solo
+    pinta la barra de progreso (done/total/mode), y copiar/serializar la lista
+    de filas —que crece— en cada sondeo dispara picos de memoria justo en la
+    ventana del escaneo diario (causa de los OOM >512MB). Las filas se entregan
+    solo cuando el escaneo termina (done/error)."""
     s = dict(_SCAN_STATE)
+    status = s.get("status")
+    if status == "running":
+        # Respuesta liviana: solo lo que necesita la barra de progreso.
+        return {"status": "running", "mode": s.get("mode"),
+                "channels": s.get("channels"), "done": s.get("done", 0),
+                "total": s.get("total", 0), "counts": s.get("counts"),
+                "started_at": s.get("started_at")}
     # snapshot defensivo: el thread sigue haciendo append a la misma lista, y
     # copiar una lista que crece puede lanzar RuntimeError en CPython → reintenta.
     src = s.get("rows") or []
