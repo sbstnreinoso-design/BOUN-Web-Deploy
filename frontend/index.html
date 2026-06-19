@@ -2,7 +2,8 @@
 <html lang="es">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1C1B1E">
 <title>BOUN · Análisis ML</title>
 <link rel="stylesheet" href="/style.css">
 </head>
@@ -23,7 +24,20 @@
 
 <!-- App -->
 <div id="app" class="app">
-  <aside class="sidebar">
+
+  <!-- Barra superior (solo móvil) -->
+  <header class="mtopbar">
+    <button class="mham" onclick="mToggleNav()" aria-label="Abrir menú">
+      <span></span><span></span><span></span>
+    </button>
+    <img src="/logo.png" class="mtoplogo" alt="BOUN">
+    <div class="mtoptag" id="mtoptag"></div>
+  </header>
+
+  <!-- Backdrop del menú -->
+  <div id="mbackdrop" class="mbackdrop" onclick="mCloseNav()"></div>
+
+  <aside class="sidebar" id="sidebar">
     <div class="logo">
       <img src="/logo.png" alt="BOUN">
       <div class="tag">Análisis MercadoLibre</div>
@@ -43,16 +57,31 @@
   <div id="modal" class="modal"></div>
 </div>
 
-<!-- Indicador flotante global de escaneo (visible desde cualquier sección) -->
-<div id="scanFab" class="scan-fab" onclick="go('settings')" title="Ir al escaneo de reconciliación">
-  <span class="sf-spin"></span>
-  <div class="sf-body">
-    <div class="sf-txt">Escaneo en curso…</div>
-    <div class="sf-bar"><div class="sf-bar-fill"></div></div>
-  </div>
-  <span class="sf-arrow">›</span>
-</div>
-
 <script src="/app.js"></script>
+<script>
+/* ── Menú móvil (drawer) ─────────────────────────────────────────────── */
+function mToggleNav(){
+  var s=document.getElementById('sidebar'), b=document.getElementById('mbackdrop');
+  var open=s.classList.toggle('open'); b.classList.toggle('open',open);
+  document.body.classList.toggle('mnav-open',open);
+}
+function mCloseNav(){
+  document.getElementById('sidebar').classList.remove('open');
+  document.getElementById('mbackdrop').classList.remove('open');
+  document.body.classList.remove('mnav-open');
+}
+/* Cerrar el menú al elegir una sección */
+document.addEventListener('click',function(e){
+  if(e.target.closest('#nav a')) mCloseNav();
+});
+/* Reflejar la sección activa en la barra superior */
+function mSyncTag(){
+  var a=document.querySelector('#nav a.active'), t=document.getElementById('mtoptag');
+  if(a&&t) t.textContent=a.textContent.replace(/[^\wáéíóúñÁÉÍÓÚÑ ]/g,'').trim();
+}
+new MutationObserver(mSyncTag).observe(document.documentElement,{subtree:true,attributes:true,attributeFilter:['class']});
+/* Cerrar al pasar a escritorio */
+window.addEventListener('resize',function(){ if(window.innerWidth>820) mCloseNav(); });
+</script>
 </body>
 </html>
