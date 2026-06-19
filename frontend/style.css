@@ -1,4 +1,4 @@
-/* ── Tema carbón BOUN (boun.com.co) ───────────────────────────────────────── */
+/* ── Tema carbón BOUN (boun.com.co) ────────────────────────────────────── */
 :root{
   --acc:#F5F1EA; --acc-h:#FFFFFF;
   --bg:#252427; --surf:#2B2A2E; --card:#2F2E33;
@@ -32,7 +32,7 @@ a{color:inherit}
 .btn-primary:hover{background:var(--acc-h)}
 .err{color:var(--red);font-size:12px;margin-bottom:10px;min-height:16px}
 
-/* ── Layout app ────────────────────────────────────────────────────────── */
+/* ── Layout app ─────────────────────────────────────────────────────────── */
 .app{display:none;min-height:100vh}
 .app.active{display:flex}
 .sidebar{width:230px;background:var(--side);border-right:1px solid var(--border);
@@ -57,7 +57,7 @@ a{color:inherit}
 .userbox button:hover{color:var(--text);border-color:var(--dim)}
 .main{margin-left:230px;flex:1;padding:26px 30px;width:calc(100% - 230px)}
 
-/* ── Encabezados ───────────────────────────────────────────────────────── */
+/* ── Encabezados ──────────────────────────────────────────────────────── */
 .page-title{font-size:22px;font-weight:700;margin-bottom:3px}
 .page-sub{color:var(--muted);font-size:12px;margin-bottom:18px}
 .row-between{display:flex;justify-content:space-between;align-items:flex-start}
@@ -112,7 +112,7 @@ a{color:inherit}
 .amber{color:var(--amber)}.acc{color:var(--acc)}.text{color:var(--text)}
 .note{color:var(--muted);font-size:10px;margin:6px 0}
 
-/* ── Tabla genérica ────────────────────────────────────────────────────── */
+/* ── Tabla genérica ────────────────────────────────────────────────── */
 table{width:100%;border-collapse:collapse;font-size:12px}
 th{color:var(--muted);font-size:11px;text-align:left;padding:8px 10px;
   border-bottom:1px solid var(--border);cursor:pointer;user-select:none}
@@ -120,7 +120,7 @@ th:hover{color:var(--acc)}
 td{padding:9px 10px;border-bottom:1px solid var(--border)}
 tr:hover td{background:var(--hov)}
 
-/* ── Modal ─────────────────────────────────────────────────────────────── */
+/* ── Modal ─────────────────────────────────────────────────────────── */
 .modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);
   align-items:center;justify-content:center;z-index:50}
 .modal-bg.open{display:flex}
@@ -155,7 +155,7 @@ tr:hover td{background:var(--hov)}
 .loading{color:var(--muted);font-size:12px;padding:30px;text-align:center}
 
 
-/* ── Mis Productos / tablas con foto ──────────────────────────────────────── */
+/* ── Mis Productos / tablas con foto ──────────────────────────────────── */
 .filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
 .field.fmini{height:32px;margin:0;font-size:12px;padding:0 9px;min-width:120px}
 select.field{cursor:pointer}
@@ -168,14 +168,14 @@ table.mp td{padding:6px 8px;vertical-align:middle}
 tr.mprow{cursor:pointer}
 tr.mpdetail td{background:var(--surf);padding:8px 14px}
 
-/* ── Configuración ─────────────────────────────────────────────────────── */
+/* ── Configuración ──────────────────────────────────────────────────── */
 .set-sec{color:var(--muted);font-size:11px;font-weight:700;letter-spacing:.5px;margin:6px 0 10px;text-transform:uppercase}
 .set-grid{display:flex;flex-direction:column;gap:10px;max-width:760px}
 .set-row{display:flex;align-items:center;gap:14px}
 .set-row label{color:var(--muted);font-size:13px;width:180px;flex-shrink:0}
 .set-row input{flex:1}
 
-/* ── CEREBRO — mapa de trabajo de la IA (acento azul Swim) ────────────────── */
+/* ── CEREBRO — mapa de trabajo de la IA (acento azul Swim) ───────────────── */
 .cb{
   --cb:#2DC6FF; --cb2:#6FDBFF; --cb-dim:rgba(45,198,255,.13);
   --cb-ml:#E0A23C; --cb-fala:#9B8BE0; --cb-shop:#3FCB82; --cb-kat:#E68CA8; --cb-combo:#5BC8B0;
@@ -293,26 +293,119 @@ tr.mpdetail td{background:var(--surf);padding:8px 14px}
 .cb-alert p{color:var(--muted);font-size:12px;line-height:1.5}
 @media(max-width:820px){.cb-kpis{grid-template-columns:repeat(2,1fr)}.cb-clockbox{text-align:left}}
 
+/* ══════════════════════════════════════════════════════════════════════════
+   VERSIÓN MÓVIL — barra superior + menú deslizable + layout adaptable
+   ══════════════════════════════════════════════════════════════════════════ */
 
-/* ── Indicador flotante global de escaneo ─────────────────────────────────── */
-.scan-fab{position:fixed;right:22px;bottom:22px;z-index:9999;display:none;
-  align-items:center;gap:13px;background:var(--card);border:1px solid var(--border);
-  border-left:4px solid var(--amber);border-radius:14px;padding:13px 15px;
-  box-shadow:0 12px 38px rgba(0,0,0,.5);cursor:pointer;min-width:248px;max-width:340px;
-  animation:sfIn .28s cubic-bezier(.2,.8,.2,1)}
-.scan-fab.show{display:flex}
-.scan-fab:hover{border-color:var(--amber);transform:translateY(-1px)}
-.scan-fab.apply{border-left-color:var(--green)}
-.sf-spin{width:19px;height:19px;flex:0 0 auto;border:3px solid rgba(245,241,234,.16);
-  border-top-color:var(--amber);border-radius:50%;animation:sfSpin .8s linear infinite}
-.scan-fab.apply .sf-spin{border-top-color:var(--green)}
-.sf-body{flex:1;min-width:0}
-.sf-txt{font-size:12.5px;color:var(--text);font-weight:600;white-space:nowrap;
-  overflow:hidden;text-overflow:ellipsis}
-.sf-bar{height:6px;margin-top:8px;background:var(--bg);border-radius:5px;overflow:hidden}
-.sf-bar-fill{height:100%;width:0;background:var(--amber);border-radius:5px;
-  transition:width .45s ease}
-.scan-fab.apply .sf-bar-fill{background:var(--green)}
-.sf-arrow{flex:0 0 auto;color:var(--dim);font-size:22px;line-height:1;font-weight:700}
-@keyframes sfSpin{to{transform:rotate(360deg)}}
-@keyframes sfIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+/* Barra superior y backdrop: ocultos en escritorio */
+.mtopbar{display:none}
+.mbackdrop{display:none}
+
+@media(max-width:820px){
+
+  /* ── Barra superior fija ───────────────────────────────────────────── */
+  .mtopbar{
+    display:flex;align-items:center;gap:13px;
+    position:fixed;top:0;left:0;right:0;z-index:60;
+    height:56px;padding:0 14px;
+    padding-top:env(safe-area-inset-top);height:calc(56px + env(safe-area-inset-top));
+    background:var(--side);border-bottom:1px solid var(--border);
+  }
+  .mham{
+    width:42px;height:42px;flex:none;display:flex;flex-direction:column;
+    justify-content:center;gap:5px;background:transparent;border:none;padding:10px;
+    border-radius:9px;-webkit-tap-highlight-color:transparent;
+  }
+  .mham span{display:block;height:2px;width:100%;background:var(--text);border-radius:2px;transition:.2s}
+  body.mnav-open .mham span:nth-child(1){transform:translateY(7px) rotate(45deg)}
+  body.mnav-open .mham span:nth-child(2){opacity:0}
+  body.mnav-open .mham span:nth-child(3){transform:translateY(-7px) rotate(-45deg)}
+  .mtoplogo{height:24px;width:auto}
+  .mtoptag{color:var(--muted);font-size:12px;font-weight:600;margin-left:auto;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:48%}
+
+  /* ── Menú lateral como drawer ──────────────────────────────────────── */
+  .sidebar{
+    width:84%;max-width:300px;z-index:70;
+    transform:translateX(-100%);transition:transform .26s cubic-bezier(.4,0,.2,1);
+    box-shadow:0 0 40px rgba(0,0,0,.5);
+    padding-top:env(safe-area-inset-top);
+  }
+  .sidebar.open{transform:translateX(0)}
+  .sidebar .logo{padding-top:18px}
+  .nav a{padding:15px 22px;font-size:15px}        /* objetivos táctiles más grandes */
+  .navbadge{float:right}
+  .userbox button{height:40px}
+
+  .mbackdrop{
+    display:block;position:fixed;inset:0;z-index:65;
+    background:rgba(0,0,0,.55);opacity:0;pointer-events:none;transition:opacity .26s;
+  }
+  .mbackdrop.open{opacity:1;pointer-events:auto}
+  body.mnav-open{overflow:hidden}
+
+  /* ── Contenido principal a ancho completo ───────────────────────────── */
+  .main{
+    margin-left:0;width:100%;
+    padding:16px 14px 40px;
+    padding-top:calc(70px + env(safe-area-inset-top));
+  }
+
+  /* ── Login ──────────────────────────────────────────────────────────── */
+  .login-card{width:92%;max-width:380px;padding:30px 22px}
+
+  /* ── Encabezados de página ──────────────────────────────────────────── */
+  .page-title{font-size:19px}
+  .row-between{flex-direction:column;align-items:stretch;gap:11px}
+  .row-between .btn-acc,.row-between .btn-ghost{width:100%}
+
+  /* ── KPIs: 2 por fila ───────────────────────────────────────────────── */
+  .kpis{gap:8px}
+  .kpi{flex:1 1 calc(50% - 4px);min-width:0}
+  .kpi .val{font-size:16px}
+  .cb-kpis{grid-template-columns:repeat(2,1fr)}
+
+  /* ── Botones con mejor área táctil ──────────────────────────────────── */
+  .btn-acc{height:42px}
+  .btn-ghost{height:38px}
+  .btn-danger{padding:8px 12px}
+
+  /* ── Tablas: scroll horizontal en su propio contenedor ──────────────── */
+  .main table{display:block;width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .main table thead,.main table tbody,.main table tr{width:max-content;min-width:100%}
+  .main table th,.main table td{white-space:nowrap}
+  img.th,.th{width:30px;height:30px}
+
+  /* ── Inventario ─────────────────────────────────────────────────────── */
+  .inv-strip{padding:0 12px 12px 12px;gap:11px}
+  .inv-head{padding:11px 12px;gap:11px}
+  .fcol{flex:1 1 calc(50% - 6px)}
+
+  /* ── Filtros ───────────────────────────────────────────────────────── */
+  .filters{gap:7px}
+  .filters .field,.filters .field.fmini{flex:1 1 calc(50% - 4px);min-width:0;height:38px;font-size:13px}
+
+  /* ── Modal a pantalla casi completa ─────────────────────────────────── */
+  .modal,.modal.wide{width:94vw;max-width:94vw;padding:20px 16px;max-height:90vh}
+  .modal table{display:block;overflow-x:auto}
+
+  /* ── Configuración: campos apilados ─────────────────────────────────── */
+  .set-row{flex-direction:column;align-items:stretch;gap:6px}
+  .set-row label{width:auto}
+  .set-grid{max-width:100%}
+
+  /* ── Cerebro (mapa IA) ──────────────────────────────────────────────── */
+  .cb-grid,.cb-grid.sk,.cb-grid.al{grid-template-columns:1fr}
+  .cb-nodes{grid-template-columns:1fr}
+  .cb-core{padding:15px}
+  .cb-ch{padding-right:0}
+  .cb-pill,.cb-st{position:static}
+}
+
+/* ── Teléfonos angostos: KPIs a 1 columna ─────────────────────────────── */
+@media(max-width:430px){
+  .kpi{flex:1 1 100%}
+  .cb-kpis{grid-template-columns:1fr}
+  .fcol{flex:1 1 100%}
+  .filters .field,.filters .field.fmini{flex:1 1 100%}
+}
