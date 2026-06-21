@@ -865,6 +865,7 @@ async function fullCola(id){
 let MAPEO=null;
 let MAPEO_TOUCHED=new Set();  // canales con asignaciones pendientes de aplicar
 let MAPEO_SCAN_TIMER=null;
+let MAPEO_SEL={}, MAPEO_PRODMAP={}, MAPEO_OPTS_CACHE=null, SKU_OPEN_I=null, SKU_STYLE_DONE=false;
 async function renderMapeo(force){
   const v=document.getElementById("view");
   v.innerHTML=`<div class="row-between"><div>
@@ -919,15 +920,65 @@ function drawMapeoKpis(r){
       <div style="margin-top:8px">${rows||'<span class="muted" style="font-size:12px">Sin canales auditados.</span>'}</div>
     </div>`;
 }
+function skuThumb(th,s){ s=s||34; return th?`<img src="${esc(th)}" loading="lazy" style="width:${s}px;height:${s}px;border-radius:6px;object-fit:cover;background:var(--bg);border:1px solid var(--border);flex:none">`:`<span style="width:${s}px;height:${s}px;border-radius:6px;background:var(--bg);border:1px solid var(--border);flex:none;display:flex;align-items:center;justify-content:center;font-size:${Math.round(s*0.5)}px">🏷️</span>`; }
+function skuBtnLabel(i){
+  const p=MAPEO_SEL[i]?MAPEO_PRODMAP[MAPEO_SEL[i]]:null;
+  if(!p) return `<span class="muted" style="font-size:12px;flex:1">— elegir SKU —</span><span style="color:var(--muted)">▾</span>`;
+  return `${skuThumb(p.thumb,26)}<span style="font-size:12px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><b>${esc(p.code)}</b> · ${esc(p.name)}</span><span style="color:var(--muted)">▾</span>`;
+}
+function skuOptsHTML(){
+  if(MAPEO_OPTS_CACHE!=null) return MAPEO_OPTS_CACHE;
+  MAPEO_OPTS_CACHE=((MAPEO&&MAPEO.productos)||[]).map(p=>`<div class="skuopt" data-pid="${p.id}" data-txt="${esc(((p.code||"")+" "+(p.name||"")).toLowerCase())}" onclick="skuChoose(this)" style="display:flex;align-items:center;gap:8px;padding:6px 8px;cursor:pointer;border-radius:7px;margin:0 4px">${skuThumb(p.thumb,34)}<span style="font-size:12px;line-height:1.25"><b>${esc(p.code)}</b> · ${esc(p.name)}</span></div>`).join("");
+  return MAPEO_OPTS_CACHE;
+}
+function skuControl(i){
+  return `<div class="skuwrap" style="position:relative;min-width:230px;flex:none"><button type="button" class="field fmini" id="skubtn-${i}" onclick="skuOpen(${i},event)" style="display:flex;align-items:center;gap:7px;width:100%;cursor:pointer;height:34px;padding:0 8px">${skuBtnLabel(i)}</button><div class="skupanel" id="skupanel-${i}" style="display:none"></div></div>`;
+}
+function ensureSkuStyle(){
+  if(SKU_STYLE_DONE) return; SKU_STYLE_DONE=true;
+  const st=document.createElement("style");
+  st.textContent=".skuopt:hover{background:var(--card)}";
+  document.head.appendChild(st);
+  document.addEventListener("click",e=>{ if(SKU_OPEN_I!=null && !e.target.closest(".skuwrap")) skuCloseAll(); });
+}
+function skuOpen(i,ev){
+  if(ev) ev.stopPropagation();
+  ensureSkuStyle();
+  if(SKU_OPEN_I===i){ skuCloseAll(); return; }
+  skuCloseAll();
+  const panel=document.getElementById("skupanel-"+i); if(!panel) return;
+  panel.innerHTML=`<input class="field fmini" id="skusearch-${i}" placeholder="Buscar SKU o nombre…" oninput="skuFilter(${i},this.value)" onclick="event.stopPropagation()" style="width:calc(100% - 12px);margin:6px;position:sticky;top:6px"><div id="skulist-${i}" style="padding-bottom:6px">${skuOptsHTML()}</div>`;
+  panel.style.cssText="display:block;position:absolute;top:calc(100% + 4px);left:0;min-width:280px;max-width:360px;z-index:60;background:var(--surf);border:1px solid var(--border);border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.45);max-height:320px;overflow:auto";
+  SKU_OPEN_I=i;
+  const s=document.getElementById("skusearch-"+i); if(s) s.focus();
+}
+function skuFilter(i,q){
+  q=(q||"").toLowerCase().trim();
+  document.querySelectorAll("#skulist-"+i+" .skuopt").forEach(el=>{ el.style.display=(!q||el.dataset.txt.indexOf(q)>=0)?"flex":"none"; });
+}
+function skuChoose(el){
+  if(SKU_OPEN_I==null) return;
+  const i=SKU_OPEN_I; MAPEO_SEL[i]=+el.dataset.pid;
+  const b=document.getElementById("skubtn-"+i); if(b) b.innerHTML=skuBtnLabel(i);
+  skuCloseAll();
+}
+function skuCloseAll(){
+  document.querySelectorAll(".skupanel").forEach(p=>{ p.style.display="none"; p.innerHTML=""; });
+  SKU_OPEN_I=null;
+}
 function drawMapeo(){
   const r=MAPEO; if(!r)return;
   const ps=(r.pendientes||[]).filter(x=>x&&!x._resuelto);
   const body=document.getElementById("mapeoBody");
   if(!ps.length){ body.innerHTML=`<div class="empty" style="text-align:center;padding:40px;color:var(--muted)"><div style="font-size:40px">✓</div><div style="margin-top:8px;font-size:15px">Sin pendientes — cada publicación viva tiene su SKU y no hay huérfanos.</div></div>`; return; }
   const opt=(sug)=>`<option value="">— elegir SKU —</option>`+(r.productos||[]).map(p=>`<option value="${p.id}" ${sug&&p.code&&p.code.toUpperCase()===String(sug).toUpperCase()?"selected":""}>${esc(p.code)} · ${esc(p.name)}</option>`).join("");
+  MAPEO_SEL={}; MAPEO_PRODMAP={}; MAPEO_OPTS_CACHE=null;
+  (r.productos||[]).forEach(pr=>{ MAPEO_PRODMAP[pr.id]=pr; });
+  const _code2id={}; (r.productos||[]).forEach(pr=>{ if(pr.code) _code2id[String(pr.code).toUpperCase()]=pr.id; });
   const MOT={sin_mapear:["SIN MAPEAR","#E0A23C","#0A0A0A"],mal_mapeado:["SKU CRUZADO","#E11D48","#fff"],huerfano:["VÍNCULO HUÉRFANO","#C58CE6","#0A0A0A"]};
   body.innerHTML=ps.map(p=>{
     const i=r.pendientes.indexOf(p);
+    if(p.sugerido_code && _code2id[String(p.sugerido_code).toUpperCase()]) MAPEO_SEL[i]=_code2id[String(p.sugerido_code).toUpperCase()];
     const foto=p.thumb?`<img src="${esc(p.thumb)}" loading="lazy" style="width:64px;height:64px;border-radius:10px;object-fit:cover;background:var(--surf);border:1px solid var(--border);flex:none">`
       :`<span style="width:64px;height:64px;border-radius:10px;background:var(--surf);border:1px solid var(--border);flex:none;display:flex;align-items:center;justify-content:center;font-size:24px">🏷️</span>`;
     const mt=MOT[p.motivo]||MOT.sin_mapear;
@@ -935,11 +986,11 @@ function drawMapeo(){
     const link=p.link?`<a href="${esc(p.link)}" target="_blank" rel="noopener" class="btn-ghost" style="padding:7px 12px;border-radius:8px;text-decoration:none">Ver ↗</a>`:`<span class="muted" style="font-size:11px">sin link</span>`;
     const acciones = p.motivo==="huerfano"
       ? `${link}
-         <select class="field fmini" id="mp2sel-${i}" style="min-width:190px">${opt(p.sugerido_code)}</select>
+         ${skuControl(i)}
          <button class="btn-acc" style="padding:9px 14px;border-radius:9px" onclick="asociarMapeo(${i})">Re-mapear</button>
          <button class="btn-ghost" style="padding:9px 12px;border-radius:9px" onclick="quitarHuerfano(${i})">Quitar vínculo</button>`
       : `${link}
-         <select class="field fmini" id="mp2sel-${i}" style="min-width:210px">${opt(p.sugerido_code)}</select>
+         ${skuControl(i)}
          <button class="btn-acc" style="padding:9px 16px;border-radius:9px" onclick="asociarMapeo(${i})">Asociar</button>`;
     return `<div class="card" id="mp2-${i}" style="display:flex;gap:16px;align-items:center;padding:16px;margin-bottom:10px;flex-wrap:wrap">
       ${foto}
@@ -968,7 +1019,7 @@ async function quitarHuerfano(i){
 }
 async function asociarMapeo(i){
   const p=(MAPEO&&MAPEO.pendientes)?MAPEO.pendientes[i]:null; if(!p)return;
-  const sel=document.getElementById("mp2sel-"+i); const pid=sel?+sel.value:0;
+  const pid=MAPEO_SEL[i]||0;
   if(!pid){ alert("Elige el SKU del inventario al que pertenece esta publicación."); return; }
   const m=p._meta||{};
   try{
