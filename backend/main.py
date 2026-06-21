@@ -1021,7 +1021,15 @@ def _ml_daily_sales(days: int = 14, date_from: str = None,
                 hour=0, minute=0, second=0, microsecond=0)
         since = from_d.strftime("%Y-%m-%dT%H:%M:%S.000-05:00")
         until = to_d.strftime("%Y-%m-%dT%H:%M:%S.000-05:00")
-        by, offset = {}, 0
+        # Estados de ML que NO son una venta concretada y por tanto no deben
+        # contar en el tablero: pago pendiente/en proceso, canceladas e
+        # inválidas.  Además se deduplica por order_id porque orders/search
+        # puede devolver la misma orden más de una vez (carrito / órdenes
+        # gemelas sin pagar), lo que inflaba el conteo —p.ej. el arenero
+        # marcaba 2 unidades con una sola venta real.
+        _NO_VENTA = {"cancelled", "invalid", "payment_required",
+                     "payment_in_process"}
+        by, offset, seen = {}, 0, set()
         while True:
             r = s.get(f"{ML_API}/orders/search?seller={uid}"
                       f"&order.date_created.from={since}"
@@ -1032,6 +1040,13 @@ def _ml_daily_sales(days: int = 14, date_from: str = None,
             d = r.json()
             results = d.get("results", [])
             for od in results:
+                oid = str(od.get("id") or "")
+                if oid and oid in seen:
+                    continue            # orden ya contada (duplicada por la API)
+                if oid:
+                    seen.add(oid)
+                if (od.get("status") or "") in _NO_VENTA:
+                    continue            # no es una venta concretada
                 fecha = (od.get("date_created") or "")[:10]
                 if not fecha:
                     continue
