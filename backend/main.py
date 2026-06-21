@@ -1047,7 +1047,15 @@ def _ml_daily_sales(days: int = 14, date_from: str = None,
                     seen.add(oid)
                 if (od.get("status") or "") in _NO_VENTA:
                     continue            # no es una venta concretada
-                fecha = (od.get("date_created") or "")[:10]
+                # Agrupar por la fecha en hora Colombia (-05:00), no por el
+                # timestamp crudo (que viene en UTC): así una venta de la
+                # noche cae en su día correcto y no se corre al siguiente.
+                dc = od.get("date_created") or ""
+                try:
+                    fecha = _dt.datetime.fromisoformat(
+                        dc.replace("Z", "+00:00")).astimezone(co).date().isoformat()
+                except Exception:
+                    fecha = dc[:10]
                 if not fecha:
                     continue
                 if d_from and (fecha < d_from or fecha > d_to):
