@@ -864,12 +864,14 @@ async function fullCola(id){
 // ── MAPEO DE SKU — publicaciones por vincular al inventario ──────────────────
 let MAPEO=null;
 let MAPEO_TOUCHED=new Set();  // canales con asignaciones pendientes de aplicar
+let MAPEO_SCAN_TIMER=null;
 async function renderMapeo(force){
   const v=document.getElementById("view");
   v.innerHTML=`<div class="row-between"><div>
       <div class="page-title">🔗 Mapeo de SKU</div>
       <div class="page-sub">Publicaciones vivas (ML · Falabella · Shopify) que aún no están vinculadas —o están cruzadas— al SKU correcto del inventario BOUN. Asígnalas y el motor sincroniza su stock.</div>
     </div><div style="display:flex;gap:8px;align-items:center"><span id="mapeoApplyWrap"></span><button class="btn-acc" onclick="renderMapeo(true)">↻ Re-escanear</button></div></div>
+    <div id="mapeoScanBox"></div>
     <div id="mapeoKpis" class="kpis"></div>
     <div id="mapeoBody"><div class="loading"><span class="spinner"></span> Auditando MercadoLibre, Falabella y Shopify…</div></div>`;
   loadMapeo(force===true);
@@ -998,11 +1000,43 @@ async function aplicarMapeoStock(){
     await api("/sync/scan-start",{method:"POST",body:JSON.stringify({mode:"apply",channels:chans})});
     MAPEO_TOUCHED.clear(); updateMapeoApplyBtn();
     if(typeof scanGlobalPoll==="function") scanGlobalPoll();
-    alert("Reconciliación iniciada en "+labels+". El indicador de escaneo (arriba) muestra el avance; puedes seguir trabajando.");
+    mapeoScanPoll(labels);
   }catch(e){
-    if(/curso/i.test(e.message||"")){ if(typeof scanGlobalPoll==="function") scanGlobalPoll(); alert("Ya hay un escaneo en curso. Cuando termine, vuelve a pulsar Aplicar."); }
+    if(/curso/i.test(e.message||"")){ if(typeof scanGlobalPoll==="function") scanGlobalPoll(); mapeoScanPoll(labels); }
     else alert(e.message);
   }
+}
+
+async function mapeoScanPoll(labels){
+  if(MAPEO_SCAN_TIMER){ clearInterval(MAPEO_SCAN_TIMER); MAPEO_SCAN_TIMER=null; }
+  const bar=(pct,col)=>`<div style="height:8px;background:var(--border);border-radius:6px;overflow:hidden;margin-top:7px"><div style="height:100%;width:${pct}%;background:${col};transition:width .3s"></div></div>`;
+  const render=(html)=>{ const b=document.getElementById("mapeoScanBox"); if(b) b.innerHTML=html; };
+  render(`<div class="card" style="padding:12px 14px;border-color:#3FCB82"><div style="font-size:13px;font-weight:700">⤓ Aplicando stock · ${esc(labels)}</div><div class="muted" style="font-size:12px;margin-top:2px">Iniciando reconciliación…</div>${bar(4,'#3FCB82')}</div>`);
+  let polls=0;
+  const tick=async()=>{
+    polls++;
+    let s=null;
+    try{ const r=await fetch("/api/sync/scan-status",{headers: TOKEN?{"Authorization":"Bearer "+TOKEN}:{}}); if(r.ok) s=await r.json(); }catch(e){}
+    if(!s) return;
+    if(s.status==="running"){
+      const done=s.done||0,total=s.total||0,pct=total?Math.round(done/total*100):0;
+      render(`<div class="card" style="padding:12px 14px;border-color:#3FCB82"><div style="font-size:13px;font-weight:700">⤓ Aplicando stock · ${esc(labels)}</div><div class="muted" style="font-size:12px;margin-top:2px"><b style="color:var(--text)">${done}/${total}</b> publicaciones · ${pct}%</div>${bar(pct||4,'#3FCB82')}</div>`);
+    } else if(s.status==="done"){
+      clearInterval(MAPEO_SCAN_TIMER); MAPEO_SCAN_TIMER=null;
+      const c=s.counts||{};
+      const resumen=`${c.escritos||0} escritas · ${c.reactivadas||0} reactivadas · ${c.sin_cambio||0} sin cambio${c.errores?` · ${c.errores} con error`:""}`;
+      render(`<div class="card" style="padding:12px 14px;border-color:#3FCB82"><div style="font-size:13px;font-weight:700;color:var(--green)">✓ Reconciliación lista · ${esc(labels)}</div><div class="muted" style="font-size:12px;margin-top:2px">${esc(resumen)}</div>${bar(100,'#3FCB82')}</div>`);
+      setTimeout(()=>render(""), 9000);
+      loadMapeo(true);
+    } else if(s.status==="error"){
+      clearInterval(MAPEO_SCAN_TIMER); MAPEO_SCAN_TIMER=null;
+      render(`<div class="card" style="padding:12px 14px;border-color:var(--red)"><div class="red" style="font-size:13px;font-weight:700">⚠ El escaneo falló</div><div class="muted" style="font-size:12px;margin-top:2px">${esc(s.error||"Reintenta en un momento.")}</div></div>`);
+    } else if(polls>3){
+      clearInterval(MAPEO_SCAN_TIMER); MAPEO_SCAN_TIMER=null; render("");
+    }
+  };
+  await tick();
+  MAPEO_SCAN_TIMER=setInterval(tick, 1500);
 }
 
 // ── MIS PRODUCTOS ────────────────────────────────────────────────────────────
