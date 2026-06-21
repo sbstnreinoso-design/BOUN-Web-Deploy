@@ -56,6 +56,7 @@ document.addEventListener("keydown",e=>{ if(e.key==="Enter" && document.getEleme
 const NAV=[
   ["dashboard","⬛  Dashboard"],
   ["cerebro","🧠  Cerebro"],
+  ["mapeo","🔗  Mapeo"],
   ["ventas","↗  Ventas"],
   ["inventory","▦  Inventario"],
   ["cola","📦  Pendientes de bodega"],
@@ -74,6 +75,7 @@ function showApp(){
     `<a href="#" data-nav="${id}" onclick="go('${id}');return false">${t}<span class="navbadge" id="badge-${id}"></span></a>`).join("");
   go("dashboard");
   refreshColaBadge();
+  refreshMapeoBadge();
   scanGlobalPoll();
 }
 // ── Indicador flotante global de escaneo (badge fijo, cualquier sección) ─────
@@ -118,10 +120,19 @@ async function refreshColaBadge(){
     if(b) b.textContent=r.count>0?r.count:"", b.style.display=r.count>0?"inline-block":"none";
   }catch(e){}
 }
+async function refreshMapeoBadge(){
+  try{
+    const r=await api("/mapeo/count");
+    const b=document.getElementById("badge-mapeo");
+    if(b) b.textContent=r.count>0?r.count:"", b.style.display=r.count>0?"inline-block":"none";
+  }catch(e){}
+}
+
 function go(id){
   document.querySelectorAll(".nav a").forEach(a=>a.classList.toggle("active",a.dataset.nav===id));
   if(id==="dashboard") renderDashboard();
   else if(id==="cerebro") renderCerebro();
+  else if(id==="mapeo") renderMapeo();
   else if(id==="ventas") renderSales();
   else if(id==="inventory") renderInventory();
   else if(id==="cola") renderCola();
@@ -847,6 +858,125 @@ async function fullCola(id){
     const el=document.getElementById("cola-"+id); if(el) el.remove();
     refreshColaBadge();
     if(!document.querySelector("#colaList .card")) renderCola();
+  }catch(e){ alert(e.message); }
+}
+
+// ── MAPEO DE SKU — publicaciones por vincular al inventario ──────────────────
+let MAPEO=null;
+async function renderMapeo(force){
+  const v=document.getElementById("view");
+  v.innerHTML=`<div class="row-between"><div>
+      <div class="page-title">🔗 Mapeo de SKU</div>
+      <div class="page-sub">Publicaciones vivas (ML · Falabella · Shopify) que aún no están vinculadas —o están cruzadas— al SKU correcto del inventario BOUN. Asígnalas y el motor sincroniza su stock.</div>
+    </div><button class="btn-acc" onclick="renderMapeo(true)">↻ Re-escanear</button></div>
+    <div id="mapeoKpis" class="kpis"></div>
+    <div id="mapeoBody"><div class="loading"><span class="spinner"></span> Auditando MercadoLibre, Falabella y Shopify…</div></div>`;
+  loadMapeo(force===true);
+}
+async function loadMapeo(force){
+  if(force) document.getElementById("mapeoBody").innerHTML=`<div class="loading"><span class="spinner"></span> Re-escaneando los canales…</div>`;
+  try{
+    const r=await api("/mapeo"+(force?"?force=1":""));
+    MAPEO=r; refreshMapeoBadge(); drawMapeoKpis(r); drawMapeo();
+  }catch(e){ document.getElementById("mapeoBody").innerHTML=`<div class="red">${esc(e.message)}</div>`; }
+}
+function drawMapeoKpis(r){
+  // ── Panel de CONFIRMACIÓN DE COHERENCIA (segundo método: la reconciliación
+  //    por canal debe cuadrar por partida doble; solo entonces es verde). ──
+  const rec=r.reconciliacion||{};
+  const algunCaido=CH_ORDER.some(c=>rec[c]&&!rec[c].respondio);
+  const verde=!!r.coherencia;
+  const head= verde
+    ? `<div style="font-size:15px;font-weight:800;color:var(--green)">✅ Coherencia verificada</div>
+       <div class="muted" style="font-size:12px;margin-top:2px">Cada publicación viva cuadra con su SKU y no hay vínculos huérfanos. Confirmado por reconciliación, no por ausencia de alertas.</div>`
+    : algunCaido
+    ? `<div style="font-size:15px;font-weight:800;color:var(--amber)">⚠ Verificación parcial</div>
+       <div class="muted" style="font-size:12px;margin-top:2px">Un canal no respondió: no se puede confirmar el 100%. Reintenta el re-escaneo.</div>`
+    : `<div style="font-size:15px;font-weight:800;color:var(--amber)">⚠ Hay diferencias por resolver</div>
+       <div class="muted" style="font-size:12px;margin-top:2px">La reconciliación no cuadra: revisa los pendientes de abajo.</div>`;
+  const rows=CH_ORDER.filter(c=>rec[c]).map(c=>{ const m=chMeta(c), x=rec[c];
+    const estado = !x.respondio ? `<span style="color:var(--red)">no respondió</span>`
+      : x.ok ? `<span style="color:var(--green)">✓ cuadra</span>`
+      : `<span style="color:var(--amber)">⚠ revisar</span>`;
+    const detalle = x.respondio
+      ? `${x.vivas} vivas · ${x.mapeadas} mapeadas · ${x.sin_mapear} sin mapear · ${x.cruzados} cruzado(s) · ${x.huerfanos} huérfano(s)`
+      : (x.error||"sin conexión");
+    return `<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-top:1px solid var(--border)">
+      <span class="ch-count" style="background:${m.col}">${esc(m.short)}</span>
+      <span style="font-size:12px;flex:1;min-width:160px" class="muted">${esc(detalle)}</span>
+      <span style="font-size:12px;font-weight:700">${estado}</span></div>`; }).join("");
+  document.getElementById("mapeoKpis").innerHTML=`
+    <div style="display:flex;gap:10px;flex-wrap:wrap;width:100%">
+      <div class="kpi" style="min-width:96px"><div class="cap">Sin mapear</div><div class="val">${r.n_sin_mapear||0}</div></div>
+      <div class="kpi" style="min-width:96px"><div class="cap">SKU cruzado</div><div class="val">${r.n_mal_mapeado||0}</div></div>
+      <div class="kpi" style="min-width:96px"><div class="cap">Huérfanos</div><div class="val">${r.n_huerfano||0}</div></div>
+    </div>
+    <div class="card" style="padding:14px 16px;margin:10px 0 4px;border-color:${verde?'var(--green)':'var(--amber)'}">
+      ${head}
+      <div style="margin-top:8px">${rows||'<span class="muted" style="font-size:12px">Sin canales auditados.</span>'}</div>
+    </div>`;
+}
+function drawMapeo(){
+  const r=MAPEO; if(!r)return;
+  const ps=(r.pendientes||[]).filter(x=>x&&!x._resuelto);
+  const body=document.getElementById("mapeoBody");
+  if(!ps.length){ body.innerHTML=`<div class="empty" style="text-align:center;padding:40px;color:var(--muted)"><div style="font-size:40px">✓</div><div style="margin-top:8px;font-size:15px">Sin pendientes — cada publicación viva tiene su SKU y no hay huérfanos.</div></div>`; return; }
+  const opt=(sug)=>`<option value="">— elegir SKU —</option>`+(r.productos||[]).map(p=>`<option value="${p.id}" ${sug&&p.code&&p.code.toUpperCase()===String(sug).toUpperCase()?"selected":""}>${esc(p.code)} · ${esc(p.name)}</option>`).join("");
+  const MOT={sin_mapear:["SIN MAPEAR","#E0A23C","#0A0A0A"],mal_mapeado:["SKU CRUZADO","#E11D48","#fff"],huerfano:["VÍNCULO HUÉRFANO","#C58CE6","#0A0A0A"]};
+  body.innerHTML=ps.map(p=>{
+    const i=r.pendientes.indexOf(p);
+    const foto=p.thumb?`<img src="${esc(p.thumb)}" loading="lazy" style="width:64px;height:64px;border-radius:10px;object-fit:cover;background:var(--surf);border:1px solid var(--border);flex:none">`
+      :`<span style="width:64px;height:64px;border-radius:10px;background:var(--surf);border:1px solid var(--border);flex:none;display:flex;align-items:center;justify-content:center;font-size:24px">🏷️</span>`;
+    const mt=MOT[p.motivo]||MOT.sin_mapear;
+    const motivo=`<span style="background:${mt[1]};color:${mt[2]};font-size:10px;font-weight:800;padding:2px 8px;border-radius:20px">${mt[0]}</span>`;
+    const link=p.link?`<a href="${esc(p.link)}" target="_blank" rel="noopener" class="btn-ghost" style="padding:7px 12px;border-radius:8px;text-decoration:none">Ver ↗</a>`:`<span class="muted" style="font-size:11px">sin link</span>`;
+    const acciones = p.motivo==="huerfano"
+      ? `${link}
+         <select class="field fmini" id="mp2sel-${i}" style="min-width:190px">${opt(p.sugerido_code)}</select>
+         <button class="btn-acc" style="padding:9px 14px;border-radius:9px" onclick="asociarMapeo(${i})">Re-mapear</button>
+         <button class="btn-ghost" style="padding:9px 12px;border-radius:9px" onclick="quitarHuerfano(${i})">Quitar vínculo</button>`
+      : `${link}
+         <select class="field fmini" id="mp2sel-${i}" style="min-width:210px">${opt(p.sugerido_code)}</select>
+         <button class="btn-acc" style="padding:9px 16px;border-radius:9px" onclick="asociarMapeo(${i})">Asociar</button>`;
+    return `<div class="card" id="mp2-${i}" style="display:flex;gap:16px;align-items:center;padding:16px;margin-bottom:10px;flex-wrap:wrap">
+      ${foto}
+      <div style="flex:1;min-width:240px">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px">${chBadge(p.channel)} ${motivo}</div>
+        <div style="font-weight:650;font-size:14px;line-height:1.3">${esc(p.title)}</div>
+        <div class="muted" style="font-size:11.5px;margin-top:4px">${esc(p.ext_id)}${p.sku_canal?` · SKU canal: <b style="color:var(--text)">${esc(p.sku_canal)}</b>`:""}${p.qty?` · ${p.qty} u`:""}${p.price?` · ${cop(p.price)}`:""}</div>
+        ${p.detalle?`<div class="muted" style="font-size:11.5px;margin-top:3px">${esc(p.detalle)}</div>`:""}
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">${acciones}</div>
+    </div>`;
+  }).join("");
+}
+async function quitarHuerfano(i){
+  const p=(MAPEO&&MAPEO.pendientes)?MAPEO.pendientes[i]:null; if(!p)return;
+  if(!confirm("¿Quitar el vínculo huérfano? El inventario dejará de creer que esa publicación existe.")) return;
+  try{
+    await api("/mapeo/desvincular",{method:"POST",body:JSON.stringify({channel:p.channel,ext_id:p.ext_id})});
+    p._resuelto=true;
+    const el=document.getElementById("mp2-"+i);
+    if(el){ el.style.transition="opacity .25s"; el.style.opacity="0"; setTimeout(()=>el.remove(),250); }
+    refreshMapeoBadge();
+    if(!MAPEO.pendientes.some(x=>x&&!x._resuelto)) setTimeout(()=>loadMapeo(true),300);
+  }catch(e){ alert(e.message); }
+}
+async function asociarMapeo(i){
+  const p=(MAPEO&&MAPEO.pendientes)?MAPEO.pendientes[i]:null; if(!p)return;
+  const sel=document.getElementById("mp2sel-"+i); const pid=sel?+sel.value:0;
+  if(!pid){ alert("Elige el SKU del inventario al que pertenece esta publicación."); return; }
+  const m=p._meta||{};
+  try{
+    await api("/mapeo/asociar",{method:"POST",body:JSON.stringify({
+      channel:p.channel, ext_id:p.ext_id, product_id:pid,
+      title:m.title||p.title, thumb:m.thumb||p.thumb, qty:m.qty||p.qty,
+      price:m.price||p.price, logistic:m.logistic||"", inv_id:m.inv_id||"", upid:m.upid||""})});
+    p._resuelto=true;
+    const el=document.getElementById("mp2-"+i);
+    if(el){ el.style.transition="opacity .25s"; el.style.opacity="0"; setTimeout(()=>el.remove(),250); }
+    refreshMapeoBadge();
+    if(!MAPEO.pendientes.some(x=>x&&!x._resuelto)) setTimeout(()=>drawMapeo(),300);
   }catch(e){ alert(e.message); }
 }
 
