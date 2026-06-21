@@ -863,12 +863,13 @@ async function fullCola(id){
 
 // ── MAPEO DE SKU — publicaciones por vincular al inventario ──────────────────
 let MAPEO=null;
+let MAPEO_TOUCHED=new Set();  // canales con asignaciones pendientes de aplicar
 async function renderMapeo(force){
   const v=document.getElementById("view");
   v.innerHTML=`<div class="row-between"><div>
       <div class="page-title">🔗 Mapeo de SKU</div>
       <div class="page-sub">Publicaciones vivas (ML · Falabella · Shopify) que aún no están vinculadas —o están cruzadas— al SKU correcto del inventario BOUN. Asígnalas y el motor sincroniza su stock.</div>
-    </div><button class="btn-acc" onclick="renderMapeo(true)">↻ Re-escanear</button></div>
+    </div><div style="display:flex;gap:8px;align-items:center"><span id="mapeoApplyWrap"></span><button class="btn-acc" onclick="renderMapeo(true)">↻ Re-escanear</button></div></div>
     <div id="mapeoKpis" class="kpis"></div>
     <div id="mapeoBody"><div class="loading"><span class="spinner"></span> Auditando MercadoLibre, Falabella y Shopify…</div></div>`;
   loadMapeo(force===true);
@@ -877,7 +878,7 @@ async function loadMapeo(force){
   if(force) document.getElementById("mapeoBody").innerHTML=`<div class="loading"><span class="spinner"></span> Re-escaneando los canales…</div>`;
   try{
     const r=await api("/mapeo"+(force?"?force=1":""));
-    MAPEO=r; refreshMapeoBadge(); drawMapeoKpis(r); drawMapeo();
+    MAPEO=r; refreshMapeoBadge(); drawMapeoKpis(r); drawMapeo(); updateMapeoApplyBtn();
   }catch(e){ document.getElementById("mapeoBody").innerHTML=`<div class="red">${esc(e.message)}</div>`; }
 }
 function drawMapeoKpis(r){
@@ -955,6 +956,7 @@ async function quitarHuerfano(i){
   if(!confirm("¿Quitar el vínculo huérfano? El inventario dejará de creer que esa publicación existe.")) return;
   try{
     await api("/mapeo/desvincular",{method:"POST",body:JSON.stringify({channel:p.channel,ext_id:p.ext_id})});
+    MAPEO_TOUCHED.add(p.channel); updateMapeoApplyBtn();
     p._resuelto=true;
     const el=document.getElementById("mp2-"+i);
     if(el){ el.style.transition="opacity .25s"; el.style.opacity="0"; setTimeout(()=>el.remove(),250); }
@@ -972,12 +974,35 @@ async function asociarMapeo(i){
       channel:p.channel, ext_id:p.ext_id, product_id:pid,
       title:m.title||p.title, thumb:m.thumb||p.thumb, qty:m.qty||p.qty,
       price:m.price||p.price, logistic:m.logistic||"", inv_id:m.inv_id||"", upid:m.upid||""})});
+    MAPEO_TOUCHED.add(p.channel); updateMapeoApplyBtn();
     p._resuelto=true;
     const el=document.getElementById("mp2-"+i);
     if(el){ el.style.transition="opacity .25s"; el.style.opacity="0"; setTimeout(()=>el.remove(),250); }
     refreshMapeoBadge();
     if(!MAPEO.pendientes.some(x=>x&&!x._resuelto)) setTimeout(()=>drawMapeo(),300);
   }catch(e){ alert(e.message); }
+}
+
+// ── Aplicar stock a lo asignado (Mapeo → reconciliación de los canales tocados) ──
+function updateMapeoApplyBtn(){
+  const wrap=document.getElementById("mapeoApplyWrap"); if(!wrap) return;
+  if(!isAdmin() || !MAPEO_TOUCHED.size){ wrap.innerHTML=""; return; }
+  const labels=[...MAPEO_TOUCHED].map(c=>chMeta(c).short).join(", ");
+  wrap.innerHTML=`<button class="btn-acc" style="background:#3FCB82;color:#0A0A0A" onclick="aplicarMapeoStock()" title="Reconcilia el stock real en los canales que acabas de tocar">⤓ Aplicar stock a lo asignado · ${esc(labels)}</button>`;
+}
+async function aplicarMapeoStock(){
+  const chans=[...MAPEO_TOUCHED]; if(!chans.length) return;
+  const labels=chans.map(c=>chMeta(c).lbl).join(", ");
+  if(!confirm("Vas a APLICAR (escribir) el stock real de tu inventario en: "+labels+".\n\nReconcilia TODAS las publicaciones de esos canales (excepto Full y catálogo) al disponible real, incluidas las que acabas de asignar.\n\n¿Confirmas?")) return;
+  try{
+    await api("/sync/scan-start",{method:"POST",body:JSON.stringify({mode:"apply",channels:chans})});
+    MAPEO_TOUCHED.clear(); updateMapeoApplyBtn();
+    if(typeof scanGlobalPoll==="function") scanGlobalPoll();
+    alert("Reconciliación iniciada en "+labels+". El indicador de escaneo (arriba) muestra el avance; puedes seguir trabajando.");
+  }catch(e){
+    if(/curso/i.test(e.message||"")){ if(typeof scanGlobalPoll==="function") scanGlobalPoll(); alert("Ya hay un escaneo en curso. Cuando termine, vuelve a pulsar Aplicar."); }
+    else alert(e.message);
+  }
 }
 
 // ── MIS PRODUCTOS ────────────────────────────────────────────────────────────
