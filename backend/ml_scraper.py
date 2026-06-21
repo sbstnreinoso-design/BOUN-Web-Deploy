@@ -1689,7 +1689,7 @@ def get_my_items_basic(progress=None) -> dict:
     items = []
     attrs = ("id,title,price,status,thumbnail,secure_thumbnail,"
              "sold_quantity,available_quantity,shipping,"
-             "user_product_id,inventory_id,catalog_listing")
+             "user_product_id,inventory_id,catalog_listing,seller_custom_field")
     for i in range(0, len(item_ids), 20):
         batch = item_ids[i:i + 20]
         try:
@@ -1704,6 +1704,9 @@ def get_my_items_basic(progress=None) -> dict:
                             "title":   b.get("title", "") or "",
                             "price":   b.get("price", 0) or 0,
                             "status":  b.get("status", "") or "",
+                            # SKU declarado por el vendedor en ML (para verificar
+                            # el mapeo, no solo su existencia).
+                            "sku":     b.get("seller_custom_field", "") or "",
                             "thumbnail": (b.get("secure_thumbnail")
                                           or b.get("thumbnail", "")
                                           or "").replace("http://", "https://"),

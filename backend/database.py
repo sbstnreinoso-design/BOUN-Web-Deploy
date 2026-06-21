@@ -768,6 +768,60 @@ def inv_costs_map() -> dict:
 VALID_CHANNELS = ("mercadolibre", "falabella", "shopify_boun", "shopify_kat")
 
 
+def inv_link_add(pid: int, channel: str, ext_id: str, meta: dict = None) -> bool:
+    """Asocia UNA sola publicación a un producto SIN tocar los demás vínculos.
+
+    A diferencia de inv_set_links (que reemplaza todos los vínculos del producto
+    en los canales administrados), esto hace un upsert puntual: si la publicación
+    estaba en otro producto del mismo canal, on_conflict=channel,ml_item_id la
+    mueve a este. Lo usa la sección "Mapeo" para resolver un pendiente a la vez.
+    """
+    meta = meta or {}
+    channel = channel if channel in VALID_CHANNELS else "mercadolibre"
+    ext_id = (ext_id or "").strip()
+    if not ext_id:
+        return False
+    payload = {
+        "product_id": pid, "ml_item_id": ext_id,
+        "ml_title": (meta.get("title") or "")[:200],
+        "ml_thumb": meta.get("thumb") or "",
+        "ml_sold": meta.get("sold") or 0,
+        "ml_qty": meta.get("qty") or 0,
+        "ml_logistic": meta.get("logistic") or "",
+        "ml_price": meta.get("price") or 0,
+        "ml_net": meta.get("net") or 0,
+        "ml_margin": meta.get("margin") or 0,
+        "ml_roas": meta.get("roas") or 0,
+        "ml_acos": meta.get("acos") or 0,
+        "ml_sold60": meta.get("sold60") or 0,
+        "ml_inventory_id": meta.get("inv_id") or "",
+        "ml_upid": meta.get("upid") or "",
+    }
+    if channel_supported():
+        payload["channel"] = channel
+        conflict = "on_conflict=channel,ml_item_id"
+    else:
+        # Pre-migración (tabla solo-ML): solo se pueden asociar publicaciones ML.
+        if channel != "mercadolibre":
+            return False
+        conflict = "on_conflict=ml_item_id"
+    row = _sb_post("inventory_links?%s" % conflict, payload, upsert=True)
+    return row is not None
+
+
+def inv_link_delete(channel: str, ext_id: str) -> bool:
+    """Borra UN vínculo por (canal, id externo). Lo usa la sección Mapeo para
+    quitar vínculos huérfanos (apuntan a una publicación que ya no existe)."""
+    import urllib.parse as _u
+    ext_id = (ext_id or "").strip()
+    if not ext_id:
+        return False
+    flt = "ml_item_id=eq.%s" % _u.quote(ext_id, safe="")
+    if channel_supported():
+        flt += "&channel=eq.%s" % _u.quote(channel or "mercadolibre", safe="")
+    return _sb_delete("inventory_links", flt)
+
+
 def inv_set_links(pid: int, items: list, channels: list = None) -> bool:
     """
     Define las publicaciones de un producto en uno o varios canales.

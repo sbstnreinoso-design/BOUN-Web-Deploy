@@ -491,14 +491,14 @@ async def inv_import_xlsx(request: Request,
             "errors": errors}
 
 
-@app.get("/api/inventory/items")
-def inventory_items(user: dict = Depends(_current_user)):
-    """Publicaciones de los 4 canales (MercadoLibre, Falabella, Shopify BOUN
-    y Shopify KAT) para asignar al inventario, + vínculos actuales.
+def _fetch_channel_items() -> tuple:
+    """Recoge las publicaciones VIVAS de los 4 canales (MercadoLibre, Falabella,
+    Shopify BOUN y Shopify KAT) en un formato común. Devuelve (items, ch_status).
 
-    Cada item trae un campo `channel`. `channels` informa, por canal, si su
-    catálogo cargó bien (para que el front conserve los canales que no
-    respondieron y no borre sus vínculos al guardar)."""
+    Cada item trae `channel`, `item_id`, `sku`, `title`, `thumbnail`,
+    `inventory`, `price`, etc. `ch_status` informa por canal si su catálogo cargó
+    (para que quien consuma no borre vínculos de un canal que no respondió).
+    Lo usan tanto /api/inventory/items (asignación) como la sección Mapeo."""
     items = []
     ch_status = {}
 
@@ -562,6 +562,17 @@ def inventory_items(user: dict = Depends(_current_user)):
         except Exception as e:
             ch_status[ckey] = {"ok": False, "error": str(e)[:160]}
 
+    return items, ch_status
+
+
+@app.get("/api/inventory/items")
+def inventory_items(user: dict = Depends(_current_user)):
+    """Publicaciones de los 4 canales para asignar al inventario + vínculos.
+
+    Cada item trae un campo `channel`. `channels` informa, por canal, si su
+    catálogo cargó bien (para que el front conserve los canales que no
+    respondieron y no borre sus vínculos al guardar)."""
+    items, ch_status = _fetch_channel_items()
     links = db.inv_get_links()
     any_ok = any(v.get("ok") for v in ch_status.values())
     return {"ok": any_ok, "items": items, "links": links,
@@ -3455,6 +3466,386 @@ def cerebro_heartbeat(data: HeartbeatIn, key: str = "",
     estado[data.task_id] = entry
     db.set_setting("cerebro_estado", json.dumps(estado, ensure_ascii=False))
     return {"ok": True, "task_id": data.task_id}
+
+
+# ── MAPEO DE SKU — auditoría de sincronización publicación ↔ inventario ───────
+# La fuente de verdad del stock es el inventario BOUN (inventory_products). Cada
+# publicación viva (ML / Falabella / Shopify) debe estar vinculada
+# (inventory_links) al SKU correcto. Aquí se audita por canal y se reporta lo
+# que falta mapear o está cruzado.
+#
+# Visitar la sección /mapeo (o llamar /api/mapeo/scan) dispara la auditoría,
+# persiste el snapshot en Supabase (mapeo_pendientes) y reporta a Cerebro
+# (heartbeat `mapeo-sku-diario`). La skill diaria "mapeo de sku" la corre a las
+# 8:00 PM. Diseñado para extenderse a tiendas futuras: cualquier canal que
+# _fetch_channel_items() sepa leer se audita solo.
+
+_MAPEO_TASK_ID = "mapeo-sku-diario"
+_MAPEO_CACHE = {"ts": 0, "data": None}
+_MAPEO_LOCK = threading.Lock()
+_MAPEO_TTL = 5 * 60   # 5 min: varias cargas seguidas no re-escanean los 4 canales
+_MAPEO_DESC = ("Audita ML, Falabella y Shopify y verifica que cada publicación "
+               "esté vinculada al SKU correcto del inventario BOUN.")
+
+
+def _mapeo_link(channel: str, ext_id: str, sku: str = "") -> str:
+    """Mejor URL disponible hacia la publicación, por canal."""
+    ext_id = (ext_id or "").strip()
+    if channel == "mercadolibre":
+        return _permalink_from_mco(ext_id)
+    if channel == "falabella":
+        # No tenemos la URL pública; el Seller Center la encuentra por SellerSku.
+        return ("https://sellercenter.falabella.com.co/products/manage?search=%s"
+                % _q_(sku or ext_id))
+    # Shopify: ext_id = gid de la variante; sin handle no hay URL pública directa.
+    return ""
+
+
+def _cerebro_set_heartbeat(task_id, status, msg, *, nombre=None, canal=None,
+                           desc=None, cad=None, icon=None, next_run=None):
+    """Escribe un heartbeat al Cerebro desde el backend (sin pasar por HTTP)."""
+    try:
+        estado = _cerebro_estado()
+        entry = dict(estado.get(task_id, {}))
+        entry.update({"status": status, "msg": msg, "next_run": next_run,
+                      "last_run": datetime.now(timezone.utc).strftime(
+                          "%Y-%m-%dT%H:%M:%SZ")})
+        for k, v in (("nombre", nombre), ("canal", canal), ("desc", desc),
+                     ("cad", cad), ("icon", icon)):
+            if v:
+                entry[k] = v
+        estado[task_id] = entry
+        db.set_setting("cerebro_estado", json.dumps(estado, ensure_ascii=False))
+    except Exception:
+        pass
+
+
+def _mapeo_audit() -> dict:
+    """Audita los canales contra inventory_links con DOBLE verificación:
+
+      A) Por publicación viva → detecta `sin_mapear` y `mal_mapeado` (SKU cruzado).
+      B) Por vínculo guardado → detecta `huerfano` (el vínculo apunta a una
+         publicación que el canal ya NO muestra viva: id cambiado, pausada o
+         eliminada). Este es el segundo método independiente.
+
+    Además calcula una RECONCILIACIÓN por canal que debe cuadrar por partida
+    doble (vivas = mapeadas + sin_mapear) y un veredicto de COHERENCIA global:
+    solo es verde si todos los canales respondieron y sus conteos cuadran sin
+    pendientes. Así un "0 pendientes" queda respaldado, no asumido.
+    NO escribe nada (eso lo hace _mapeo_persist)."""
+    from collections import defaultdict as _dd
+    items, ch_status = _fetch_channel_items()
+    links = db.inv_get_links()
+    prods = db._sb_get("inventory_products?select=id,code,name") or []
+    id2code = {p["id"]: (p.get("code") or "") for p in prods}
+    code2id = {(p.get("code") or "").strip().upper(): p["id"]
+               for p in prods if p.get("code")}
+
+    # Índice de publicaciones vivas por (canal, id externo).
+    live, live_by_ch = {}, _dd(int)
+    for it in items:
+        ch = it.get("channel") or "mercadolibre"
+        ext = it.get("item_id") or ""
+        if not ext:
+            continue
+        live[(ch, ext)] = it
+        live_by_ch[ch] += 1
+
+    # Índice de vínculos guardados por (canal, id externo).
+    linkmap, links_by_ch = {}, _dd(int)
+    for l in links:
+        ext = l.get("ml_item_id") or ""
+        if not ext:
+            continue
+        ch = l.get("channel") or "mercadolibre"
+        linkmap[(ch, ext)] = l
+        links_by_ch[ch] += 1
+
+    pend = []
+
+    # ── A) Recorrido por publicación viva ──
+    for (ch, ext), it in live.items():
+        sku = (it.get("sku") or "").strip()
+        motivo, detalle = None, ""
+        if (ch, ext) not in linkmap:
+            motivo = "sin_mapear"
+            detalle = "La publicación no está vinculada a ningún SKU del inventario."
+        else:
+            linked_code = (id2code.get(linkmap[(ch, ext)].get("product_id"))
+                           or "").strip().upper()
+            if sku.upper() and sku.upper() in code2id and sku.upper() != linked_code:
+                motivo = "mal_mapeado"
+                detalle = ("SKU cruzado: la publicación declara «%s» pero está "
+                           "vinculada a «%s»." % (sku, linked_code or "—"))
+        if not motivo:
+            continue
+        sugerido = id2code.get(code2id.get(sku.upper())) if sku else ""
+        pend.append({
+            "channel": ch, "ext_id": ext, "title": it.get("title") or ext,
+            "thumb": it.get("thumbnail") or "", "link": _mapeo_link(ch, ext, sku),
+            "sku_canal": sku, "qty": int(it.get("inventory") or 0),
+            "price": float(it.get("price") or 0), "motivo": motivo,
+            "sugerido_code": sugerido or "", "detalle": detalle,
+            "_meta": {
+                "title": it.get("title") or "", "thumb": it.get("thumbnail") or "",
+                "qty": it.get("inventory") or 0, "price": it.get("price") or 0,
+                "logistic": it.get("logistic_type") or "",
+                "inv_id": it.get("inventory_id") or "", "upid": it.get("upid") or "",
+            },
+        })
+
+    # ── B) Recorrido por vínculo guardado → huérfanos ──
+    # Solo se juzga en canales que respondieron OK (si la API no cargó, no se
+    # puede afirmar que la publicación "ya no existe").
+    for (ch, ext), l in linkmap.items():
+        if not ch_status.get(ch, {}).get("ok"):
+            continue
+        if (ch, ext) in live:
+            continue
+        linked_code = id2code.get(l.get("product_id")) or ""
+        pend.append({
+            "channel": ch, "ext_id": ext,
+            "title": l.get("ml_title") or ext,
+            "thumb": l.get("ml_thumb") or "", "link": _mapeo_link(ch, ext, linked_code),
+            "sku_canal": "", "qty": 0, "price": 0, "motivo": "huerfano",
+            "sugerido_code": linked_code,
+            "detalle": ("Vínculo huérfano: el inventario lo cree vinculado al SKU "
+                        "«%s», pero el canal ya no muestra esa publicación viva "
+                        "(id cambiado, pausada o eliminada)." % (linked_code or "—")),
+            "_meta": {"title": l.get("ml_title") or "", "thumb": l.get("ml_thumb") or ""},
+        })
+
+    _orden = {"sin_mapear": 0, "mal_mapeado": 1, "huerfano": 2}
+    pend.sort(key=lambda x: (x["channel"], _orden.get(x["motivo"], 9),
+                             x["title"].lower()))
+
+    # ── Reconciliación por canal (partida doble) ──
+    recon = {}
+    canales = set(list(live_by_ch) + list(links_by_ch) + list(ch_status))
+    for ch in canales:
+        st = ch_status.get(ch, {})
+        respondio = bool(st.get("ok"))
+        n_sin = sum(1 for p in pend if p["channel"] == ch and p["motivo"] == "sin_mapear")
+        n_cru = sum(1 for p in pend if p["channel"] == ch and p["motivo"] == "mal_mapeado")
+        n_hue = sum(1 for p in pend if p["channel"] == ch and p["motivo"] == "huerfano")
+        vivas = live_by_ch.get(ch, 0)
+        mapeadas = sum(1 for (c, e) in linkmap if c == ch and (c, e) in live)
+        nlinks = links_by_ch.get(ch, 0)
+        # Cuadre por partida doble cruzando las DOS fuentes:
+        #   · feed vivo:  vivas == mapeadas + sin_mapear        (toda viva está o no mapeada)
+        #   · tabla links: links == mapeadas + huérfanos         (todo vínculo apunta o no a una viva)
+        # La 2ª es la no trivial: si no cuadra, hay vínculos duplicados o basura.
+        cuadra = (vivas == mapeadas + n_sin) and (
+            not respondio or nlinks == mapeadas + n_hue)
+        ok_ch = respondio and cuadra and n_sin == 0 and n_cru == 0 and n_hue == 0
+        recon[ch] = {
+            "respondio": respondio, "error": st.get("error") or "",
+            "vivas": vivas, "mapeadas": mapeadas, "links": links_by_ch.get(ch, 0),
+            "sin_mapear": n_sin, "cruzados": n_cru, "huerfanos": n_hue,
+            "cuadra": cuadra, "ok": ok_ch,
+        }
+
+    coherencia = bool(recon) and all(r["ok"] for r in recon.values())
+    return {
+        "pendientes": pend, "channels": ch_status, "reconciliacion": recon,
+        "coherencia": coherencia,
+        "n_sin_mapear": sum(1 for p in pend if p["motivo"] == "sin_mapear"),
+        "n_mal_mapeado": sum(1 for p in pend if p["motivo"] == "mal_mapeado"),
+        "n_huerfano": sum(1 for p in pend if p["motivo"] == "huerfano"),
+        "generado": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+
+
+def _mapeo_persist(audit: dict):
+    """Upsert del snapshot en mapeo_pendientes (por channel+ext_id) y marca como
+    resueltas las que ya no aparecen. Best-effort (si la tabla no existe, no
+    rompe: la sección sigue funcionando con la auditoría en vivo)."""
+    try:
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        vivos = set()
+        for p in audit.get("pendientes", []):
+            vivos.add((p["channel"], p["ext_id"]))
+            db._sb_post("mapeo_pendientes?on_conflict=channel,ext_id", {
+                "channel": p["channel"], "ext_id": p["ext_id"],
+                "title": p["title"], "thumb": p["thumb"], "link": p["link"],
+                "sku_canal": p["sku_canal"], "qty": p["qty"], "price": p["price"],
+                "motivo": p["motivo"], "sugerido_code": p["sugerido_code"],
+                "detalle": p["detalle"], "visto_at": now, "resuelto": False,
+                "resuelto_at": None, "resuelto_code": None}, upsert=True)
+        prev = db._sb_get("mapeo_pendientes?resuelto=eq.false&"
+                          "select=id,channel,ext_id") or []
+        for r in prev:
+            if (r.get("channel"), r.get("ext_id")) not in vivos:
+                db._sb_patch("mapeo_pendientes", "id=eq.%d" % r["id"],
+                             {"resuelto": True, "resuelto_at": now,
+                              "resuelto_code": "(auto: ya mapeada)"})
+    except Exception:
+        pass
+
+
+def _mapeo_run(force=False, report=True) -> dict:
+    """Corre la auditoría (caché de 5 min), persiste y reporta a Cerebro."""
+    with _MAPEO_LOCK:
+        if (not force and _MAPEO_CACHE["data"]
+                and (time.time() - _MAPEO_CACHE["ts"]) < _MAPEO_TTL):
+            return _MAPEO_CACHE["data"]
+        audit = _mapeo_audit()
+        _mapeo_persist(audit)
+        _MAPEO_CACHE["ts"] = time.time()
+        _MAPEO_CACHE["data"] = audit
+    if report:
+        recon = audit.get("reconciliacion") or {}
+        caidos = [c for c, r in recon.items() if not r.get("respondio")]
+        # Resumen de cuadre por canal para el mensaje de Cerebro.
+        ok_ch = sorted(c for c, r in recon.items() if r.get("ok"))
+        if audit.get("coherencia"):
+            _cerebro_set_heartbeat(
+                _MAPEO_TASK_ID, "ok",
+                "Coherencia verificada: cada publicación viva cuadra con su SKU "
+                "(0 sin mapear · 0 cruzados · 0 huérfanos) en %s." % (
+                    ", ".join(ok_ch) or "los canales activos"),
+                nombre="Mapeo de SKU", canal="sistema", icon="bolt",
+                cad="Diario · 8:00 PM", desc=_MAPEO_DESC)
+        elif caidos:
+            # No es verde porque un canal no respondió → verificación PARCIAL.
+            _cerebro_set_heartbeat(
+                _MAPEO_TASK_ID, "warn",
+                "Verificación parcial: no respondió %s. %d pendiente(s) en lo "
+                "auditado (%d sin mapear · %d cruzado · %d huérfano). Reintentar." % (
+                    ", ".join(sorted(caidos)), len(audit["pendientes"]),
+                    audit["n_sin_mapear"], audit["n_mal_mapeado"],
+                    audit["n_huerfano"]),
+                nombre="Mapeo de SKU", canal="sistema", icon="bolt",
+                cad="Diario · 8:00 PM", desc=_MAPEO_DESC)
+        else:
+            _cerebro_set_heartbeat(
+                _MAPEO_TASK_ID, "warn",
+                "%d publicación(es) por resolver: %d sin mapear · %d SKU cruzado · "
+                "%d huérfano. Revisa la sección Mapeo." % (
+                    len(audit["pendientes"]), audit["n_sin_mapear"],
+                    audit["n_mal_mapeado"], audit["n_huerfano"]),
+                nombre="Mapeo de SKU", canal="sistema", icon="bolt",
+                cad="Diario · 8:00 PM", desc=_MAPEO_DESC)
+    return audit
+
+
+@app.get("/api/mapeo")
+def mapeo_get(force: int = 0, user: dict = Depends(_current_user)):
+    """Reporte de publicaciones pendientes de mapear + productos para el
+    desplegable. Visitar la sección audita los canales, persiste el snapshot y
+    reporta a Cerebro. Cualquier usuario."""
+    audit = _mapeo_run(force=bool(force))
+    prods = db._sb_get("inventory_products?select=id,code,name&order=code.asc") or []
+    productos = [{"id": p["id"], "code": p.get("code") or "",
+                  "name": p.get("name") or ""} for p in prods]
+    return {"ok": True, "generado": audit["generado"],
+            "channels": audit["channels"], "reconciliacion": audit["reconciliacion"],
+            "coherencia": audit["coherencia"], "n_sin_mapear": audit["n_sin_mapear"],
+            "n_mal_mapeado": audit["n_mal_mapeado"], "n_huerfano": audit["n_huerfano"],
+            "pendientes": audit["pendientes"], "productos": productos}
+
+
+@app.get("/api/mapeo/count")
+def mapeo_count(user: dict = Depends(_current_user)):
+    """Pendientes sin resolver (badge del menú). Lee la tabla persistida; si no
+    existe aún, devuelve 0."""
+    try:
+        rows = db._sb_get("mapeo_pendientes?resuelto=eq.false&select=id") or []
+        return {"count": len(rows)}
+    except Exception:
+        return {"count": 0}
+
+
+@app.post("/api/mapeo/scan")
+def mapeo_scan(key: str = "", authorization: Optional[str] = Header(None)):
+    """Fuerza la auditoría, persiste y reporta a Cerebro. Auth: ?key=
+    BOUN_EXPORT_TOKEN (planificador sin sesión) o sesión admin. La usa la skill
+    diaria de mapeo si corre sin abrir la web."""
+    token = os.environ.get("BOUN_EXPORT_TOKEN", "")
+    authed = bool(token and key == token)
+    if not authed:
+        try:
+            u = _current_user(authorization)
+            authed = bool(u and u.get("role") == "admin")
+        except Exception:
+            authed = False
+    if not authed:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    audit = _mapeo_run(force=True)
+    return {"ok": True, "generado": audit["generado"], "coherencia": audit["coherencia"],
+            "total": len(audit["pendientes"]), "n_sin_mapear": audit["n_sin_mapear"],
+            "n_mal_mapeado": audit["n_mal_mapeado"], "n_huerfano": audit["n_huerfano"],
+            "reconciliacion": audit["reconciliacion"], "channels": audit["channels"]}
+
+
+class MapeoAsociarIn(BaseModel):
+    channel: str
+    ext_id: str
+    product_id: int
+    title: Optional[str] = ""
+    thumb: Optional[str] = ""
+    qty: Optional[float] = 0
+    price: Optional[float] = 0
+    logistic: Optional[str] = ""
+    inv_id: Optional[str] = ""
+    upid: Optional[str] = ""
+
+
+@app.post("/api/mapeo/asociar")
+def mapeo_asociar(data: MapeoAsociarIn, user: dict = Depends(_current_user)):
+    """Asocia UNA publicación pendiente al SKU elegido y la marca como resuelta."""
+    ch = (data.channel or "").strip()
+    ext = (data.ext_id or "").strip()
+    if not ext or not data.product_id:
+        raise HTTPException(400, "Faltan channel/ext_id/product_id")
+    prows = db._sb_get("inventory_products?id=eq.%d&select=id,code"
+                       % data.product_id) or []
+    if not prows:
+        raise HTTPException(404, "Producto no existe")
+    ok = db.inv_link_add(data.product_id, ch, ext, {
+        "title": data.title, "thumb": data.thumb, "qty": data.qty,
+        "price": data.price, "logistic": data.logistic,
+        "inv_id": data.inv_id, "upid": data.upid})
+    if not ok:
+        raise HTTPException(400, "No se pudo crear el vínculo")
+    code = prows[0].get("code") or ""
+    try:
+        db._sb_patch("mapeo_pendientes",
+                     "channel=eq.%s&ext_id=eq.%s" % (_q_(ch), _q_(ext)),
+                     {"resuelto": True, "resuelto_code": code,
+                      "resuelto_at": datetime.now(timezone.utc).strftime(
+                          "%Y-%m-%dT%H:%M:%SZ")})
+    except Exception:
+        pass
+    _MAPEO_CACHE["ts"] = 0   # invalida la caché para reflejar el cambio
+    return {"ok": True, "channel": ch, "ext_id": ext, "code": code}
+
+
+class MapeoDesvincularIn(BaseModel):
+    channel: str
+    ext_id: str
+
+
+@app.post("/api/mapeo/desvincular")
+def mapeo_desvincular(data: MapeoDesvincularIn, user: dict = Depends(_admin)):
+    """Quita un vínculo huérfano (apunta a una publicación que el canal ya no
+    muestra viva). Solo admin: borra la fila de inventory_links."""
+    ch = (data.channel or "").strip()
+    ext = (data.ext_id or "").strip()
+    if not ext:
+        raise HTTPException(400, "Falta ext_id")
+    ok = db.inv_link_delete(ch, ext)
+    if not ok:
+        raise HTTPException(400, "No se pudo quitar el vínculo")
+    try:
+        db._sb_patch("mapeo_pendientes",
+                     "channel=eq.%s&ext_id=eq.%s" % (_q_(ch), _q_(ext)),
+                     {"resuelto": True, "resuelto_code": "(huérfano quitado)",
+                      "resuelto_at": datetime.now(timezone.utc).strftime(
+                          "%Y-%m-%dT%H:%M:%SZ")})
+    except Exception:
+        pass
+    _MAPEO_CACHE["ts"] = 0
+    return {"ok": True, "channel": ch, "ext_id": ext}
 
 
 # ── COMBOS (kits) — definición vía UI ────────────────────────────────────────
