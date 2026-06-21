@@ -3758,8 +3758,23 @@ def mapeo_get(force: int = 0, user: dict = Depends(_current_user)):
     reporta a Cerebro. Cualquier usuario."""
     audit = _mapeo_run(force=bool(force))
     prods = db._sb_get("inventory_products?select=id,code,name&order=code.asc") or []
+    # Foto por producto: la miniatura de su publicacion mas vendida (para el
+    # selector con imagenes de la seccion Mapeo).
+    thumb_by_pid = {}
+    try:
+        for l in (db._sb_get("inventory_links?select=product_id,ml_thumb,ml_sold") or []):
+            th = l.get("ml_thumb") or ""
+            if not th:
+                continue
+            pid = l.get("product_id"); sold = float(l.get("ml_sold") or 0)
+            cur = thumb_by_pid.get(pid)
+            if cur is None or sold > cur[0]:
+                thumb_by_pid[pid] = (sold, th)
+    except Exception:
+        thumb_by_pid = {}
     productos = [{"id": p["id"], "code": p.get("code") or "",
-                  "name": p.get("name") or ""} for p in prods]
+                  "name": p.get("name") or "",
+                  "thumb": (thumb_by_pid.get(p["id"]) or (0, ""))[1]} for p in prods]
     return {"ok": True, "generado": audit["generado"],
             "channels": audit["channels"], "reconciliacion": audit["reconciliacion"],
             "coherencia": audit["coherencia"], "n_sin_mapear": audit["n_sin_mapear"],
