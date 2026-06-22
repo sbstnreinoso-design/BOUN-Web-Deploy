@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import (FileResponse, JSONResponse, Response,
                                RedirectResponse, HTMLResponse, StreamingResponse)
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 
 import database as db
 
@@ -3285,6 +3285,15 @@ _CEREBRO_TASKS = [
      "run": "Armando la BOUN del mes…",
      "done": "BOUN del mes lista para tu revisión",
      "idle": "Programada para el día 7"},
+    {"id": "denuncias-diario", "canal": "mercadolibre",
+     "nombre": "Protección de marca (denuncias)", "icon": "alert",
+     "cad": "Diario · 8:00 PM", "hours": [20], "days": None,
+     "desc": "Busca tu marca en el Brand Protection Program, denuncia a los "
+             "vendedores que se cuelgan de tus catálogos BOUN y hace seguimiento "
+             "del estado de cada denuncia.",
+     "run": "Detectando y denunciando infractores…",
+     "done": "Infractores denunciados · estados actualizados",
+     "idle": "Próxima corrida a las 8:00 PM"},
     {"id": "falabella-boun-inventario-diario", "canal": "falabella",
      "nombre": "Corrida diaria de contenido", "icon": "spark",
      "cad": "Diario · 11:00 PM", "hours": [23], "days": None,
@@ -3884,6 +3893,193 @@ def mapeo_desvincular(data: MapeoDesvincularIn, user: dict = Depends(_admin)):
         pass
     _MAPEO_CACHE["ts"] = 0
     return {"ok": True, "channel": ch, "ext_id": ext}
+
+
+# ── DENUNCIAS — Brand Protection Program (protección de marca BOUN) ───────────
+# La skill diaria "detectar-denunciar-marca" (8:00 PM) busca "boun" en el BPP,
+# detecta catálogos Marca:BOUN donde participa un vendedor ≠ BOUN COLOMBIA, los
+# denuncia (marca registrada → producto falsificado) y los envía; luego revisa
+# el estado de las denuncias de días anteriores. Cada corrida hace POST a
+# /api/denuncias/report con el snapshot; esta sección lo persiste en `denuncias`
+# (upsert por seller_nick+catalog_id), arma la traza en `historial`, y reporta a
+# Cerebro. La sección /denuncias de la web lo muestra.
+
+_DENUNCIAS_TASK_ID = "denuncias-diario"
+_DENUNCIAS_DESC = ("Protege la marca registrada BOUN: detecta vendedores que se "
+                   "cuelgan de tus catálogos y los denuncia en el Brand Protection "
+                   "Program de MercadoLibre, y hace seguimiento del estado.")
+# Estados que cierran el caso (la publicación cayó o ML resolvió).
+_DENUNCIA_ESTADOS_RESUELTO = {"procedente", "rechazada", "publicacion_inactiva"}
+
+
+def _denuncia_now() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+class DenunciaIn(BaseModel):
+    seller_nick: str
+    catalog_id: str
+    seller_link: Optional[str] = ""
+    pub_id: Optional[str] = ""
+    pub_title: Optional[str] = ""
+    pub_link: Optional[str] = ""
+    pub_price: Optional[float] = 0
+    thumb: Optional[str] = ""
+    catalog_title: Optional[str] = ""
+    catalog_link: Optional[str] = ""
+    motivo: Optional[str] = "marca_registrada"
+    tipo_infraccion: Optional[str] = "Es un producto falsificado"
+    texto: Optional[str] = ""
+    estado: Optional[str] = "en_proceso"
+    nota: Optional[str] = ""           # nota libre para el historial de esta corrida
+
+
+class DenunciasReportIn(BaseModel):
+    denuncias: List[DenunciaIn] = []   # snapshot de la corrida (nuevas + revisadas)
+    resumen: Optional[dict] = None     # {nuevas, en_proceso, procedentes, ...} opcional
+
+
+def _denuncia_upsert(d: dict) -> dict:
+    """Upsert de UNA denuncia por (seller_nick, catalog_id). Si ya existe y cambió
+    el estado, agrega una entrada al historial. Best-effort."""
+    nick = (d.get("seller_nick") or "").strip()
+    cat = (d.get("catalog_id") or "").strip()
+    if not nick or not cat:
+        return {"ok": False, "error": "faltan seller_nick/catalog_id"}
+    now = _denuncia_now()
+    estado = (d.get("estado") or "en_proceso").strip()
+    pub_link = (d.get("pub_link") or "").strip() or _permalink_from_mco(d.get("pub_id") or "")
+    cat_link = (d.get("catalog_link") or "").strip() or _permalink_from_mco(cat)
+    try:
+        prev = db._sb_get("denuncias?seller_nick=eq.%s&catalog_id=eq.%s&select=*"
+                          % (_q_(nick), _q_(cat))) or []
+    except Exception:
+        prev = []
+    hist_nota = (d.get("nota") or "").strip()
+    if prev:
+        row = prev[0]
+        hist = row.get("historial") or []
+        if not isinstance(hist, list):
+            hist = []
+        cambio_estado = (row.get("estado") != estado)
+        if cambio_estado or hist_nota:
+            hist.append({"fecha": now, "estado": estado,
+                         "nota": hist_nota or ("Estado: %s" % estado)})
+        patch = {
+            "seller_link": d.get("seller_link") or row.get("seller_link"),
+            "pub_id": d.get("pub_id") or row.get("pub_id"),
+            "pub_title": d.get("pub_title") or row.get("pub_title"),
+            "pub_link": pub_link or row.get("pub_link"),
+            "pub_price": d.get("pub_price") or row.get("pub_price") or 0,
+            "thumb": d.get("thumb") or row.get("thumb"),
+            "catalog_title": d.get("catalog_title") or row.get("catalog_title"),
+            "catalog_link": cat_link or row.get("catalog_link"),
+            "motivo": d.get("motivo") or row.get("motivo") or "marca_registrada",
+            "tipo_infraccion": d.get("tipo_infraccion") or row.get("tipo_infraccion"),
+            "texto": d.get("texto") or row.get("texto"),
+            "estado": estado, "revisado_at": now, "historial": hist,
+            "resuelto": estado in _DENUNCIA_ESTADOS_RESUELTO,
+            "resuelto_at": now if estado in _DENUNCIA_ESTADOS_RESUELTO else row.get("resuelto_at"),
+        }
+        db._sb_patch("denuncias", "id=eq.%d" % row["id"], patch)
+        return {"ok": True, "id": row["id"], "nuevo": False, "cambio_estado": cambio_estado}
+    # Nueva denuncia
+    hist = [{"fecha": now, "estado": estado,
+             "nota": hist_nota or "Denuncia presentada en el BPP."}]
+    db._sb_post("denuncias", {
+        "seller_nick": nick, "seller_link": d.get("seller_link") or "",
+        "pub_id": d.get("pub_id") or "", "pub_title": d.get("pub_title") or "",
+        "pub_link": pub_link, "pub_price": d.get("pub_price") or 0,
+        "thumb": d.get("thumb") or "", "catalog_id": cat,
+        "catalog_title": d.get("catalog_title") or "", "catalog_link": cat_link,
+        "motivo": d.get("motivo") or "marca_registrada",
+        "tipo_infraccion": d.get("tipo_infraccion") or "Es un producto falsificado",
+        "texto": d.get("texto") or "", "estado": estado,
+        "denunciado_at": now, "revisado_at": now,
+        "resuelto": estado in _DENUNCIA_ESTADOS_RESUELTO,
+        "resuelto_at": now if estado in _DENUNCIA_ESTADOS_RESUELTO else None,
+        "historial": hist})
+    return {"ok": True, "nuevo": True}
+
+
+def _denuncias_counts() -> dict:
+    try:
+        rows = db._sb_get("denuncias?select=estado,resuelto") or []
+    except Exception:
+        rows = []
+    c = {"total": len(rows), "activas": 0, "en_proceso": 0, "pendiente": 0,
+         "procedente": 0, "rechazada": 0, "publicacion_inactiva": 0}
+    for r in rows:
+        e = r.get("estado") or ""
+        c[e] = c.get(e, 0) + 1
+        if not r.get("resuelto"):
+            c["activas"] += 1
+    return c
+
+
+@app.get("/api/denuncias")
+def denuncias_get(user: dict = Depends(_current_user)):
+    """Lista de denuncias para la sección /denuncias (más recientes primero)."""
+    try:
+        rows = db._sb_get("denuncias?select=*&order=denunciado_at.desc") or []
+    except Exception:
+        rows = []
+    return {"ok": True, "generado": _denuncia_now(),
+            "counts": _denuncias_counts(), "denuncias": rows}
+
+
+@app.get("/api/denuncias/count")
+def denuncias_count(user: dict = Depends(_current_user)):
+    """Denuncias activas (en proceso / pendientes) para el badge del menú."""
+    try:
+        return {"count": _denuncias_counts().get("activas", 0)}
+    except Exception:
+        return {"count": 0}
+
+
+@app.post("/api/denuncias/report")
+def denuncias_report(data: DenunciasReportIn, key: str = "",
+                     authorization: Optional[str] = Header(None)):
+    """Recibe el snapshot diario de la skill y persiste cada denuncia (upsert por
+    seller_nick+catalog_id, con traza en historial). Reporta a Cerebro.
+    Auth: ?key=BOUN_EXPORT_TOKEN (planificador sin sesión) o sesión admin."""
+    token = os.environ.get("BOUN_EXPORT_TOKEN", "")
+    authed = bool(token and key == token)
+    if not authed:
+        try:
+            u = _current_user(authorization)
+            authed = bool(u and u.get("role") == "admin")
+        except Exception:
+            authed = False
+    if not authed:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    nuevas = cambios = 0
+    errores = []
+    for d in (data.denuncias or []):
+        try:
+            r = _denuncia_upsert(d.dict())
+            if r.get("ok"):
+                if r.get("nuevo"):
+                    nuevas += 1
+                elif r.get("cambio_estado"):
+                    cambios += 1
+            else:
+                errores.append(r.get("error"))
+        except Exception as e:
+            errores.append(str(e)[:120])
+    c = _denuncias_counts()
+    # Heartbeat a Cerebro: resumen del día y seguimiento de las activas.
+    msg = ("%d denuncia(s) presentada(s) hoy · %d con cambio de estado · "
+           "%d activa(s) en seguimiento (%d en proceso · %d procedentes · "
+           "%d publicaciones caídas)." % (
+               nuevas, cambios, c.get("activas", 0), c.get("en_proceso", 0),
+               c.get("procedente", 0), c.get("publicacion_inactiva", 0)))
+    _cerebro_set_heartbeat(_DENUNCIAS_TASK_ID, "ok", msg,
+                           nombre="Protección de marca (denuncias)",
+                           canal="mercadolibre", icon="alert",
+                           cad="Diario · 8:00 PM", desc=_DENUNCIAS_DESC)
+    return {"ok": True, "nuevas": nuevas, "cambios": cambios,
+            "counts": c, "errores": [e for e in errores if e]}
 
 
 # ── COMBOS (kits) — definición vía UI ────────────────────────────────────────

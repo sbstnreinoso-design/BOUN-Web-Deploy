@@ -57,6 +57,7 @@ const NAV=[
   ["dashboard","⬛  Dashboard"],
   ["cerebro","🧠  Cerebro"],
   ["mapeo","🔗  Mapeo"],
+  ["denuncias","🛡  Denuncias"],
   ["ventas","↗  Ventas"],
   ["inventory","▦  Inventario"],
   ["cola","📦  Pendientes de bodega"],
@@ -76,6 +77,7 @@ function showApp(){
   go("dashboard");
   refreshColaBadge();
   refreshMapeoBadge();
+  refreshDenunciasBadge();
   scanGlobalPoll();
 }
 // ── Indicador flotante global de escaneo (badge fijo, cualquier sección) ─────
@@ -127,12 +129,21 @@ async function refreshMapeoBadge(){
     if(b) b.textContent=r.count>0?r.count:"", b.style.display=r.count>0?"inline-block":"none";
   }catch(e){}
 }
+async function refreshDenunciasBadge(){
+  try{
+    const r=await api("/denuncias/count");
+    const b=document.getElementById("badge-denuncias");
+    if(b) b.textContent=r.count>0?r.count:"", b.style.display=r.count>0?"inline-block":"none";
+  }catch(e){}
+}
+
 
 function go(id){
   document.querySelectorAll(".nav a").forEach(a=>a.classList.toggle("active",a.dataset.nav===id));
   if(id==="dashboard") renderDashboard();
   else if(id==="cerebro") renderCerebro();
   else if(id==="mapeo") renderMapeo();
+  else if(id==="denuncias") renderDenuncias();
   else if(id==="ventas") renderSales();
   else if(id==="inventory") renderInventory();
   else if(id==="cola") renderCola();
@@ -1088,6 +1099,74 @@ async function mapeoScanPoll(labels){
   };
   await tick();
   MAPEO_SCAN_TIMER=setInterval(tick, 1500);
+}
+
+// ── DENUNCIAS (Brand Protection Program) ─────────────────────────────────────
+let DENUNCIAS=null;
+const DEN_EST={
+  pendiente:["PENDIENTE","#E0A23C","#0A0A0A"],
+  en_proceso:["EN PROCESO","#2D8CFF","#fff"],
+  procedente:["PROCEDENTE","#16A34A","#fff"],
+  publicacion_inactiva:["PUBLICACIÓN CAÍDA","#16A34A","#fff"],
+  rechazada:["RECHAZADA","#E11D48","#fff"],
+};
+function denFecha(s){ if(!s)return"—"; try{return new Date(s).toLocaleDateString("es-CO",{day:"2-digit",month:"short",year:"numeric"});}catch(e){return s;} }
+async function renderDenuncias(){
+  const v=document.getElementById("view");
+  v.innerHTML=`<div class="row-between"><div>
+      <div class="page-title">🛡 Denuncias · Protección de marca</div>
+      <div class="page-sub">Vendedores que se cuelgan de tus catálogos BOUN o usan tu marca registrada sin autorización. La skill los denuncia en el Brand Protection Program de MercadoLibre cada día (8:00 PM) y aquí sigues el estado de cada caso.</div>
+    </div><button class="btn-acc" onclick="renderDenuncias()">↻ Actualizar</button></div>
+    <div id="denKpis" class="kpis"></div>
+    <div id="denBody"><div class="loading"><span class="spinner"></span> Cargando denuncias…</div></div>`;
+  try{
+    const r=await api("/denuncias");
+    DENUNCIAS=r; refreshDenunciasBadge(); drawDenKpis(r); drawDenuncias();
+  }catch(e){ document.getElementById("denBody").innerHTML=`<div class="red">${esc(e.message)}</div>`; }
+}
+function drawDenKpis(r){
+  const c=r.counts||{};
+  const caidas=(c.procedente||0)+(c.publicacion_inactiva||0);
+  document.getElementById("denKpis").innerHTML=`
+    <div style="display:flex;gap:10px;flex-wrap:wrap;width:100%">
+      <div class="kpi" style="min-width:96px"><div class="cap">Total</div><div class="val">${c.total||0}</div></div>
+      <div class="kpi" style="min-width:96px"><div class="cap">En proceso</div><div class="val">${c.en_proceso||0}</div></div>
+      <div class="kpi" style="min-width:96px"><div class="cap">Caídas / ganadas</div><div class="val" style="color:var(--green)">${caidas}</div></div>
+      <div class="kpi" style="min-width:96px"><div class="cap">Rechazadas</div><div class="val">${c.rechazada||0}</div></div>
+    </div>`;
+}
+function drawDenuncias(){
+  const r=DENUNCIAS; if(!r)return;
+  const ds=r.denuncias||[];
+  const body=document.getElementById("denBody");
+  if(!ds.length){ body.innerHTML=`<div class="empty" style="text-align:center;padding:40px;color:var(--muted)"><div style="font-size:40px">🛡</div><div style="margin-top:8px;font-size:15px">Aún no hay denuncias registradas. La skill las irá agregando en su corrida diaria.</div></div>`; return; }
+  body.innerHTML=ds.map((d,i)=>{
+    const est=DEN_EST[d.estado]||["—","#666","#fff"];
+    const badge=`<span style="background:${est[1]};color:${est[2]};font-size:10px;font-weight:800;padding:2px 8px;border-radius:20px">${est[0]}</span>`;
+    const foto=d.thumb?`<img src="${esc(d.thumb)}" loading="lazy" style="width:64px;height:64px;border-radius:10px;object-fit:cover;background:var(--surf);border:1px solid var(--border);flex:none">`
+      :`<span style="width:64px;height:64px;border-radius:10px;background:var(--surf);border:1px solid var(--border);flex:none;display:flex;align-items:center;justify-content:center;font-size:24px">🛡️</span>`;
+    const lpub=d.pub_link?`<a href="${esc(d.pub_link)}" target="_blank" rel="noopener" class="btn-ghost" style="padding:6px 11px;border-radius:8px;text-decoration:none">Publicación infractora ↗</a>`:"";
+    const lcat=d.catalog_link?`<a href="${esc(d.catalog_link)}" target="_blank" rel="noopener" class="btn-ghost" style="padding:6px 11px;border-radius:8px;text-decoration:none">Catálogo usurpado ↗</a>`:"";
+    const lsell=d.seller_link?`<a href="${esc(d.seller_link)}" target="_blank" rel="noopener" class="btn-ghost" style="padding:6px 11px;border-radius:8px;text-decoration:none">Vendedor ↗</a>`:"";
+    const hist=(d.historial&&d.historial.length)?`<details style="margin-top:8px"><summary style="cursor:pointer;font-size:11.5px;color:var(--muted)">Historial (${d.historial.length})</summary>
+        <div style="margin-top:6px;border-left:2px solid var(--border);padding-left:10px">${d.historial.map(h=>`<div style="font-size:11.5px;margin-bottom:3px"><b>${denFecha(h.fecha)}</b> · ${esc((DEN_EST[h.estado]||[h.estado])[0])}${h.nota?` — <span class="muted">${esc(h.nota)}</span>`:""}</div>`).join("")}</div></details>`:"";
+    return `<div class="card" style="display:flex;gap:16px;align-items:flex-start;padding:16px;margin-bottom:10px;flex-wrap:wrap">
+      ${foto}
+      <div style="flex:1;min-width:260px">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px">${badge}
+          <span style="font-weight:800;font-size:14px">${esc(d.seller_nick)}</span>
+          <span class="muted" style="font-size:11px">denunciado ${denFecha(d.denunciado_at)}</span></div>
+        <div style="font-weight:600;font-size:13.5px;line-height:1.3">${esc(d.pub_title||d.catalog_title||d.pub_id||"")}</div>
+        <div class="muted" style="font-size:11.5px;margin-top:4px">
+          ${d.pub_id?`Pub: <b style="color:var(--text)">${esc(d.pub_id)}</b> · `:""}Catálogo: <b style="color:var(--text)">${esc(d.catalog_id)}</b>${d.pub_price?` · ${cop(d.pub_price)}`:""}
+          · Motivo: ${esc(d.tipo_infraccion||d.motivo||"marca registrada")}
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:9px">${lpub} ${lcat} ${lsell}</div>
+        ${hist}
+      </div>
+      <div class="muted" style="font-size:11px;text-align:right;min-width:96px">Última revisión<br><b style="color:var(--text)">${denFecha(d.revisado_at)}</b></div>
+    </div>`;
+  }).join("");
 }
 
 // ── MIS PRODUCTOS ────────────────────────────────────────────────────────────
@@ -2170,6 +2249,7 @@ const CB_FALLBACK_TASKS=[
   {id:"ml1",canal:"mercadolibre",nombre:"Inventario diario",icon:"box",cad:"Diario · 8:00 AM",hours:[8],days:null,desc:"Revisa publicación por publicación; en las agotadas quita el Full y deja el stock en 0.",run:"Recorriendo publicaciones…",done:"Revisión completa · agotadas marcadas",idle:"Listo hasta mañana 8:00 AM"},
   {id:"ml2",canal:"mercadolibre",nombre:"Preguntas, reclamos y facturación",icon:"chat",cad:"2× día · 9:00 AM y 4:00 PM",hours:[9,16],days:null,desc:"Responde compradores, gestiona reclamos y envía el RUT a Edgar por WhatsApp.",run:"Leyendo preguntas y reclamos…",done:"Bandeja respondida · facturación al día",idle:"Próxima pasada a las 4:00 PM"},
   {id:"ml3",canal:"mercadolibre",nombre:"Campaña promo mensual (BOUN)",icon:"tag",cad:"Mensual · día 7, 1:00 PM",hours:[13],days:[7],desc:"Crea la BOUN del mes y alinea promociones a precios del mes anterior.",run:"Armando la BOUN del mes…",done:"BOUN lista para tu revisión",idle:"Programada para el día 7"},
+  {id:"dn1",canal:"mercadolibre",nombre:"Protección de marca (denuncias)",icon:"alert",cad:"Diario · 8:00 PM",hours:[20],days:null,desc:"Busca tu marca en el Brand Protection Program, denuncia a quienes se cuelgan de tus catálogos BOUN y hace seguimiento del estado.",run:"Detectando y denunciando infractores…",done:"Infractores denunciados · estados actualizados",idle:"Próxima corrida a las 8:00 PM"},
   {id:"fa1",canal:"falabella",nombre:"Corrida diaria de contenido",icon:"spark",cad:"Diario · 11:00 PM",hours:[23],days:null,desc:"Sube el puntaje de contenido a 100, pide reseñas y aplica el playbook 1★.",run:"Optimizando fichas y reseñas…",done:"Catálogo en puntaje 100 · reporte listo",idle:"Próxima corrida a las 11:00 PM"},
   {id:"fa2",canal:"falabella",nombre:"Auditoría quincenal",icon:"chart",cad:"Días 1 y 15 · 9:00 AM",hours:[9],days:[1,15],desc:"Audita ventas, productos killers y ROAS contra la línea base.",run:"Auditando ventas y ROAS…",done:"Auditoría lista vs. línea base",idle:"Próxima auditoría el día 1"},
   {id:"fa3",canal:"falabella",nombre:"Ajuste de pauta quincenal",icon:"target",cad:"Días 1 y 16 · 5:00 PM",hours:[17],days:[1,16],desc:"Optimiza campañas: pausa sin stock, recorta ACOS alto y escala el ROAS sano.",run:"Recalculando campañas…",done:"Pauta optimizada · sin stock pausado",idle:"Próximo ajuste el día 1"},
