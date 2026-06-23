@@ -2356,10 +2356,24 @@ def _compute_plan(codigo: str, disponible: int, reactivate: bool = False) -> dic
                                "excluidas": ml_excl}
     else:
         out["mercadolibre"] = {"reparto": {}, "excluidas": []}
-    # Falabella (SKUs del CSV)
-    fal = _sync.falabella_skus(codigo)
+    # Falabella: SKUs del CSV histórico + las publicaciones MAPEADAS en
+    # inventory_links (sección Mapeo). Antes el reparto usaba SOLO el CSV
+    # estático, así que una publicación de Falabella mapeada por Mapeo y que no
+    # estuviera en el CSV (p. ej. PA001BAG-LILA) nunca recibía stock. Ahora se
+    # unen ambas fuentes (dedup por seller_sku) para no dejar ninguna afuera.
+    fal_skus = {f["seller_sku"] for f in _sync.falabella_skus(codigo)}
+    if pid and db.channel_supported():
+        try:
+            for _l in (db._sb_get(
+                    "inventory_links?product_id=eq.%d&channel=eq.falabella"
+                    "&select=ml_item_id" % pid) or []):
+                _ext = (_l.get("ml_item_id") or "").strip()
+                if _ext:
+                    fal_skus.add(_ext)
+        except Exception:
+            pass
     out["falabella"] = {"reparto": _sync.reparto(
-        disponible, [{"key": f["seller_sku"], "ventas": 0} for f in fal])}
+        disponible, [{"key": sk, "ventas": 0} for sk in sorted(fal_skus)])}
     # Shopify ×2
     for ckey, shop in _SHOPIFY_SHOPS.items():
         vs = _shopify_variants_by_sku(shop, codigo)
