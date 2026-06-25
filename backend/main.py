@@ -4730,6 +4730,75 @@ def mj_sync_post(key: str = "", authorization: Optional[str] = Header(None)):
     return {"ok": True, "sync": r, "kpis": s}
 
 
+@app.get("/api/mj/debug")
+def mj_debug(user: dict = Depends(_current_user)):
+    """TEMPORAL: vuelca la estructura de pagos de las órdenes ML de MJ para
+    diagnosticar la fecha de liberación. Se elimina luego."""
+    out = {"orders": []}
+    try:
+        from ml_scraper import _ml_session_auth, ML_API as _A
+        import datetime as _dt
+        tg = _mj_targets()
+        ml_set = tg["ml"]
+        out["ml_set"] = list(ml_set.keys())
+        s, uid = _ml_session_auth()
+        if not s:
+            out["error"] = "sin sesión ML"
+            return out
+        try:
+            s.headers.pop("Api-Version", None)
+        except Exception:
+            pass
+        co = _dt.timezone(_dt.timedelta(hours=-5))
+        to_d = _dt.datetime.now(co)
+        from_d = to_d - _dt.timedelta(days=120)
+        since = from_d.strftime("%Y-%m-%dT%H:%M:%S.000-05:00")
+        until = to_d.strftime("%Y-%m-%dT%H:%M:%S.000-05:00")
+        r = s.get(f"{_A}/orders/search?seller={uid}"
+                  f"&order.date_created.from={since}"
+                  f"&order.date_created.to={until}"
+                  f"&sort=date_desc&limit=50", timeout=20)
+        out["search_status"] = r.status_code
+        d = r.json() if r.status_code == 200 else {}
+        for od in d.get("results", []):
+            oi_mj = [oi for oi in od.get("order_items", [])
+                     if str((oi.get("item") or {}).get("id") or "") in ml_set]
+            if not oi_mj:
+                continue
+            oid = str(od.get("id"))
+            pays = [{k: p.get(k) for k in
+                     ("money_release_date", "date_approved",
+                      "money_release_status", "status")}
+                    for p in (od.get("payments") or [])]
+            pkeys = list((od.get("payments") or [{}])[0].keys()) \
+                if od.get("payments") else []
+            det = None
+            try:
+                rd = s.get(f"{_A}/orders/{oid}", timeout=12)
+                if rd.status_code == 200:
+                    dj = rd.json()
+                    det = {"payments": [{k: p.get(k) for k in
+                            ("money_release_date", "date_approved",
+                             "money_release_status")}
+                           for p in (dj.get("payments") or [])],
+                           "keys": list(dj.keys())}
+                else:
+                    det = {"status_code": rd.status_code}
+            except Exception as e:
+                det = {"err": str(e)[:120]}
+            # ¿hay info de release a nivel de orden?
+            order_rel = {k: od.get(k) for k in od.keys()
+                         if "release" in k.lower() or "money" in k.lower()}
+            out["orders"].append({
+                "oid": oid, "status": od.get("status"),
+                "date_created": od.get("date_created"),
+                "search_payments": pays, "payment_keys": pkeys,
+                "order_release_fields": order_rel, "detail": det})
+    except Exception as e:
+        out["error"] = str(e)[:200]
+    return out
+
+
 class MJAbonoIn(BaseModel):
     monto: float
     fecha: Optional[str] = None
