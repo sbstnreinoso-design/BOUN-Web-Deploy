@@ -4737,6 +4737,58 @@ def mj_sync_post(key: str = "", authorization: Optional[str] = Header(None)):
 
 
 
+@app.get("/api/mj/addebug")
+def mj_addebug(iid: str = "", user: dict = Depends(_current_user)):
+    """TEMPORAL: prueba endpoints de Product Ads para hallar el gasto por ítem."""
+    import datetime as _dt
+    out = {"probes": {}}
+    try:
+        from ml_scraper import _ml_session_auth, ML_API as _A
+        s, uid = _ml_session_auth()
+        if not s:
+            return {"error": "sin sesión ML"}
+        h1 = {"Api-Version": "1"}
+        co = _dt.timezone(_dt.timedelta(hours=-5))
+        to_d = _dt.datetime.now(co).date()
+        from_d = to_d - _dt.timedelta(days=120)
+        d1, d2 = from_d.isoformat(), to_d.isoformat()
+        adv_id = None
+        try:
+            a = s.get(f"{_A}/advertising/advertisers?product_id=PADS",
+                      headers=h1, timeout=12)
+            out["advertisers"] = {"code": a.status_code,
+                                  "body": str(a.json())[:300]}
+            arr = a.json().get("advertisers", []) if a.status_code == 200 else []
+            if arr:
+                adv_id = arr[0].get("advertiser_id")
+        except Exception as e:
+            out["advertisers"] = {"err": str(e)[:120]}
+        out["adv_id"] = adv_id
+        urls = {
+            "campaigns": f"{_A}/advertising/advertisers/{adv_id}/product_ads/"
+                         f"campaigns?date_from={d1}&date_to={d2}&metrics=cost,clicks",
+            "items_q": f"{_A}/advertising/advertisers/{adv_id}/product_ads/"
+                       f"items?date_from={d1}&date_to={d2}&metrics=cost&limit=5",
+            "item_one": f"{_A}/advertising/advertisers/{adv_id}/product_ads/"
+                        f"items/{iid}?date_from={d1}&date_to={d2}&metrics=cost",
+            "ads_iid": f"{_A}/advertising/product_ads/ads/{iid}"
+                       f"?date_from={d1}&date_to={d2}&metrics=cost",
+        }
+        for label, url in urls.items():
+            try:
+                r = s.get(url, headers=h1, timeout=15)
+                ct = r.headers.get("content-type", "")
+                out["probes"][label] = {"code": r.status_code,
+                                        "body": (str(r.json())[:400]
+                                                 if ct.startswith("application/json")
+                                                 else r.text[:200])}
+            except Exception as e:
+                out["probes"][label] = {"err": str(e)[:120]}
+    except Exception as e:
+        out["error"] = str(e)[:200]
+    return out
+
+
 class MJAbonoIn(BaseModel):
     monto: float
     fecha: Optional[str] = None
