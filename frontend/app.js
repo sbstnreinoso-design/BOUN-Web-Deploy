@@ -868,7 +868,7 @@ async function renderSales(force){
 }
 
 // ── MARÍA JOSÉ · Liquidación ─────────────────────────────────────────────────
-let MJ=null;
+let MJ=null, MJ_FROM="", MJ_TO="";
 const MJ_PLAT={mercadolibre:["MercadoLibre","#E0A23C"],falabella:["Falabella","#7FB3E0"],
   shopify_boun:["Shopify BOUN","#3FCB82"],shopify_kat:["Shopify KAT","#E68CA8"]};
 function mjPlatChip(p){ const [lbl,col]=MJ_PLAT[p]||[p,"#9B9A96"];
@@ -884,11 +884,22 @@ async function renderMariaJose(force){
       <button class="btn-acc" onclick="mjAbonoModal()">＋ Registrar abono</button>
       <button class="btn-ghost" onclick="renderMariaJose(true)">↻ Actualizar</button>
     </div></div>
+    <div class="filters" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0 4px">
+      <span class="cap" style="font-weight:700">Filtrar por fecha:</span>
+      <input type="date" class="field fmini" id="mjFrom" value="${esc(MJ_FROM)}" max="${_isoDay(0)}" onchange="MJ_FROM=this.value">
+      <span class="muted">→</span>
+      <input type="date" class="field fmini" id="mjTo" value="${esc(MJ_TO)}" max="${_isoDay(0)}" onchange="MJ_TO=this.value">
+      <button class="btn-acc" style="height:32px;padding:0 14px;border-radius:8px" onclick="renderMariaJose()">Aplicar</button>
+      ${(MJ_FROM||MJ_TO)?`<button class="btn-ghost" onclick="MJ_FROM='';MJ_TO='';renderMariaJose()">Limpiar</button>`:""}
+    </div>
     <div id="mjKpis" class="kpis"><div class="loading"><span class="spinner"></span> Calculando liquidación de María José…</div></div>
     <div id="mjNote"></div>
     <div id="mjBody"></div>`;
   try{
-    MJ=await api("/mj"+(force?"?force=1":""));
+    const qs=[]; if(force)qs.push("force=1");
+    if(MJ_FROM)qs.push("date_from="+MJ_FROM);
+    if(MJ_TO)qs.push("date_to="+MJ_TO);
+    MJ=await api("/mj"+(qs.length?"?"+qs.join("&"):""));
     drawMJ();
   }catch(e){ document.getElementById("mjKpis").innerHTML=`<div class="red">${esc(e.message)}</div>`; }
 }
@@ -903,7 +914,7 @@ function drawMJ(){
         <div class="val acc" style="font-size:28px">${cop(k.saldo||0)}</div>
         <div class="cap">Ya liberado y por pagar: <b style="color:var(--green)">${cop(k.saldo_liberado||0)}</b></div>
       </div>
-      <div class="kpi" style="flex:1;min-width:150px"><div class="cap">Neto total (le corresponde)</div><div class="val green">${cop(k.neto||0)}</div><div class="cap">${k.ventas||0} ventas · bruto ${cop(k.bruto||0)}</div></div>
+      <div class="kpi" style="flex:1;min-width:150px"><div class="cap">${(r.filtro&&r.filtro.activo)?"Neto del periodo":"Neto total (le corresponde)"}</div><div class="val green">${cop(k.neto||0)}</div><div class="cap">${k.ventas||0} ventas · bruto ${cop(k.bruto||0)}${(r.filtro&&r.filtro.activo)?` · neto total ${cop(k.neto_global||0)}`:""}</div></div>
       <div class="kpi" style="flex:1;min-width:140px"><div class="cap">Liberado por plataformas</div><div class="val">${cop(k.neto_liberado||0)}</div><div class="cap">Pendiente de liberación: ${cop(k.neto_pendiente||0)}</div></div>
       <div class="kpi" style="flex:1;min-width:140px"><div class="cap">Abonos pagados</div><div class="val amber">${cop(k.abonos||0)}</div><div class="cap">${(r.abonos||[]).length} abono(s)</div></div>
     </div>
@@ -916,6 +927,7 @@ function drawMJ(){
 
   // Avisos
   let notes="";
+  if(r.filtro&&r.filtro.activo) notes+=`<div class="note">Mostrando ventas ${r.filtro.date_from?`desde <b>${mjDate(r.filtro.date_from)}</b>`:""} ${r.filtro.date_to?`hasta <b>${mjDate(r.filtro.date_to)}</b>`:""} · ${k.ventas||0} de ${k.ventas_global||0} ventas. El <b>saldo a pagar</b> y los <b>abonos</b> siguen siendo del total (toda la historia).</div>`;
   if(r.cache_age_min>0) notes+=`<div class="note">Datos de hace ${r.cache_age_min} min · se refrescan solos cada 10 min (o usa ↻ Actualizar).</div>`;
   if(!(r.ventas||[]).length){
     notes+=`<div class="note">Aún no hay ventas atribuidas a María José. Marca sus productos en <b>Inventario</b> (botón «Producto de María José» en cada tarjeta) y vuelve aquí — sus ventas aparecerán solas.</div>`;

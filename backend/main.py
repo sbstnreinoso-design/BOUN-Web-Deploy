@@ -4220,6 +4220,39 @@ def _mj_ml_ad_cost(s, item_ids, since_d, until_d) -> dict:
     return out
 
 
+def _mj_ml_release(s, oid, od, co):
+    """Fecha en que ML libera el dinero de una orden (money_release_date).
+    El orders/search a veces no trae los pagos completos → si no está, se pide
+    el detalle de la orden /orders/{id}. Devuelve la fecha más tardía o None."""
+    import datetime as _dt
+
+    def _best(arr):
+        best = None
+        for pay in (arr or []):
+            mr = (pay.get("money_release_date")
+                  or pay.get("date_released") or "")
+            if mr:
+                try:
+                    d = _dt.datetime.fromisoformat(
+                        mr.replace("Z", "+00:00")).astimezone(co).date()
+                    if best is None or d > best:
+                        best = d
+                except Exception:
+                    pass
+        return best
+
+    rel = _best(od.get("payments"))
+    if rel is None:
+        try:
+            from ml_scraper import ML_API
+            r = s.get(f"{ML_API}/orders/{oid}", timeout=12)
+            if r.status_code == 200:
+                rel = _best(r.json().get("payments"))
+        except Exception:
+            pass
+    return rel
+
+
 def _mj_ml_shipping(s, shipment_id) -> float:
     """Costo de envío que asume el vendedor para un envío de ML (best-effort)."""
     if not shipment_id:
@@ -4330,17 +4363,7 @@ def _mj_sync(window_days=None) -> dict:
                                 co).date()
                         except Exception:
                             fecha = today
-                        rel = None
-                        for pay in (od.get("payments") or []):
-                            mr = pay.get("money_release_date") or ""
-                            if mr:
-                                try:
-                                    rel = _dt.datetime.fromisoformat(
-                                        mr.replace("Z", "+00:00")).astimezone(
-                                        co).date()
-                                except Exception:
-                                    rel = None
-                                break
+                        rel = _mj_ml_release(s, oid, od, co)
                         ship_id = (od.get("shipping") or {}).get("id")
                         env = _mj_ml_shipping(s, ship_id)
                         tot_u = sum(int(oi.get("quantity") or 0)
@@ -4569,8 +4592,13 @@ def _mj_sync(window_days=None) -> dict:
             "errores": [e for e in errores if e]}
 
 
-def _mj_summary() -> dict:
-    """KPIs + ventas + abonos para la sección /maria-jose (lee de Supabase)."""
+def _mj_summary(date_from: str = None, date_to: str = None) -> dict:
+    """KPIs + ventas + abonos para la sección /maria-jose (lee de Supabase).
+
+    Los KPIs de deuda (saldo, abonos) son SIEMPRE globales (toda la historia).
+    Si se pasa date_from/date_to, la TABLA de ventas, el resumen por plataforma
+    y el subtotal `periodo` se filtran por fecha_venta; los costos/neto del
+    encabezado también reflejan el periodo filtrado."""
     try:
         ventas = db._sb_get("mj_ventas?select=*&order=fecha_venta.desc") or []
     except Exception:
@@ -4579,18 +4607,39 @@ def _mj_summary() -> dict:
         abonos = db._sb_get("mj_abonos?select=*&order=fecha.desc") or []
     except Exception:
         abonos = []
-    tot_bruto = sum(float(v.get("precio_venta") or 0) for v in ventas)
-    tot_com = sum(float(v.get("comision") or 0) for v in ventas)
-    tot_ret = sum(float(v.get("retencion") or 0) for v in ventas)
-    tot_env = sum(float(v.get("costo_envio") or 0) for v in ventas)
-    tot_pub = sum(float(v.get("costo_publicidad") or 0) for v in ventas)
-    tot_neto = sum(float(v.get("neto_mj") or 0) for v in ventas)
-    neto_libre = sum(float(v.get("neto_mj") or 0) for v in ventas
-                     if v.get("liberado"))
-    neto_pend = tot_neto - neto_libre
+    df = (date_from or "")[:10] or None
+    dt = (date_to or "")[:10] or None
+    if df and dt and dt < df:
+        df, dt = dt, df
+
+    def _in_range(v):
+        f = (v.get("fecha_venta") or "")[:10]
+        if df and f < df:
+            return False
+        if dt and f > dt:
+            return False
+        return True
+
+    vfilt = [v for v in ventas if _in_range(v)] if (df or dt) else ventas
+
+    # Deuda GLOBAL (no depende del filtro).
+    g_neto = sum(float(v.get("neto_mj") or 0) for v in ventas)
+    g_libre = sum(float(v.get("neto_mj") or 0) for v in ventas
+                  if v.get("liberado"))
     tot_abonos = sum(float(a.get("monto") or 0) for a in abonos)
+
+    # Costos/neto del PERIODO mostrado (todo si no hay filtro).
+    p_bruto = sum(float(v.get("precio_venta") or 0) for v in vfilt)
+    p_com = sum(float(v.get("comision") or 0) for v in vfilt)
+    p_ret = sum(float(v.get("retencion") or 0) for v in vfilt)
+    p_env = sum(float(v.get("costo_envio") or 0) for v in vfilt)
+    p_pub = sum(float(v.get("costo_publicidad") or 0) for v in vfilt)
+    p_neto = sum(float(v.get("neto_mj") or 0) for v in vfilt)
+    p_libre = sum(float(v.get("neto_mj") or 0) for v in vfilt
+                  if v.get("liberado"))
+
     por_plat = {}
-    for v in ventas:
+    for v in vfilt:
         p = v.get("plataforma") or "?"
         b = por_plat.setdefault(p, {"unidades": 0, "bruto": 0.0, "neto": 0.0})
         b["unidades"] += int(v.get("unidades") or 0)
@@ -4598,23 +4647,28 @@ def _mj_summary() -> dict:
         b["neto"] += float(v.get("neto_mj") or 0)
     return {
         "ok": True, "generado": _mj_now(),
+        "filtro": {"date_from": df or "", "date_to": dt or "",
+                   "activo": bool(df or dt)},
         "kpis": {
-            "bruto": round(tot_bruto, 2), "comision": round(tot_com, 2),
-            "retencion": round(tot_ret, 2), "envio": round(tot_env, 2),
-            "publicidad": round(tot_pub, 2), "neto": round(tot_neto, 2),
-            "neto_liberado": round(neto_libre, 2),
-            "neto_pendiente": round(neto_pend, 2),
+            "bruto": round(p_bruto, 2), "comision": round(p_com, 2),
+            "retencion": round(p_ret, 2), "envio": round(p_env, 2),
+            "publicidad": round(p_pub, 2), "neto": round(p_neto, 2),
+            "neto_liberado": round(p_libre, 2),
+            "neto_pendiente": round(p_neto - p_libre, 2),
             "abonos": round(tot_abonos, 2),
-            "saldo": round(tot_neto - tot_abonos, 2),
-            "saldo_liberado": round(neto_libre - tot_abonos, 2),
-            "ventas": len(ventas)},
-        "por_plataforma": por_plat, "ventas": ventas, "abonos": abonos}
+            "neto_global": round(g_neto, 2),
+            "saldo": round(g_neto - tot_abonos, 2),
+            "saldo_liberado": round(g_libre - tot_abonos, 2),
+            "ventas": len(vfilt), "ventas_global": len(ventas)},
+        "por_plataforma": por_plat, "ventas": vfilt, "abonos": abonos}
 
 
 @app.get("/api/mj")
-def mj_get(force: bool = False, user: dict = Depends(_current_user)):
+def mj_get(force: bool = False, date_from: str = "", date_to: str = "",
+           user: dict = Depends(_current_user)):
     """Liquidación de María José.  Refresca desde las plataformas si el caché
-    venció (10 min) o si force=1, y devuelve KPIs + ventas + abonos."""
+    venció (10 min) o si force=1, y devuelve KPIs + ventas + abonos.
+    Filtro opcional por fecha: ?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD."""
     if force or (time.time() - _MJ_CACHE["ts"]) > _MJ_TTL:
         if _MJ_LOCK.acquire(blocking=False):
             try:
@@ -4623,7 +4677,7 @@ def mj_get(force: bool = False, user: dict = Depends(_current_user)):
                 pass
             finally:
                 _MJ_LOCK.release()
-    out = _mj_summary()
+    out = _mj_summary(date_from or None, date_to or None)
     out["cache_age_min"] = int((time.time() - _MJ_CACHE["ts"]) / 60)
     return out
 
