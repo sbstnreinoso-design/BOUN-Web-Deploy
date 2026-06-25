@@ -4747,11 +4747,25 @@ def mj_debug(oid: str = "", user: dict = Depends(_current_user)):
             r = s.get(f"{_A}/orders/{oid}", timeout=15)
             j = r.json() if r.status_code == 200 else {}
             pays = j.get("payments") or []
-            return {"oid": oid, "status": r.status_code,
-                    "order_status": j.get("status"),
-                    "payment_full": pays[0] if pays else None,
-                    "n_payments": len(pays),
-                    "order_keys": list(j.keys())}
+            pid = (pays[0] or {}).get("id") if pays else None
+            probes = {}
+            for label, url in (
+                ("ml_payments", f"{_A}/payments/{pid}"),
+                ("ml_collections", f"{_A}/collections/{pid}"),
+                ("mp_payments", f"https://api.mercadopago.com/v1/payments/{pid}"),
+            ):
+                try:
+                    rr = s.get(url, timeout=12)
+                    body = rr.json() if rr.status_code == 200 else {}
+                    probes[label] = {
+                        "code": rr.status_code,
+                        "money_release_date": body.get("money_release_date"),
+                        "money_release_status": body.get("money_release_status"),
+                        "has_mrd": "money_release_date" in body}
+                except Exception as e:
+                    probes[label] = {"err": str(e)[:80]}
+            return {"oid": oid, "payment_id": pid,
+                    "order_status": j.get("status"), "probes": probes}
         except Exception as e:
             return {"error": str(e)[:200]}
     out = {"orders": []}
