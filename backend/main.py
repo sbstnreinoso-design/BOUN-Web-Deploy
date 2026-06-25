@@ -4189,7 +4189,10 @@ def _mj_ml_ad_cost(s, item_ids, since_d, until_d) -> dict:
     out = {}
     try:
         from ml_scraper import ML_API
-        s.headers["Api-Version"] = "1"
+        # Header SOLO para las peticiones de publicidad (no contaminar la
+        # sesión: orders/search y el detalle de orden necesitan la versión por
+        # defecto para traer payments[].money_release_date).
+        _adh = {"Api-Version": "1"}
         for iid in item_ids:
             cost = 0.0
             for url in (
@@ -4199,7 +4202,7 @@ def _mj_ml_ad_cost(s, item_ids, since_d, until_d) -> dict:
                 f"?date_from={since_d}&date_to={until_d}&metrics=cost",
             ):
                 try:
-                    r = s.get(url, timeout=15)
+                    r = s.get(url, headers=_adh, timeout=15)
                     if r.status_code != 200:
                         continue
                     j = r.json()
@@ -4328,6 +4331,12 @@ def _mj_sync(window_days=None) -> dict:
             if not s:
                 errores.append("ML sin conexión")
             else:
+                # Asegurar versión por defecto (otras secciones pueden dejar
+                # "Api-Version: 1" pegado y eso oculta money_release_date).
+                try:
+                    s.headers.pop("Api-Version", None)
+                except Exception:
+                    pass
                 ad_cost = _mj_ml_ad_cost(s, list(ml_set.keys()),
                                          since_d, until_d)
                 _NO = {"cancelled", "invalid", "payment_required",

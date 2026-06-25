@@ -874,6 +874,7 @@ const MJ_PLAT={mercadolibre:["MercadoLibre","#E0A23C"],falabella:["Falabella","#
 function mjPlatChip(p){ const [lbl,col]=MJ_PLAT[p]||[p,"#9B9A96"];
   return `<span style="display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:11px;border:1px solid ${col}55;background:${col}1A;color:${col};font-size:10.5px;font-weight:700"><span style="width:6px;height:6px;border-radius:50%;background:${col}"></span>${esc(lbl)}</span>`; }
 function mjDate(s){ if(!s) return "—"; try{ return new Date(s+"T12:00:00").toLocaleDateString("es-CO",{day:"2-digit",month:"short",year:"2-digit"}); }catch(e){ return s; } }
+function mjToggleFilter(e){ if(e&&e.stopPropagation)e.stopPropagation(); const p=document.getElementById("mjFilterPanel"); if(p) p.style.display=(p.style.display==="none"||!p.style.display)?"block":"none"; }
 
 async function renderMariaJose(force){
   const v=document.getElementById("view");
@@ -881,17 +882,23 @@ async function renderMariaJose(force){
       <div class="page-title">💸 María José · Liquidación</div>
       <div class="page-sub">Lo que se le debe a María José por sus productos propios, en tiempo real. Cada venta de sus publicaciones, su plataforma, el precio, los costos reales descontados (comisión, retención, envío y publicidad), el ROAS/ACOS y cuándo libera cada plataforma el dinero. El saldo va sumando y se le restan los abonos que le pagues.</div>
     </div><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start">
+      <div style="position:relative">
+        <button class="btn-ghost" onclick="mjToggleFilter(event)">🗓 ${(MJ_FROM||MJ_TO)?"Fecha ●":"Fecha"} ▾</button>
+        <div id="mjFilterPanel" style="display:${(MJ_FROM||MJ_TO)?"block":"none"};position:absolute;top:42px;left:0;z-index:30;background:var(--surf,#1b1b1d);border:1px solid var(--border);border-radius:12px;padding:14px;width:min(260px,86vw);box-shadow:0 10px 30px rgba(0,0,0,.45)">
+          <div class="cap" style="font-weight:800;margin-bottom:10px">Filtrar ventas por fecha</div>
+          <label class="cap" style="display:block;margin-bottom:3px">Desde</label>
+          <input type="date" class="field" id="mjFrom" value="${esc(MJ_FROM)}" max="${_isoDay(0)}" onchange="MJ_FROM=this.value">
+          <label class="cap" style="display:block;margin:10px 0 3px">Hasta</label>
+          <input type="date" class="field" id="mjTo" value="${esc(MJ_TO)}" max="${_isoDay(0)}" onchange="MJ_TO=this.value">
+          <div style="display:flex;gap:8px;margin-top:12px">
+            <button class="btn-acc" style="flex:1" onclick="renderMariaJose()">Aplicar</button>
+            ${(MJ_FROM||MJ_TO)?`<button class="btn-ghost" onclick="MJ_FROM='';MJ_TO='';renderMariaJose()">Limpiar</button>`:""}
+          </div>
+        </div>
+      </div>
       <button class="btn-acc" onclick="mjAbonoModal()">＋ Registrar abono</button>
       <button class="btn-ghost" onclick="renderMariaJose(true)">↻ Actualizar</button>
     </div></div>
-    <div class="filters" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0 4px">
-      <span class="cap" style="font-weight:700">Filtrar por fecha:</span>
-      <input type="date" class="field fmini" id="mjFrom" value="${esc(MJ_FROM)}" max="${_isoDay(0)}" onchange="MJ_FROM=this.value">
-      <span class="muted">→</span>
-      <input type="date" class="field fmini" id="mjTo" value="${esc(MJ_TO)}" max="${_isoDay(0)}" onchange="MJ_TO=this.value">
-      <button class="btn-acc" style="height:32px;padding:0 14px;border-radius:8px" onclick="renderMariaJose()">Aplicar</button>
-      ${(MJ_FROM||MJ_TO)?`<button class="btn-ghost" onclick="MJ_FROM='';MJ_TO='';renderMariaJose()">Limpiar</button>`:""}
-    </div>
     <div id="mjKpis" class="kpis"><div class="loading"><span class="spinner"></span> Calculando liquidación de María José…</div></div>
     <div id="mjNote"></div>
     <div id="mjBody"></div>`;
@@ -963,11 +970,11 @@ function drawMJ(){
     </tr>`;
   }).join("");
 
-  const ventasTable=ventas.length?`<table class="sales mjt"><thead><tr>
+  const ventasTable=ventas.length?`<div style="overflow-x:auto;-webkit-overflow-scrolling:touch"><table class="sales mjt" style="min-width:680px"><thead><tr>
       <th>Producto</th><th>Plataforma</th><th style="text-align:center">U</th>
       <th style="text-align:right">Venta</th><th style="text-align:right">Costos</th>
       <th style="text-align:right">Neto María José</th><th style="text-align:right">Liberación</th>
-    </tr></thead><tbody>${filas}</tbody></table>`:"";
+    </tr></thead><tbody>${filas}</tbody></table></div>`:"";
 
   // Abonos
   const abonos=r.abonos||[];
@@ -981,7 +988,7 @@ function drawMJ(){
   const abonosBlock=`<div class="card" style="margin-top:18px;padding:16px">
       <div class="row-between" style="margin-bottom:8px"><div style="font-weight:800;font-size:14px">Abonos pagados a María José</div>
         <button class="btn-acc" style="padding:6px 13px;font-size:12px" onclick="mjAbonoModal()">＋ Registrar abono</button></div>
-      ${abonos.length?`<table class="sales"><thead><tr><th>Fecha</th><th>Monto</th><th>Método</th><th>Nota</th><th></th></tr></thead><tbody>${abFilas}</tbody></table>`
+      ${abonos.length?`<div style="overflow-x:auto;-webkit-overflow-scrolling:touch"><table class="sales" style="min-width:480px"><thead><tr><th>Fecha</th><th>Monto</th><th>Método</th><th>Nota</th><th></th></tr></thead><tbody>${abFilas}</tbody></table></div>`
         :`<div class="muted" style="font-size:12.5px">Aún no has registrado abonos. Cuando le pagues a María José, regístralo aquí y se descuenta del saldo.</div>`}
     </div>`;
 
