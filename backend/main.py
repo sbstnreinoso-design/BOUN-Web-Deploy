@@ -4652,19 +4652,24 @@ def _mj_sync(window_days=None) -> dict:
         except Exception:
             pass
 
-    # Guardar lo consumido por producto y desmarcar los que agotaron su cupo.
+    # Guardar lo consumido por producto. IMPORTANTE: cuando se agota el cupo NO
+    # se cambia el dueño a BOUN. El producto sigue marcado como de María José
+    # (queda "agotado", 0 restantes) por dos motivos:
+    #   1) sus ventas pasadas YA contadas siguen siendo de ella (se le deben), y
+    #      si lo desmarcáramos la limpieza de huérfanas borraría esas ventas;
+    #   2) como el cupo está lleno, las ventas NUEVAS ya no se le atribuyen y
+    #      pasan a BOUN automáticamente. El desmarcado real lo hace Sebastián a
+    #      mano con el botón «MJ» (eso sí borra sus ventas de la liquidación).
     for pid, cons in consumed_map.items():
         try:
-            patch = {"mj_consumed": round(cons, 2)}
-            if pid in clear_pids:
-                patch["owner"] = "BOUN"   # se agotaron sus unidades → quitar marca
-            db._sb_patch("inventory_products", "id=eq.%s" % pid, patch)
+            db._sb_patch("inventory_products", "id=eq.%s" % pid,
+                         {"mj_consumed": round(cons, 2)})
         except Exception:
             pass
 
     _MJ_CACHE["ts"] = time.time()
     return {"ok": True, "n": n, "filas": len(final_rows),
-            "desmarcados": len(clear_pids),
+            "agotados": len(clear_pids),
             "errores": [e for e in errores if e]}
 
 

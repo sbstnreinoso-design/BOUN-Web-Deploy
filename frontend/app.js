@@ -363,17 +363,23 @@ function mjMarkModal(pid){
   const on=p.owner==="MARIA_JOSE";
   const q=+p.mj_qty||0, c=Math.round(+p.mj_consumed||0);
   const todas = on && q<=0;
+  const anchor = (p.mj_anchor && String(p.mj_anchor).slice(0,10)) || _isoDay(0);
   openModal(`<h3>💸 Producto de María José</h3>
     <div class="sub">${esc(p.code||"")} · ${esc(p.name||"")}</div>
-    <p style="font-size:12.5px;color:var(--muted);margin:0 0 12px">María vende primero <b>sus</b> unidades; cuando se agotan, las siguientes ventas pasan a ser de BOUN y el producto se desmarca solo. Indica cuántas unidades son de ella.</p>
+    <p style="font-size:12.5px;color:var(--muted);margin:0 0 12px">María vende primero <b>sus</b> unidades; cuando se agotan (cupo lleno), las siguientes ventas pasan a ser de <b>BOUN</b> automáticamente. Indica cuántas unidades son de ella.</p>
     <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:10px;cursor:pointer">
-      <input type="radio" name="mjmode" value="qty" ${todas?"":"checked"} onchange="document.getElementById('mjQty').disabled=false;document.getElementById('mjQty').focus()"> Un número de unidades:
+      <input type="radio" name="mjmode" value="qty" ${todas?"":"checked"} onchange="document.getElementById('mjQty').disabled=false;document.getElementById('mjDesde').disabled=false;document.getElementById('mjQty').focus()"> Un número de unidades:
       <input id="mjQty" type="number" min="1" class="field" style="width:90px;height:34px" value="${q>0?q:""}" placeholder="ej. 10" ${todas?"disabled":""}>
     </label>
+    <div style="margin:0 0 10px 26px">
+      <label class="cap" style="display:block;margin-bottom:3px">Contar sus ventas desde:</label>
+      <input id="mjDesde" type="date" class="field" style="height:34px;max-width:180px" value="${anchor}" max="${_isoDay(0)}" ${todas?"disabled":""}>
+      <div class="cap" style="font-size:10.5px;margin-top:3px;color:var(--muted)">Para unidades <b>nuevas</b>, deja la fecha de <b>hoy</b>. Si esas unidades <b>ya se vendieron</b> y quieres contar esas ventas, pon una fecha <b>anterior</b> (cuando empezaron a venderse).</div>
+    </div>
     <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:6px;cursor:pointer">
-      <input type="radio" name="mjmode" value="todas" ${todas?"checked":""} onchange="document.getElementById('mjQty').disabled=true"> Todas las unidades (sin tope)
+      <input type="radio" name="mjmode" value="todas" ${todas?"checked":""} onchange="document.getElementById('mjQty').disabled=true;document.getElementById('mjDesde').disabled=true"> Todas las unidades (sin tope · todas las ventas son de ella)
     </label>
-    ${on&&q>0?`<div class="note" style="margin-top:8px">Llevas <b>${c}</b> vendidas de <b>${q}</b>. Si cambias el número, el conteo se reinicia desde hoy.</div>`:""}
+    ${on&&q>0?`<div class="note" style="margin-top:8px">Lleva <b>${c}</b> contadas de <b>${q}</b>${c>=q?` · <b style="color:var(--green)">agotado</b> (las nuevas ventas ya son de BOUN)`:""}.</div>`:""}
     <div id="mjErr" class="red" style="font-size:12px;margin-top:8px"></div>
     <div style="display:flex;gap:8px;justify-content:space-between;margin-top:16px">
       <div>${on?`<button class="btn-danger" onclick="mjUnmark(${pid})">Quitar de María José</button>`:""}</div>
@@ -386,15 +392,15 @@ function mjMarkModal(pid){
 async function mjMarkSave(pid){
   const mode=(document.querySelector('input[name="mjmode"]:checked')||{}).value;
   const err=document.getElementById("mjErr");
-  let qty=0;
+  let qty=0, desde=_isoDay(0);
   if(mode!=="todas"){
     qty=parseInt(document.getElementById("mjQty").value||"0",10);
     if(!qty||qty<1){ err.textContent="Ingresa cuántas unidades son de ella (o elige «Todas»)."; return; }
+    desde=document.getElementById("mjDesde").value||_isoDay(0);
   }
-  const hoy=_isoDay(0);
   try{
     await api("/inventory/"+pid,{method:"PATCH",body:JSON.stringify({
-      owner:"MARIA_JOSE", mj_qty:qty, mj_anchor:hoy, mj_consumed:0})});
+      owner:"MARIA_JOSE", mj_qty:qty, mj_anchor:desde, mj_consumed:0})});
     closeModal(); renderInventory();
   }catch(e){ err.textContent=e.message; }
 }
