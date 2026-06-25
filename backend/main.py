@@ -4351,6 +4351,18 @@ def _mj_sync(window_days=None) -> dict:
     from config import RETENCION_FUENTE
     import datetime as _dt
     tg = _mj_targets()
+    # Purga de huérfanas: borra de la liquidación las ventas de productos que YA
+    # no están marcados como de María José (p. ej. se desmarcaron). Así la
+    # sección refleja exactamente los productos marcados ahora.
+    try:
+        mj_pids = [int(p) for p in (tg.get("meta", {}) or {}).keys()]
+        if mj_pids:
+            db._sb_delete("mj_ventas", "product_id=not.in.(%s)"
+                          % ",".join(str(p) for p in mj_pids))
+        else:
+            db._sb_delete("mj_ventas", "id=gte.0")   # ninguno marcado → limpiar todo
+    except Exception:
+        pass
     if not tg["has"]:
         return {"ok": True, "n": 0,
                 "note": "Aún no hay productos marcados como de María José."}
