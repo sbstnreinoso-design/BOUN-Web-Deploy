@@ -1271,6 +1271,8 @@ const DEN_EST={
   rechazada:["RECHAZADA","#E11D48","#fff"],
 };
 function denFecha(s){ if(!s)return"—"; try{return new Date(s).toLocaleDateString("es-CO",{day:"2-digit",month:"short",year:"numeric"});}catch(e){return s;} }
+let DEN_VIEW="activas"; // activas | ganadas | rechazadas | todas
+function setDenView(v){ DEN_VIEW=v; if(typeof DENUNCIAS!=="undefined"&&DENUNCIAS){ drawDenKpis(DENUNCIAS); drawDenuncias(); } }
 async function renderDenuncias(){
   const v=document.getElementById("view");
   v.innerHTML=`<div class="row-between"><div>
@@ -1287,19 +1289,30 @@ async function renderDenuncias(){
 function drawDenKpis(r){
   const c=r.counts||{};
   const caidas=(c.procedente||0)+(c.publicacion_inactiva||0);
+  const activas=(c.en_proceso||0)+(c.pendiente||0);
+  const sel=v=>DEN_VIEW===v?"outline:2px solid var(--acc);outline-offset:-2px;":"";
   document.getElementById("denKpis").innerHTML=`
     <div style="display:flex;gap:10px;flex-wrap:wrap;width:100%">
-      <div class="kpi" style="min-width:96px"><div class="cap">Total</div><div class="val">${c.total||0}</div></div>
-      <div class="kpi" style="min-width:96px"><div class="cap">En proceso</div><div class="val">${c.en_proceso||0}</div></div>
-      <div class="kpi" style="min-width:96px"><div class="cap">Caídas / ganadas</div><div class="val" style="color:var(--green)">${caidas}</div></div>
-      <div class="kpi" style="min-width:96px"><div class="cap">Rechazadas</div><div class="val">${c.rechazada||0}</div></div>
+      <div class="kpi" title="Ver todas" style="min-width:96px;cursor:pointer;${sel('todas')}" onclick="setDenView('todas')"><div class="cap">Total</div><div class="val">${c.total||0}</div></div>
+      <div class="kpi" title="Ver activas" style="min-width:96px;cursor:pointer;${sel('activas')}" onclick="setDenView('activas')"><div class="cap">En proceso</div><div class="val">${activas}</div></div>
+      <div class="kpi" title="Ver caídas / ganadas" style="min-width:96px;cursor:pointer;${sel('ganadas')}" onclick="setDenView('ganadas')"><div class="cap">Caídas / ganadas</div><div class="val" style="color:var(--green)">${caidas}</div></div>
+      <div class="kpi" title="Ver rechazadas" style="min-width:96px;cursor:pointer;${sel('rechazadas')}" onclick="setDenView('rechazadas')"><div class="cap">Rechazadas</div><div class="val">${c.rechazada||0}</div></div>
     </div>`;
 }
 function drawDenuncias(){
   const r=DENUNCIAS; if(!r)return;
-  const ds=r.denuncias||[];
+  const RESUELTAS=["procedente","publicacion_inactiva","rechazada"];
+  let ds=r.denuncias||[];
+  if(DEN_VIEW==="activas") ds=ds.filter(d=>!RESUELTAS.includes(d.estado));
+  else if(DEN_VIEW==="ganadas") ds=ds.filter(d=>d.estado==="procedente"||d.estado==="publicacion_inactiva");
+  else if(DEN_VIEW==="rechazadas") ds=ds.filter(d=>d.estado==="rechazada");
   const body=document.getElementById("denBody");
-  if(!ds.length){ body.innerHTML=`<div class="empty" style="text-align:center;padding:40px;color:var(--muted)"><div style="font-size:40px">🛡</div><div style="margin-top:8px;font-size:15px">Aún no hay denuncias registradas. La skill las irá agregando en su corrida diaria.</div></div>`; return; }
+  if(!ds.length){
+    const m = DEN_VIEW==="ganadas" ? "Aún no hay denuncias caídas o ganadas. Cuando una denuncia se apruebe o la publicación caiga, aparecerá aquí con su historial."
+      : DEN_VIEW==="rechazadas" ? "No hay denuncias rechazadas."
+      : DEN_VIEW==="activas" ? "No hay denuncias activas. Las resueltas están en «Caídas / ganadas» y «Rechazadas» (haz clic en esos indicadores)."
+      : "Aún no hay denuncias registradas. La skill las irá agregando en su corrida diaria.";
+    body.innerHTML=`<div class="empty" style="text-align:center;padding:40px;color:var(--muted)"><div style="font-size:40px">🛡</div><div style="margin-top:8px;font-size:15px">${m}</div></div>`; return; }
   body.innerHTML=ds.map((d,i)=>{
     const est=DEN_EST[d.estado]||["—","#666","#fff"];
     const badge=`<span style="background:${est[1]};color:${est[2]};font-size:10px;font-weight:800;padding:2px 8px;border-radius:20px">${est[0]}</span>`;
