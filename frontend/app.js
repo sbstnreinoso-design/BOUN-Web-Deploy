@@ -956,8 +956,8 @@ function drawMJ(){
     const foto=vv.thumb?`<img src="${esc(vv.thumb)}" loading="lazy" style="width:42px;height:42px;border-radius:7px;object-fit:cover;background:var(--surf);border:1px solid var(--border)">`
       :`<span style="width:42px;height:42px;border-radius:7px;background:var(--surf);border:1px solid var(--border);display:inline-flex;align-items:center;justify-content:center;font-size:16px">📦</span>`;
     const lib=vv.liberado
-      ?`<span style="color:var(--green);font-weight:700">● Liberado</span>`
-      :`<span style="color:var(--amber);font-weight:700">○ ${mjDate(vv.release_date)}</span>`;
+      ?`<span style="color:var(--green);font-weight:700">● Liberado</span>${vv.release_date?`<div class="cap" style="font-size:9.5px;color:var(--green)">${mjDate(vv.release_date)}</div>`:""}`
+      :`<span style="color:var(--amber);font-weight:700">○ Libera</span><div class="cap" style="font-size:9.5px;color:var(--amber)">${mjDate(vv.release_date)}</div>`;
     const ads=(vv.roas||vv.acos)?`<div class="cap" style="font-size:9.5px">ROAS ${vv.roas?vv.roas+"x":"—"} · ACOS ${vv.acos?vv.acos+"%":"—"}</div>`:"";
     return `<tr>
       <td style="display:flex;align-items:center;gap:9px">${foto}<div><div style="font-weight:600;font-size:12px;line-height:1.25">${esc((vv.nombre||"").slice(0,46))}</div><div class="cap" style="font-size:10px">${esc(vv.codigo||"")} · ${mjDate(vv.fecha_venta)}</div></div></td>
