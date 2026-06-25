@@ -186,6 +186,7 @@ class InvUpdateIn(BaseModel):
     qty_bogota: Optional[float] = None
     qty_yopal: Optional[float] = None
     qty_transit: Optional[float] = None
+    owner: Optional[str] = None       # 'BOUN' | 'MARIA_JOSE'
 
 
 @app.patch("/api/inventory/{pid}")
@@ -4080,6 +4081,529 @@ def denuncias_report(data: DenunciasReportIn, key: str = "",
                            cad="Diario · 8:00 PM", desc=_DENUNCIAS_DESC)
     return {"ok": True, "nuevas": nuevas, "cambios": cambios,
             "counts": c, "errores": [e for e in errores if e]}
+
+
+# ── MARÍA JOSÉ — Liquidación de productos propios ────────────────────────────
+# Separa de las ventas totales lo que corresponde a los productos propios de
+# María José (inventory_products.owner = 'MARIA_JOSE'), descuenta los costos
+# reales de venta (comisión real + retención, envío y publicidad real por ítem)
+# y lleva el SALDO que se le debe menos los abonos ya pagados, además de CUÁNDO
+# libera cada plataforma el dinero.  Persiste en mj_ventas / mj_abonos.
+
+_MJ_TASK_ID = "maria-jose-liquidacion"
+_MJ_DESC = ("Liquidación de los productos propios de María José: separa sus "
+            "ventas de cada plataforma, descuenta los costos reales (comisión, "
+            "envío y publicidad) y lleva el saldo a pagar y la liberación del "
+            "dinero por plataforma.")
+_MJ_CACHE = {"ts": 0.0}
+_MJ_TTL = 10 * 60
+_MJ_LOCK = threading.Lock()
+
+
+def _mj_setting_f(key, default):
+    try:
+        return float(db.get_setting(key, "") or default)
+    except Exception:
+        return float(default)
+
+
+def _mj_now():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _mj_targets() -> dict:
+    """Objetivos de María José: publicaciones e identificadores por canal.
+
+    Devuelve {ml:{item_id:info}, fa:{sku:info}, codes:{CODIGO:info}, has:bool}
+    donde info = {product_id, code, name, thumb}.  Las ventas se atribuyen a MJ
+    por item_id (ML), por SellerSku (Falabella) o por SKU/código BOUN (Shopify).
+    """
+    try:
+        prods = db._sb_get("inventory_products?owner=eq.MARIA_JOSE"
+                           "&select=id,code,name") or []
+    except Exception:
+        prods = []
+    by_id = {p["id"]: p for p in prods}
+    codes, ml, fa = {}, {}, {}
+    for p in prods:
+        c = str(p.get("code") or "").strip().upper()
+        if c:
+            codes[c] = {"product_id": p["id"], "code": p.get("code", ""),
+                        "name": p.get("name", ""), "thumb": ""}
+    try:
+        links = db.inv_get_links() or []
+    except Exception:
+        links = []
+    for l in links:
+        pid = l.get("product_id")
+        if pid not in by_id:
+            continue
+        ext = str(l.get("ml_item_id") or "")
+        if not ext:
+            continue
+        ch = l.get("channel") or "mercadolibre"
+        info = {"product_id": pid, "code": by_id[pid].get("code", ""),
+                "name": l.get("ml_title") or by_id[pid].get("name", ""),
+                "thumb": l.get("ml_thumb") or ""}
+        if ch == "mercadolibre":
+            ml[ext] = info
+        elif ch == "falabella":
+            fa[ext] = info
+        c = str(by_id[pid].get("code") or "").strip().upper()
+        if c in codes and not codes[c]["thumb"] and info["thumb"]:
+            codes[c]["thumb"] = info["thumb"]
+    return {"ml": ml, "fa": fa, "codes": codes, "has": bool(prods)}
+
+
+def _mj_ml_ad_cost(s, item_ids, since_d, until_d) -> dict:
+    """{item_id → gasto REAL de Product Ads en el rango} para los ítems de MJ.
+    Consulta la API de Publicidad de ML por ítem.  Si no está disponible para un
+    ítem (sin campaña / endpoint no expuesto) simplemente no aporta costo."""
+    out = {}
+    try:
+        from ml_scraper import ML_API
+        s.headers["Api-Version"] = "1"
+        for iid in item_ids:
+            cost = 0.0
+            for url in (
+                f"{ML_API}/advertising/product_ads/ads/{iid}"
+                f"?date_from={since_d}&date_to={until_d}&metrics=cost",
+                f"{ML_API}/advertising/items/{iid}/metrics"
+                f"?date_from={since_d}&date_to={until_d}&metrics=cost",
+            ):
+                try:
+                    r = s.get(url, timeout=15)
+                    if r.status_code != 200:
+                        continue
+                    j = r.json()
+                    m = j.get("metrics") or {}
+                    cost = float(m.get("cost") or 0)
+                    if not cost:
+                        for row in (j.get("results") or []):
+                            cost += float((row.get("metrics") or {}).get(
+                                "cost", 0) or 0)
+                    if cost:
+                        break
+                except Exception:
+                    continue
+            if cost:
+                out[str(iid)] = cost
+    except Exception:
+        pass
+    return out
+
+
+def _mj_ml_shipping(s, shipment_id) -> float:
+    """Costo de envío que asume el vendedor para un envío de ML (best-effort)."""
+    if not shipment_id:
+        return 0.0
+    try:
+        from ml_scraper import ML_API
+        r = s.get(f"{ML_API}/shipments/{shipment_id}/costs", timeout=12)
+        if r.status_code == 200:
+            j = r.json()
+            tot = 0.0
+            for sd in (j.get("senders") or []):
+                tot += float(sd.get("cost") or 0)
+                tot -= float(sd.get("compensation") or 0)
+            return round(max(tot, 0.0), 2)
+    except Exception:
+        pass
+    return 0.0
+
+
+def _mj_upsert_row(row: dict) -> bool:
+    """Upsert idempotente de una fila de mj_ventas por (plataforma, orden, ítem)."""
+    flt = ("mj_ventas?plataforma=eq.%s&order_id=eq.%s&item_id=eq.%s&select=id"
+           % (_q_(row["plataforma"]), _q_(str(row["order_id"])),
+              _q_(str(row.get("item_id") or ""))))
+    try:
+        prev = db._sb_get(flt) or []
+    except Exception:
+        prev = []
+    payload = dict(row)
+    payload["updated_at"] = _mj_now()
+    if prev:
+        return db._sb_patch("mj_ventas", "id=eq.%d" % prev[0]["id"], payload)
+    return bool(db._sb_post("mj_ventas", payload))
+
+
+def _mj_sync(window_days=None) -> dict:
+    """Recolecta las ventas de los productos de María José en los 3 canales,
+    calcula los costos reales y hace upsert en mj_ventas.  Devuelve resumen."""
+    from config import RETENCION_FUENTE
+    import datetime as _dt
+    tg = _mj_targets()
+    if not tg["has"]:
+        return {"ok": True, "n": 0,
+                "note": "Aún no hay productos marcados como de María José."}
+    co = _dt.timezone(_dt.timedelta(hours=-5))
+    wd = int(window_days or _mj_setting_f("mj_window_days", 120))
+    to_d = _dt.datetime.now(co)
+    from_d = (to_d - _dt.timedelta(days=wd)).replace(
+        hour=0, minute=0, second=0, microsecond=0)
+    since = from_d.strftime("%Y-%m-%dT%H:%M:%S.000-05:00")
+    until = to_d.strftime("%Y-%m-%dT%H:%M:%S.000-05:00")
+    since_d, until_d = from_d.date().isoformat(), to_d.date().isoformat()
+    today = to_d.date()
+    rows, errores = [], []
+
+    # ── MercadoLibre (comisión real = sale_fee · liberación = money_release_date) ──
+    ml_set = tg["ml"]
+    if ml_set:
+        try:
+            from ml_scraper import _ml_session_auth, ML_API as _MLAPI
+            s, uid = _ml_session_auth()
+            if not s:
+                errores.append("ML sin conexión")
+            else:
+                ad_cost = _mj_ml_ad_cost(s, list(ml_set.keys()),
+                                         since_d, until_d)
+                _NO = {"cancelled", "invalid", "payment_required",
+                       "payment_in_process"}
+                tmp, units_by_item = [], {}
+                offset, seen = 0, set()
+                while True:
+                    r = s.get(f"{_MLAPI}/orders/search?seller={uid}"
+                              f"&order.date_created.from={since}"
+                              f"&order.date_created.to={until}"
+                              f"&sort=date_desc&limit=50&offset={offset}",
+                              timeout=20)
+                    if r.status_code != 200:
+                        break
+                    d = r.json()
+                    res = d.get("results", [])
+                    for od in res:
+                        oid = str(od.get("id") or "")
+                        if not oid or oid in seen:
+                            continue
+                        seen.add(oid)
+                        if (od.get("status") or "") in _NO:
+                            continue
+                        oi_mj = [oi for oi in od.get("order_items", [])
+                                 if str((oi.get("item") or {}).get("id")
+                                        or "") in ml_set]
+                        if not oi_mj:
+                            continue
+                        dc = od.get("date_created") or ""
+                        try:
+                            fecha = _dt.datetime.fromisoformat(
+                                dc.replace("Z", "+00:00")).astimezone(
+                                co).date()
+                        except Exception:
+                            fecha = today
+                        rel = None
+                        for pay in (od.get("payments") or []):
+                            mr = pay.get("money_release_date") or ""
+                            if mr:
+                                try:
+                                    rel = _dt.datetime.fromisoformat(
+                                        mr.replace("Z", "+00:00")).astimezone(
+                                        co).date()
+                                except Exception:
+                                    rel = None
+                                break
+                        ship_id = (od.get("shipping") or {}).get("id")
+                        env = _mj_ml_shipping(s, ship_id)
+                        tot_u = sum(int(oi.get("quantity") or 0)
+                                    for oi in oi_mj) or 1
+                        for oi in oi_mj:
+                            it = oi.get("item") or {}
+                            iid = str(it.get("id"))
+                            q = int(oi.get("quantity") or 0)
+                            unit = float(oi.get("unit_price") or 0)
+                            gross = unit * q
+                            fee = float(oi.get("sale_fee") or 0) * q
+                            units_by_item[iid] = units_by_item.get(iid, 0) + q
+                            tmp.append({
+                                "iid": iid, "oid": oid, "q": q, "gross": gross,
+                                "fee": fee, "ret": gross * RETENCION_FUENTE,
+                                "env": env * (q / tot_u), "fecha": fecha,
+                                "rel": rel, "info": ml_set.get(iid, {}),
+                                "nombre": (it.get("title")
+                                           or ml_set.get(iid, {}).get(
+                                               "name", ""))})
+                    total = d.get("paging", {}).get("total", 0)
+                    offset += 50
+                    if offset >= total or not res:
+                        break
+                for t in tmp:
+                    iid = t["iid"]
+                    pub = 0.0
+                    tot_ad = ad_cost.get(iid, 0.0)
+                    if tot_ad and units_by_item.get(iid):
+                        pub = tot_ad * (t["q"] / units_by_item[iid])
+                    neto = t["gross"] - t["fee"] - t["ret"] - t["env"] - pub
+                    rel = t["rel"]
+                    libre = bool(rel and rel <= today)
+                    rows.append({
+                        "plataforma": "mercadolibre", "order_id": t["oid"],
+                        "item_id": iid,
+                        "product_id": t["info"].get("product_id"),
+                        "codigo": t["info"].get("code", ""),
+                        "nombre": t["nombre"], "thumb": t["info"].get("thumb", ""),
+                        "unidades": t["q"],
+                        "fecha_venta": t["fecha"].isoformat(),
+                        "precio_venta": round(t["gross"], 2), "descuentos": 0,
+                        "comision": round(t["fee"], 2),
+                        "retencion": round(t["ret"], 2),
+                        "costo_envio": round(t["env"], 2),
+                        "costo_publicidad": round(pub, 2),
+                        "neto_mj": round(neto, 2),
+                        "release_date": (rel.isoformat() if rel else None),
+                        "liberado": libre,
+                        "estado_pago": "liberado" if libre else "pendiente"})
+        except Exception as e:
+            errores.append("ML: %s" % str(e)[:90])
+
+    # ── Falabella (comisión y liberación estimadas por configuración) ──
+    fa_set = tg["fa"]
+    if fa_set or tg["codes"]:
+        try:
+            import falabella as fb
+            fee_pct = _mj_setting_f("mj_falabella_fee_pct", 0.18)
+            rel_days = int(_mj_setting_f("mj_falabella_release_days", 30))
+            orders = fb.get_orders(from_d.isoformat())
+            oids = [str(o.get("OrderId")) for o in orders if o.get("OrderId")]
+            items = fb._all_order_items(oids) if oids else []
+            agg = {}
+            for it in items:
+                sku = str(it.get("SellerSku") or it.get("Sku") or "")
+                info = fa_set.get(sku) or tg["codes"].get(sku.strip().upper())
+                if not info:
+                    continue
+                oid = str(it.get("OrderId") or "")
+                cre = it.get("CreatedAt") or ""
+                key = (oid, sku)
+                a = agg.setdefault(key, {"oid": oid, "sku": sku, "q": 0,
+                                         "gross": 0.0, "cre": cre,
+                                         "info": info,
+                                         "name": it.get("Name", "")})
+                a["q"] += 1
+                try:
+                    a["gross"] += float(it.get("PaidPrice")
+                                        or it.get("ItemPrice") or 0)
+                except (TypeError, ValueError):
+                    pass
+            for (oid, sku), a in agg.items():
+                try:
+                    fv = _dt.datetime.fromisoformat(
+                        a["cre"].replace("Z", "+00:00")).astimezone(co).date()
+                except Exception:
+                    fv = today
+                fee = a["gross"] * fee_pct
+                ret = a["gross"] * RETENCION_FUENTE
+                neto = a["gross"] - fee - ret
+                rel = fv + _dt.timedelta(days=rel_days)
+                libre = rel <= today
+                rows.append({
+                    "plataforma": "falabella", "order_id": oid,
+                    "item_id": sku, "product_id": a["info"].get("product_id"),
+                    "codigo": a["info"].get("code", ""),
+                    "nombre": a["name"] or a["info"].get("name", ""),
+                    "thumb": a["info"].get("thumb", ""), "unidades": a["q"],
+                    "fecha_venta": fv.isoformat(),
+                    "precio_venta": round(a["gross"], 2), "descuentos": 0,
+                    "comision": round(fee, 2), "retencion": round(ret, 2),
+                    "costo_envio": 0, "costo_publicidad": 0,
+                    "neto_mj": round(neto, 2), "release_date": rel.isoformat(),
+                    "liberado": libre,
+                    "estado_pago": "liberado" if libre else "pendiente"})
+        except Exception as e:
+            errores.append("Falabella: %s" % str(e)[:90])
+
+    # ── Shopify (tienda propia: se atribuye por SKU = código BOUN) ──
+    if tg["codes"]:
+        fee_pct = _mj_setting_f("mj_shopify_fee_pct", 0.0)
+        rel_days = int(_mj_setting_f("mj_shopify_release_days", 0))
+        for ch, shop in _SHOPIFY_SHOPS.items():
+            tok = db.get_setting("shopify_token::%s" % shop, "")
+            if not tok:
+                continue
+            try:
+                orders = _shopify_orders(shop, tok, from_d.isoformat(),
+                                         to_d.isoformat())
+            except Exception as e:
+                errores.append("%s: %s" % (ch, str(e)[:70]))
+                continue
+            for od in orders:
+                ca = od.get("created_at") or ""
+                try:
+                    fv = _dt.datetime.fromisoformat(
+                        ca.replace("Z", "+00:00")).astimezone(co).date()
+                except Exception:
+                    fv = today
+                for li in od.get("line_items", []):
+                    sku = str(li.get("sku") or "").strip().upper()
+                    info = tg["codes"].get(sku)
+                    if not info:
+                        continue
+                    q = int(li.get("quantity") or 0)
+                    gross = float(li.get("price") or 0) * q
+                    fee = gross * fee_pct
+                    neto = gross - fee
+                    rel = fv + _dt.timedelta(days=rel_days)
+                    libre = rel <= today
+                    rows.append({
+                        "plataforma": ch, "order_id": str(od.get("id")),
+                        "item_id": str(li.get("id")),
+                        "product_id": info.get("product_id"),
+                        "codigo": info.get("code", ""),
+                        "nombre": li.get("title") or info.get("name", ""),
+                        "thumb": info.get("thumb", ""), "unidades": q,
+                        "fecha_venta": fv.isoformat(),
+                        "precio_venta": round(gross, 2), "descuentos": 0,
+                        "comision": round(fee, 2), "retencion": 0,
+                        "costo_envio": 0, "costo_publicidad": 0,
+                        "neto_mj": round(neto, 2), "release_date": rel.isoformat(),
+                        "liberado": libre,
+                        "estado_pago": "liberado" if libre else "pendiente"})
+
+    n = 0
+    for row in rows:
+        try:
+            if _mj_upsert_row(row):
+                n += 1
+        except Exception:
+            pass
+    _MJ_CACHE["ts"] = time.time()
+    return {"ok": True, "n": n, "filas": len(rows),
+            "errores": [e for e in errores if e]}
+
+
+def _mj_summary() -> dict:
+    """KPIs + ventas + abonos para la sección /maria-jose (lee de Supabase)."""
+    try:
+        ventas = db._sb_get("mj_ventas?select=*&order=fecha_venta.desc") or []
+    except Exception:
+        ventas = []
+    try:
+        abonos = db._sb_get("mj_abonos?select=*&order=fecha.desc") or []
+    except Exception:
+        abonos = []
+    tot_bruto = sum(float(v.get("precio_venta") or 0) for v in ventas)
+    tot_com = sum(float(v.get("comision") or 0) for v in ventas)
+    tot_ret = sum(float(v.get("retencion") or 0) for v in ventas)
+    tot_env = sum(float(v.get("costo_envio") or 0) for v in ventas)
+    tot_pub = sum(float(v.get("costo_publicidad") or 0) for v in ventas)
+    tot_neto = sum(float(v.get("neto_mj") or 0) for v in ventas)
+    neto_libre = sum(float(v.get("neto_mj") or 0) for v in ventas
+                     if v.get("liberado"))
+    neto_pend = tot_neto - neto_libre
+    tot_abonos = sum(float(a.get("monto") or 0) for a in abonos)
+    por_plat = {}
+    for v in ventas:
+        p = v.get("plataforma") or "?"
+        b = por_plat.setdefault(p, {"unidades": 0, "bruto": 0.0, "neto": 0.0})
+        b["unidades"] += int(v.get("unidades") or 0)
+        b["bruto"] += float(v.get("precio_venta") or 0)
+        b["neto"] += float(v.get("neto_mj") or 0)
+    return {
+        "ok": True, "generado": _mj_now(),
+        "kpis": {
+            "bruto": round(tot_bruto, 2), "comision": round(tot_com, 2),
+            "retencion": round(tot_ret, 2), "envio": round(tot_env, 2),
+            "publicidad": round(tot_pub, 2), "neto": round(tot_neto, 2),
+            "neto_liberado": round(neto_libre, 2),
+            "neto_pendiente": round(neto_pend, 2),
+            "abonos": round(tot_abonos, 2),
+            "saldo": round(tot_neto - tot_abonos, 2),
+            "saldo_liberado": round(neto_libre - tot_abonos, 2),
+            "ventas": len(ventas)},
+        "por_plataforma": por_plat, "ventas": ventas, "abonos": abonos}
+
+
+@app.get("/api/mj")
+def mj_get(force: bool = False, user: dict = Depends(_current_user)):
+    """Liquidación de María José.  Refresca desde las plataformas si el caché
+    venció (10 min) o si force=1, y devuelve KPIs + ventas + abonos."""
+    if force or (time.time() - _MJ_CACHE["ts"]) > _MJ_TTL:
+        if _MJ_LOCK.acquire(blocking=False):
+            try:
+                _mj_sync()
+            except Exception:
+                pass
+            finally:
+                _MJ_LOCK.release()
+    out = _mj_summary()
+    out["cache_age_min"] = int((time.time() - _MJ_CACHE["ts"]) / 60)
+    return out
+
+
+@app.get("/api/mj/count")
+def mj_count(user: dict = Depends(_current_user)):
+    """Saldo pendiente de pago a María José (para el badge del menú)."""
+    try:
+        s = _mj_summary()["kpis"]
+        return {"count": 1 if s.get("saldo", 0) > 0 else 0,
+                "saldo": s.get("saldo", 0)}
+    except Exception:
+        return {"count": 0, "saldo": 0}
+
+
+@app.post("/api/mj/sync")
+def mj_sync_post(key: str = "", authorization: Optional[str] = Header(None)):
+    """Fuerza una resincronización de las ventas de María José.
+    Auth: ?key=BOUN_EXPORT_TOKEN (planificador) o sesión de usuario."""
+    token = os.environ.get("BOUN_EXPORT_TOKEN", "")
+    authed = bool(token and key == token)
+    if not authed:
+        try:
+            authed = bool(_current_user(authorization))
+        except Exception:
+            authed = False
+    if not authed:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    r = {}
+    with _MJ_LOCK:
+        r = _mj_sync()
+    s = _mj_summary()["kpis"]
+    _cerebro_set_heartbeat(
+        _MJ_TASK_ID, "ok",
+        "Liquidación María José: %d venta(s) · saldo a pagar %s "
+        "(liberado %s · pendiente de liberación %s)." % (
+            s.get("ventas", 0), _money(s.get("saldo", 0)),
+            _money(s.get("saldo_liberado", 0)), _money(s.get("neto_pendiente", 0))),
+        nombre="Liquidación María José", canal="mercadolibre", icon="chart",
+        cad="Diario", desc=_MJ_DESC)
+    return {"ok": True, "sync": r, "kpis": s}
+
+
+class MJAbonoIn(BaseModel):
+    monto: float
+    fecha: Optional[str] = None
+    metodo: Optional[str] = ""
+    nota: Optional[str] = ""
+
+
+@app.post("/api/mj/abono")
+def mj_abono_add(data: MJAbonoIn, user: dict = Depends(_current_user)):
+    """Registra un abono (pago) hecho a María José.  Resta del saldo."""
+    if not data.monto or data.monto <= 0:
+        raise HTTPException(400, "El monto debe ser mayor a 0.")
+    payload = {"monto": round(float(data.monto), 2),
+               "metodo": (data.metodo or "").strip(),
+               "nota": (data.nota or "").strip(),
+               "created_by": user.get("username", "")}
+    if data.fecha:
+        payload["fecha"] = data.fecha[:10]
+    row = db._sb_post("mj_abonos", payload)
+    if row is None:
+        raise HTTPException(400, "No se pudo registrar el abono.")
+    return {"ok": True, "id": row.get("id")}
+
+
+@app.delete("/api/mj/abono/{aid}")
+def mj_abono_del(aid: int, user: dict = Depends(_current_user)):
+    """Elimina un abono (corrige un registro)."""
+    return {"ok": db._sb_delete("mj_abonos", "id=eq.%d" % aid)}
+
+
+def _money(v) -> str:
+    try:
+        return "$%s" % format(int(round(float(v))), ",d")
+    except Exception:
+        return "$0"
 
 
 # ── COMBOS (kits) — definición vía UI ────────────────────────────────────────

@@ -59,6 +59,7 @@ const NAV=[
   ["mapeo","🔗  Mapeo"],
   ["denuncias","🛡  Denuncias"],
   ["ventas","↗  Ventas"],
+  ["maria_jose","💸  María José"],
   ["inventory","▦  Inventario"],
   ["cola","📦  Pendientes de bodega"],
   ["my_products","★  Mis Productos"],
@@ -145,6 +146,7 @@ function go(id){
   else if(id==="mapeo") renderMapeo();
   else if(id==="denuncias") renderDenuncias();
   else if(id==="ventas") renderSales();
+  else if(id==="maria_jose") renderMariaJose();
   else if(id==="inventory") renderInventory();
   else if(id==="cola") renderCola();
   else if(id==="my_products") renderMyProducts();
@@ -347,6 +349,14 @@ function comboCalc(p){
   return {cost_product:cp, cost_shipping:cs, unit:cp+cs,
           invTotal:armBog+armYop, armBog, armYop, avg_price:valU, avg_net:netU};
 }
+function mjOwnerBtn(p){
+  const on=p.owner==="MARIA_JOSE";
+  return `<button class="btn-ghost" title="${on?"Quitar: ya no es de María José":"Marcar como producto de María José (entra a su liquidación)"}" style="${on?"color:#C9B8FF;border-color:#7D6BD855":""}" onclick="event.stopPropagation();toggleOwner(${p.id},${on?1:0})">💸 MJ${on?" ✓":""}</button>`;
+}
+async function toggleOwner(pid,on){
+  try{ await api("/inventory/"+pid,{method:"PATCH",body:JSON.stringify({owner:on?"BOUN":"MARIA_JOSE"})}); renderInventory(); }
+  catch(e){ alert(e.message); }
+}
 function invCard(p){
   const photo=p.thumb?`<img class="inv-photo" src="${bigImg(p.thumb)}">`:`<div class="inv-photo"></div>`;
   const comps=(typeof COMBOS!=="undefined"&&COMBOS&&Array.isArray(COMBOS[p.code])&&COMBOS[p.code].length)?COMBOS[p.code]:null;
@@ -385,10 +395,11 @@ function invCard(p){
       ${photo}
       ${chip}
       <div style="flex:1">
-        <div class="inv-name">${esc(p.name)}</div>
+        <div class="inv-name">${esc(p.name)} ${p.owner==="MARIA_JOSE"?`<span title="Producto de María José" style="font-size:10px;font-weight:800;color:#C9B8FF;background:rgba(125,107,216,.18);border:1px solid #7D6BD855;padding:1px 7px;border-radius:11px;vertical-align:middle">💸 María José</span>`:""}</div>
         <div class="inv-meta">${p.n_links} publicación${p.n_links!==1?"es":""} asignada${p.n_links!==1?"s":""} ${chCounts(p.n_by_channel)}${p.created_by?" · creado por "+esc(p.created_by):""}</div>
         ${comboLine}
       </div>
+      ${mjOwnerBtn(p)}
       ${isCombo?"":`<button class="btn-ghost" onclick="ingresoDialog(${p.id})" title="Sumar mercancía que llegó a bodega">📥 Ingreso</button>`}
       <button class="btn-ghost" onclick="assignDialog(${p.id})">Asignar publicaciones</button>
       <button class="btn-ghost" onclick="editProduct(${p.id})">✏</button>
@@ -809,6 +820,155 @@ async function renderSales(force){
       </tr>`;
     document.getElementById("salTable").innerHTML=html+"</tbody></table>";
   }catch(e){ document.getElementById("salKpis").innerHTML=`<div class="red">${esc(e.message)}</div>`; }
+}
+
+// ── MARÍA JOSÉ · Liquidación ─────────────────────────────────────────────────
+let MJ=null;
+const MJ_PLAT={mercadolibre:["MercadoLibre","#E0A23C"],falabella:["Falabella","#7FB3E0"],
+  shopify_boun:["Shopify BOUN","#3FCB82"],shopify_kat:["Shopify KAT","#E68CA8"]};
+function mjPlatChip(p){ const [lbl,col]=MJ_PLAT[p]||[p,"#9B9A96"];
+  return `<span style="display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:11px;border:1px solid ${col}55;background:${col}1A;color:${col};font-size:10.5px;font-weight:700"><span style="width:6px;height:6px;border-radius:50%;background:${col}"></span>${esc(lbl)}</span>`; }
+function mjDate(s){ if(!s) return "—"; try{ return new Date(s+"T12:00:00").toLocaleDateString("es-CO",{day:"2-digit",month:"short",year:"2-digit"}); }catch(e){ return s; } }
+
+async function renderMariaJose(force){
+  const v=document.getElementById("view");
+  v.innerHTML=`<div class="row-between"><div>
+      <div class="page-title">💸 María José · Liquidación</div>
+      <div class="page-sub">Lo que se le debe a María José por sus productos propios, en tiempo real. Cada venta de sus publicaciones, su plataforma, el precio, los costos reales descontados (comisión, retención, envío y publicidad), el ROAS/ACOS y cuándo libera cada plataforma el dinero. El saldo va sumando y se le restan los abonos que le pagues.</div>
+    </div><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start">
+      <button class="btn-acc" onclick="mjAbonoModal()">＋ Registrar abono</button>
+      <button class="btn-ghost" onclick="renderMariaJose(true)">↻ Actualizar</button>
+    </div></div>
+    <div id="mjKpis" class="kpis"><div class="loading"><span class="spinner"></span> Calculando liquidación de María José…</div></div>
+    <div id="mjNote"></div>
+    <div id="mjBody"></div>`;
+  try{
+    MJ=await api("/mj"+(force?"?force=1":""));
+    drawMJ();
+  }catch(e){ document.getElementById("mjKpis").innerHTML=`<div class="red">${esc(e.message)}</div>`; }
+}
+
+function drawMJ(){
+  const r=MJ; if(!r) return;
+  const k=r.kpis||{};
+  document.getElementById("mjKpis").innerHTML=`
+    <div style="display:flex;gap:12px;flex-wrap:wrap;width:100%">
+      <div class="kpi" style="flex:1;min-width:200px;border:1px solid var(--acc);background:linear-gradient(135deg,rgba(125,107,216,.12),transparent)">
+        <div class="cap">Saldo a pagar a María José</div>
+        <div class="val acc" style="font-size:28px">${cop(k.saldo||0)}</div>
+        <div class="cap">Ya liberado y por pagar: <b style="color:var(--green)">${cop(k.saldo_liberado||0)}</b></div>
+      </div>
+      <div class="kpi" style="flex:1;min-width:150px"><div class="cap">Neto total (le corresponde)</div><div class="val green">${cop(k.neto||0)}</div><div class="cap">${k.ventas||0} ventas · bruto ${cop(k.bruto||0)}</div></div>
+      <div class="kpi" style="flex:1;min-width:140px"><div class="cap">Liberado por plataformas</div><div class="val">${cop(k.neto_liberado||0)}</div><div class="cap">Pendiente de liberación: ${cop(k.neto_pendiente||0)}</div></div>
+      <div class="kpi" style="flex:1;min-width:140px"><div class="cap">Abonos pagados</div><div class="val amber">${cop(k.abonos||0)}</div><div class="cap">${(r.abonos||[]).length} abono(s)</div></div>
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;width:100%;margin-top:2px">
+      <div class="kpi" style="flex:1;min-width:120px"><div class="cap">Comisión plataformas</div><div class="val" style="color:#E08A8A">−${cop(k.comision||0)}</div></div>
+      <div class="kpi" style="flex:1;min-width:120px"><div class="cap">Retención fuente</div><div class="val" style="color:#E08A8A">−${cop(k.retencion||0)}</div></div>
+      <div class="kpi" style="flex:1;min-width:120px"><div class="cap">Envío / Full</div><div class="val" style="color:#E08A8A">−${cop(k.envio||0)}</div></div>
+      <div class="kpi" style="flex:1;min-width:120px"><div class="cap">Publicidad</div><div class="val" style="color:#E08A8A">−${cop(k.publicidad||0)}</div></div>
+    </div>`;
+
+  // Avisos
+  let notes="";
+  if(r.cache_age_min>0) notes+=`<div class="note">Datos de hace ${r.cache_age_min} min · se refrescan solos cada 10 min (o usa ↻ Actualizar).</div>`;
+  if(!(r.ventas||[]).length){
+    notes+=`<div class="note">Aún no hay ventas atribuidas a María José. Marca sus productos en <b>Inventario</b> (botón «Producto de María José» en cada tarjeta) y vuelve aquí — sus ventas aparecerán solas.</div>`;
+  }
+  document.getElementById("mjNote").innerHTML=notes;
+
+  // Resumen por plataforma
+  const pp=r.por_plataforma||{};
+  const platCards=Object.keys(pp).map(p=>{
+    const [lbl,col]=MJ_PLAT[p]||[p,"#9B9A96"]; const b=pp[p];
+    return `<div class="card" style="flex:1;min-width:150px;padding:12px 14px;border-left:3px solid ${col}">
+      <div style="font-size:11px;font-weight:700;color:${col}">${esc(lbl)}</div>
+      <div style="font-size:18px;font-weight:800;margin-top:2px">${cop(b.neto)}</div>
+      <div class="cap">${b.unidades} u · bruto ${cop(b.bruto)}</div></div>`;
+  }).join("");
+
+  const ventas=r.ventas||[];
+  const filas=ventas.map(vv=>{
+    const foto=vv.thumb?`<img src="${esc(vv.thumb)}" loading="lazy" style="width:42px;height:42px;border-radius:7px;object-fit:cover;background:var(--surf);border:1px solid var(--border)">`
+      :`<span style="width:42px;height:42px;border-radius:7px;background:var(--surf);border:1px solid var(--border);display:inline-flex;align-items:center;justify-content:center;font-size:16px">📦</span>`;
+    const lib=vv.liberado
+      ?`<span style="color:var(--green);font-weight:700">● Liberado</span>`
+      :`<span style="color:var(--amber);font-weight:700">○ ${mjDate(vv.release_date)}</span>`;
+    const ads=(vv.roas||vv.acos)?`<div class="cap" style="font-size:9.5px">ROAS ${vv.roas?vv.roas+"x":"—"} · ACOS ${vv.acos?vv.acos+"%":"—"}</div>`:"";
+    return `<tr>
+      <td style="display:flex;align-items:center;gap:9px">${foto}<div><div style="font-weight:600;font-size:12px;line-height:1.25">${esc((vv.nombre||"").slice(0,46))}</div><div class="cap" style="font-size:10px">${esc(vv.codigo||"")} · ${mjDate(vv.fecha_venta)}</div></div></td>
+      <td>${mjPlatChip(vv.plataforma)}</td>
+      <td style="text-align:center">${vv.unidades}</td>
+      <td style="text-align:right;font-weight:700">${cop(vv.precio_venta)}</td>
+      <td style="text-align:right;color:#E08A8A;font-size:11px">−${cop((vv.comision||0)+(vv.retencion||0)+(vv.costo_envio||0)+(vv.costo_publicidad||0))}<div class="cap" style="font-size:9px">com ${cop(vv.comision||0)} · ret ${cop(vv.retencion||0)}${vv.costo_envio?` · env ${cop(vv.costo_envio)}`:""}${vv.costo_publicidad?` · ads ${cop(vv.costo_publicidad)}`:""}</div></td>
+      <td style="text-align:right;font-weight:800;color:var(--green)">${cop(vv.neto_mj)}</td>
+      <td style="text-align:right;font-size:11px">${lib}${ads}</td>
+    </tr>`;
+  }).join("");
+
+  const ventasTable=ventas.length?`<table class="sales mjt"><thead><tr>
+      <th>Producto</th><th>Plataforma</th><th style="text-align:center">U</th>
+      <th style="text-align:right">Venta</th><th style="text-align:right">Costos</th>
+      <th style="text-align:right">Neto María José</th><th style="text-align:right">Liberación</th>
+    </tr></thead><tbody>${filas}</tbody></table>`:"";
+
+  // Abonos
+  const abonos=r.abonos||[];
+  const abFilas=abonos.map(a=>`<tr>
+      <td>${mjDate(a.fecha)}</td>
+      <td style="font-weight:700;color:var(--amber)">${cop(a.monto)}</td>
+      <td>${esc(a.metodo||"—")}</td>
+      <td class="muted" style="font-size:11px">${esc(a.nota||"")}</td>
+      <td style="text-align:right"><button class="btn-ghost" style="padding:3px 9px;font-size:11px" onclick="mjAbonoDel(${a.id})">✕</button></td>
+    </tr>`).join("");
+  const abonosBlock=`<div class="card" style="margin-top:18px;padding:16px">
+      <div class="row-between" style="margin-bottom:8px"><div style="font-weight:800;font-size:14px">Abonos pagados a María José</div>
+        <button class="btn-acc" style="padding:6px 13px;font-size:12px" onclick="mjAbonoModal()">＋ Registrar abono</button></div>
+      ${abonos.length?`<table class="sales"><thead><tr><th>Fecha</th><th>Monto</th><th>Método</th><th>Nota</th><th></th></tr></thead><tbody>${abFilas}</tbody></table>`
+        :`<div class="muted" style="font-size:12.5px">Aún no has registrado abonos. Cuando le pagues a María José, regístralo aquí y se descuenta del saldo.</div>`}
+    </div>`;
+
+  document.getElementById("mjBody").innerHTML=`
+    ${platCards?`<div style="display:flex;gap:10px;flex-wrap:wrap;margin:6px 0 14px">${platCards}</div>`:""}
+    ${ventasTable?`<div style="font-weight:800;font-size:14px;margin:8px 0">Ventas de sus productos (${ventas.length})</div>${ventasTable}`:""}
+    ${abonosBlock}`;
+}
+
+function mjAbonoModal(){
+  openModal(`<h3>Registrar abono a María José</h3>
+    <div class="sub">Un pago hecho a María José. Se descuenta del saldo a pagar.</div>
+    <label class="cap">Monto pagado (COP)</label>
+    <input id="abMonto" type="number" class="field" placeholder="Ej. 200000" autofocus>
+    <label class="cap" style="display:block;margin-top:10px">Fecha</label>
+    <input id="abFecha" type="date" class="field" value="${_isoDay(0)}">
+    <label class="cap" style="display:block;margin-top:10px">Método (opcional)</label>
+    <input id="abMetodo" type="text" class="field" placeholder="Transferencia, Nequi, efectivo…">
+    <label class="cap" style="display:block;margin-top:10px">Nota (opcional)</label>
+    <input id="abNota" type="text" class="field" placeholder="Ej. abono parcial junio">
+    <div id="abErr" class="red" style="font-size:12px;margin-top:8px"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+      <button class="btn-ghost" onclick="closeModal()">Cancelar</button>
+      <button class="btn-acc" onclick="mjAbonoSave()">Guardar abono</button>
+    </div>`);
+}
+
+async function mjAbonoSave(){
+  const monto=parseFloat(document.getElementById("abMonto").value||"0");
+  const err=document.getElementById("abErr");
+  if(!monto||monto<=0){ err.textContent="Ingresa un monto mayor a 0."; return; }
+  try{
+    await api("/mj/abono",{method:"POST",body:JSON.stringify({
+      monto, fecha:document.getElementById("abFecha").value||null,
+      metodo:document.getElementById("abMetodo").value||"",
+      nota:document.getElementById("abNota").value||""})});
+    closeModal(); renderMariaJose();
+  }catch(e){ err.textContent=e.message; }
+}
+
+async function mjAbonoDel(id){
+  if(!confirm("¿Eliminar este abono? El saldo se recalcula.")) return;
+  try{ await api("/mj/abono/"+id,{method:"DELETE"}); renderMariaJose(); }
+  catch(e){ alert(e.message); }
 }
 
 // ── PENDIENTES DE BODEGA ─────────────────────────────────────────────────────

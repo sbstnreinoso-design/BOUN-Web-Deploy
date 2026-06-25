@@ -655,7 +655,8 @@ def inv_update_product(pid: int, fields: dict) -> bool:
     fields = {k: v for k, v in fields.items()
               if k in ("code", "name", "notes",
                        "cost_product", "cost_shipping",
-                       "qty_bogota", "qty_yopal", "qty_transit")}
+                       "qty_bogota", "qty_yopal", "qty_transit",
+                       "owner")}
     if not fields:
         return False
     fields["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
