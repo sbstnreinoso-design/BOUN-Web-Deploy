@@ -4282,8 +4282,11 @@ def _mj_ml_release(s, oid, od, co):
             released = True
         if mr:
             try:
-                d = _dt.datetime.fromisoformat(
-                    mr.replace("Z", "+00:00")).astimezone(co).date()
+                # Fecha TAL CUAL la reporta ML/MP (su propia zona, -04:00), sin
+                # convertir a Colombia: convertir corría la fecha 1 día (una
+                # liberación a las 00:02 -04:00 caía el día anterior en -05:00),
+                # haciéndola no coincidir con lo que ML le muestra al vendedor.
+                d = _dt.date.fromisoformat(mr[:10])
                 if best is None or d > best:
                     best = d
             except Exception:
