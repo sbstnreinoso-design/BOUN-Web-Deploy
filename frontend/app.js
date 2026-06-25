@@ -351,10 +351,55 @@ function comboCalc(p){
 }
 function mjOwnerBtn(p){
   const on=p.owner==="MARIA_JOSE";
-  return `<button class="btn-ghost" title="${on?"Quitar: ya no es de María José":"Marcar como producto de María José (entra a su liquidación)"}" style="${on?"color:#C9B8FF;border-color:#7D6BD855":""}" onclick="event.stopPropagation();toggleOwner(${p.id},${on?1:0})">💸 MJ${on?" ✓":""}</button>`;
+  let lbl="💸 MJ";
+  if(on){
+    const q=+p.mj_qty||0, c=Math.round(+p.mj_consumed||0);
+    lbl = q>0 ? `💸 MJ ${Math.max(q-c,0)}/${q}` : "💸 MJ ✓ todas";
+  }
+  return `<button class="btn-ghost" title="${on?"Editar/quitar unidades de María José":"Marcar como producto de María José (entra a su liquidación)"}" style="${on?"color:#C9B8FF;border-color:#7D6BD855":""}" onclick="event.stopPropagation();mjMarkModal(${p.id})">${lbl}</button>`;
 }
-async function toggleOwner(pid,on){
-  try{ await api("/inventory/"+pid,{method:"PATCH",body:JSON.stringify({owner:on?"BOUN":"MARIA_JOSE"})}); renderInventory(); }
+function mjMarkModal(pid){
+  const p=(INV||[]).find(x=>x.id===pid)||{};
+  const on=p.owner==="MARIA_JOSE";
+  const q=+p.mj_qty||0, c=Math.round(+p.mj_consumed||0);
+  const todas = on && q<=0;
+  openModal(`<h3>💸 Producto de María José</h3>
+    <div class="sub">${esc(p.code||"")} · ${esc(p.name||"")}</div>
+    <p style="font-size:12.5px;color:var(--muted);margin:0 0 12px">María vende primero <b>sus</b> unidades; cuando se agotan, las siguientes ventas pasan a ser de BOUN y el producto se desmarca solo. Indica cuántas unidades son de ella.</p>
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:10px;cursor:pointer">
+      <input type="radio" name="mjmode" value="qty" ${todas?"":"checked"} onchange="document.getElementById('mjQty').disabled=false;document.getElementById('mjQty').focus()"> Un número de unidades:
+      <input id="mjQty" type="number" min="1" class="field" style="width:90px;height:34px" value="${q>0?q:""}" placeholder="ej. 10" ${todas?"disabled":""}>
+    </label>
+    <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:6px;cursor:pointer">
+      <input type="radio" name="mjmode" value="todas" ${todas?"checked":""} onchange="document.getElementById('mjQty').disabled=true"> Todas las unidades (sin tope)
+    </label>
+    ${on&&q>0?`<div class="note" style="margin-top:8px">Llevas <b>${c}</b> vendidas de <b>${q}</b>. Si cambias el número, el conteo se reinicia desde hoy.</div>`:""}
+    <div id="mjErr" class="red" style="font-size:12px;margin-top:8px"></div>
+    <div style="display:flex;gap:8px;justify-content:space-between;margin-top:16px">
+      <div>${on?`<button class="btn-danger" onclick="mjUnmark(${pid})">Quitar de María José</button>`:""}</div>
+      <div style="display:flex;gap:8px">
+        <button class="btn-ghost" onclick="closeModal()">Cancelar</button>
+        <button class="btn-acc" onclick="mjMarkSave(${pid})">Guardar</button>
+      </div>
+    </div>`);
+}
+async function mjMarkSave(pid){
+  const mode=(document.querySelector('input[name="mjmode"]:checked')||{}).value;
+  const err=document.getElementById("mjErr");
+  let qty=0;
+  if(mode!=="todas"){
+    qty=parseInt(document.getElementById("mjQty").value||"0",10);
+    if(!qty||qty<1){ err.textContent="Ingresa cuántas unidades son de ella (o elige «Todas»)."; return; }
+  }
+  const hoy=_isoDay(0);
+  try{
+    await api("/inventory/"+pid,{method:"PATCH",body:JSON.stringify({
+      owner:"MARIA_JOSE", mj_qty:qty, mj_anchor:hoy, mj_consumed:0})});
+    closeModal(); renderInventory();
+  }catch(e){ err.textContent=e.message; }
+}
+async function mjUnmark(pid){
+  try{ await api("/inventory/"+pid,{method:"PATCH",body:JSON.stringify({owner:"BOUN"})}); closeModal(); renderInventory(); }
   catch(e){ alert(e.message); }
 }
 function invCard(p){
@@ -395,7 +440,7 @@ function invCard(p){
       ${photo}
       ${chip}
       <div style="flex:1">
-        <div class="inv-name">${esc(p.name)} ${p.owner==="MARIA_JOSE"?`<span title="Producto de María José" style="font-size:10px;font-weight:800;color:#C9B8FF;background:rgba(125,107,216,.18);border:1px solid #7D6BD855;padding:1px 7px;border-radius:11px;vertical-align:middle">💸 María José</span>`:""}</div>
+        <div class="inv-name">${esc(p.name)} ${p.owner==="MARIA_JOSE"?`<span title="Producto de María José" style="font-size:10px;font-weight:800;color:#C9B8FF;background:rgba(125,107,216,.18);border:1px solid #7D6BD855;padding:1px 7px;border-radius:11px;vertical-align:middle">💸 María José${(+p.mj_qty||0)>0?` · ${Math.max((+p.mj_qty||0)-Math.round(+p.mj_consumed||0),0)}/${+p.mj_qty||0} u`:" · todas"}</span>`:""}</div>
         <div class="inv-meta">${p.n_links} publicación${p.n_links!==1?"es":""} asignada${p.n_links!==1?"s":""} ${chCounts(p.n_by_channel)}${p.created_by?" · creado por "+esc(p.created_by):""}</div>
         ${comboLine}
       </div>

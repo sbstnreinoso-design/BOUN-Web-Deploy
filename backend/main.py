@@ -187,6 +187,9 @@ class InvUpdateIn(BaseModel):
     qty_yopal: Optional[float] = None
     qty_transit: Optional[float] = None
     owner: Optional[str] = None       # 'BOUN' | 'MARIA_JOSE'
+    mj_qty: Optional[float] = None     # unidades de María José (0/None = todas)
+    mj_anchor: Optional[str] = None    # 'YYYY-MM-DD' desde cuándo cuentan sus ventas
+    mj_consumed: Optional[float] = None  # unidades ya vendidas de ella (lo pone el sync)
 
 
 @app.patch("/api/inventory/{pid}")
@@ -4134,12 +4137,21 @@ def _mj_targets() -> dict:
     """
     try:
         prods = db._sb_get("inventory_products?owner=eq.MARIA_JOSE"
-                           "&select=id,code,name") or []
+                           "&select=id,code,name,mj_qty,mj_anchor") or []
     except Exception:
         prods = []
     by_id = {p["id"]: p for p in prods}
-    codes, ml, fa = {}, {}, {}
+    codes, ml, fa, meta = {}, {}, {}, {}
     for p in prods:
+        # mj_qty <= 0 o null = "todas las unidades" (sin tope).
+        try:
+            q = float(p.get("mj_qty")) if p.get("mj_qty") is not None else None
+        except (TypeError, ValueError):
+            q = None
+        meta[p["id"]] = {"qty": (q if (q is not None and q > 0) else None),
+                         "anchor": (str(p.get("mj_anchor"))[:10]
+                                    if p.get("mj_anchor") else None),
+                         "code": p.get("code", ""), "name": p.get("name", "")}
         c = str(p.get("code") or "").strip().upper()
         if c:
             codes[c] = {"product_id": p["id"], "code": p.get("code", ""),
@@ -4166,7 +4178,8 @@ def _mj_targets() -> dict:
         c = str(by_id[pid].get("code") or "").strip().upper()
         if c in codes and not codes[c]["thumb"] and info["thumb"]:
             codes[c]["thumb"] = info["thumb"]
-    return {"ml": ml, "fa": fa, "codes": codes, "has": bool(prods)}
+    return {"ml": ml, "fa": fa, "codes": codes, "meta": meta,
+            "has": bool(prods)}
 
 
 def _mj_ml_ad_cost(s, item_ids, since_d, until_d) -> dict:
@@ -4253,6 +4266,17 @@ def _mj_sync(window_days=None) -> dict:
                 "note": "Aún no hay productos marcados como de María José."}
     co = _dt.timezone(_dt.timedelta(hours=-5))
     wd = int(window_days or _mj_setting_f("mj_window_days", 120))
+    # Extender la ventana para cubrir desde la marca (anchor) más antigua de un
+    # producto con cupo, así no se subcuenta lo vendido desde que se asignó.
+    try:
+        anchors = [m["anchor"] for m in tg.get("meta", {}).values()
+                   if m.get("qty") and m.get("anchor")]
+        if anchors:
+            old = min(anchors)
+            days_since = (_dt.date.today() - _dt.date.fromisoformat(old)).days
+            wd = min(max(wd, days_since + 2), 400)
+    except Exception:
+        pass
     to_d = _dt.datetime.now(co)
     from_d = (to_d - _dt.timedelta(days=wd)).replace(
         hour=0, minute=0, second=0, microsecond=0)
@@ -4473,15 +4497,75 @@ def _mj_sync(window_days=None) -> dict:
                         "liberado": libre,
                         "estado_pago": "liberado" if libre else "pendiente"})
 
+    # ── Asignación por cupo (productos compartidos María José / BOUN) ──
+    # María vende PRIMERO sus unidades; cuando se agotan, las siguientes ventas
+    # son de BOUN.  Para los productos con cupo (mj_qty) se ordenan sus ventas
+    # desde la marca (anchor) de más antigua a más nueva y se le asignan hasta
+    # completar el cupo; la venta que cruza el tope se reparte proporcional.
+    # Al consumir el cupo, el producto se DESMARCA solo (owner → BOUN).
+    meta = tg.get("meta", {})
+    from collections import defaultdict as _dd
+    by_prod = _dd(list)
+    for r in rows:
+        by_prod[r.get("product_id")].append(r)
+    final_rows, consumed_map, clear_pids = [], {}, []
+    _MONEY_K = ("precio_venta", "descuentos", "comision", "retencion",
+                "costo_envio", "costo_publicidad", "neto_mj")
+    for pid, rs in by_prod.items():
+        m = meta.get(pid, {})
+        qty = m.get("qty")
+        if not qty:                      # "todas las unidades" (sin tope)
+            consumed_map[pid] = sum(float(x.get("unidades") or 0) for x in rs)
+            final_rows.extend(rs)
+            continue
+        anchor = m.get("anchor")
+        elig = [x for x in rs if (not anchor or x.get("fecha_venta", "") >= anchor)]
+        elig.sort(key=lambda x: (x.get("fecha_venta", ""), str(x.get("order_id"))))
+        rem, consumed = float(qty), 0.0
+        for x in elig:
+            if rem <= 0:
+                break
+            u = float(x.get("unidades") or 0)
+            if u <= 0:
+                continue
+            if u <= rem:
+                final_rows.append(x)
+                consumed += u
+                rem -= u
+            else:                         # esta venta cruza el tope → repartir
+                frac = rem / u
+                xx = dict(x)
+                xx["unidades"] = round(rem, 2)
+                for kk in _MONEY_K:
+                    xx[kk] = round(float(x.get(kk) or 0) * frac, 2)
+                final_rows.append(xx)
+                consumed += rem
+                rem = 0
+        consumed_map[pid] = consumed
+        if consumed >= float(qty):
+            clear_pids.append(pid)
+
     n = 0
-    for row in rows:
+    for row in final_rows:
         try:
             if _mj_upsert_row(row):
                 n += 1
         except Exception:
             pass
+
+    # Guardar lo consumido por producto y desmarcar los que agotaron su cupo.
+    for pid, cons in consumed_map.items():
+        try:
+            patch = {"mj_consumed": round(cons, 2)}
+            if pid in clear_pids:
+                patch["owner"] = "BOUN"   # se agotaron sus unidades → quitar marca
+            db._sb_patch("inventory_products", "id=eq.%s" % pid, patch)
+        except Exception:
+            pass
+
     _MJ_CACHE["ts"] = time.time()
-    return {"ok": True, "n": n, "filas": len(rows),
+    return {"ok": True, "n": n, "filas": len(final_rows),
+            "desmarcados": len(clear_pids),
             "errores": [e for e in errores if e]}
 
 
