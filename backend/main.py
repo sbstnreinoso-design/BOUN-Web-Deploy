@@ -207,7 +207,23 @@ def inv_update(pid: int, data: InvUpdateIn,
                                         "qty_yopal" in fields):
         raise HTTPException(403, "Solo el administrador puede editar las "
                                  "bodegas. Usa el botón «Ingreso de mercancía».")
-    return {"ok": db.inv_update_product(pid, fields)}
+    ok = db.inv_update_product(pid, fields)
+    # Si se cambió el dueño (marcar/desmarcar como de María José), limpiar sus
+    # ventas en la liquidación: al DESMARCAR desaparece de la sección; al
+    # RE-MARCAR se parte de cero y el sync la repuebla desde la nueva fecha.
+    if ok and "owner" in fields:
+        try:
+            db._sb_delete("mj_ventas", "product_id=eq.%d" % pid)
+        except Exception:
+            pass
+        if fields.get("owner") == "BOUN":
+            try:
+                db._sb_patch("inventory_products", "id=eq.%d" % pid,
+                             {"mj_consumed": 0})
+            except Exception:
+                pass
+        _MJ_CACHE["ts"] = 0     # fuerza re-sync en la próxima carga de la sección
+    return {"ok": ok}
 
 
 class IngresoIn(BaseModel):
