@@ -4183,41 +4183,55 @@ def _mj_targets() -> dict:
 
 
 def _mj_ml_ad_cost(s, item_ids, since_d, until_d) -> dict:
-    """{item_id → gasto REAL de Product Ads en el rango} para los ítems de MJ.
-    Consulta la API de Publicidad de ML por ítem.  Si no está disponible para un
-    ítem (sin campaña / endpoint no expuesto) simplemente no aporta costo."""
+    """{item_id → gasto REAL de Product Ads (Product Ads) en el rango}.
+
+    Usa el reporte de ítems del anunciante:
+      /advertising/advertisers/{adv}/product_ads/items?metrics=cost  (paginado).
+    Devuelve el costo de TODOS los ítems anunciados (no solo los links de MJ),
+    porque la publicación vendida puede diferir del link actual. La API de Ads
+    sólo admite rangos <= 90 días, así que se capa.  Header Api-Version:1 SOLO
+    en estas peticiones (no contaminar orders/search ni el detalle de orden)."""
     out = {}
     try:
         from ml_scraper import ML_API
-        # Header SOLO para las peticiones de publicidad (no contaminar la
-        # sesión: orders/search y el detalle de orden necesitan la versión por
-        # defecto para traer payments[].money_release_date).
+        import datetime as _dt
         _adh = {"Api-Version": "1"}
-        for iid in item_ids:
-            cost = 0.0
-            for url in (
-                f"{ML_API}/advertising/product_ads/ads/{iid}"
-                f"?date_from={since_d}&date_to={until_d}&metrics=cost",
-                f"{ML_API}/advertising/items/{iid}/metrics"
-                f"?date_from={since_d}&date_to={until_d}&metrics=cost",
-            ):
-                try:
-                    r = s.get(url, headers=_adh, timeout=15)
-                    if r.status_code != 200:
-                        continue
-                    j = r.json()
-                    m = j.get("metrics") or {}
-                    cost = float(m.get("cost") or 0)
-                    if not cost:
-                        for row in (j.get("results") or []):
-                            cost += float((row.get("metrics") or {}).get(
-                                "cost", 0) or 0)
-                    if cost:
-                        break
-                except Exception:
-                    continue
-            if cost:
-                out[str(iid)] = cost
+        a = s.get(f"{ML_API}/advertising/advertisers?product_id=PADS",
+                  headers=_adh, timeout=12)
+        adv_id = None
+        if a.status_code == 200:
+            arr = a.json().get("advertisers", [])
+            if arr:
+                adv_id = arr[0].get("advertiser_id")
+        if not adv_id:
+            return out
+        # Rango <= 90 días (la API rechaza más).
+        try:
+            d2 = _dt.date.fromisoformat(until_d)
+            d1 = _dt.date.fromisoformat(since_d)
+        except Exception:
+            d2 = _dt.date.today(); d1 = d2 - _dt.timedelta(days=89)
+        if (d2 - d1).days > 89:
+            d1 = d2 - _dt.timedelta(days=89)
+        df, dtt = d1.isoformat(), d2.isoformat()
+        offset = 0
+        while True:
+            r = s.get(f"{ML_API}/advertising/advertisers/{adv_id}/product_ads/"
+                      f"items?date_from={df}&date_to={dtt}&metrics=cost"
+                      f"&limit=50&offset={offset}", headers=_adh, timeout=25)
+            if r.status_code != 200:
+                break
+            j = r.json()
+            res = j.get("results", []) or []
+            for it in res:
+                iid = it.get("item_id")
+                c = float((it.get("metrics") or {}).get("cost") or 0)
+                if iid and c:
+                    out[str(iid)] = out.get(str(iid), 0.0) + c
+            total = j.get("paging", {}).get("total", 0)
+            offset += 50
+            if offset >= total or not res:
+                break
     except Exception:
         pass
     return out
@@ -4735,54 +4749,6 @@ def mj_sync_post(key: str = "", authorization: Optional[str] = Header(None)):
     return {"ok": True, "sync": r, "kpis": s}
 
 
-
-
-@app.get("/api/mj/addebug")
-def mj_addebug(iid: str = "", user: dict = Depends(_current_user)):
-    """TEMPORAL: prueba endpoints de Product Ads para hallar el gasto por ítem."""
-    import datetime as _dt
-    out = {"probes": {}}
-    try:
-        from ml_scraper import _ml_session_auth, ML_API as _A
-        s, uid = _ml_session_auth()
-        if not s:
-            return {"error": "sin sesión ML"}
-        h1 = {"Api-Version": "1"}
-        co = _dt.timezone(_dt.timedelta(hours=-5))
-        to_d = _dt.datetime.now(co).date()
-        from_d = to_d - _dt.timedelta(days=89)
-        d1, d2 = from_d.isoformat(), to_d.isoformat()
-        adv_id = None
-        try:
-            a = s.get(f"{_A}/advertising/advertisers?product_id=PADS",
-                      headers=h1, timeout=12)
-            out["advertisers"] = {"code": a.status_code,
-                                  "body": str(a.json())[:300]}
-            arr = a.json().get("advertisers", []) if a.status_code == 200 else []
-            if arr:
-                adv_id = arr[0].get("advertiser_id")
-        except Exception as e:
-            out["advertisers"] = {"err": str(e)[:120]}
-        out["adv_id"] = adv_id
-        urls = {
-            "items_q": f"{_A}/advertising/advertisers/{adv_id}/product_ads/"
-                       f"items?date_from={d1}&date_to={d2}&metrics=cost,clicks,prints&limit=10",
-            "ads_iid": f"{_A}/advertising/product_ads/ads/{iid}"
-                       f"?date_from={d1}&date_to={d2}&metrics=cost,clicks,prints",
-        }
-        for label, url in urls.items():
-            try:
-                r = s.get(url, headers=h1, timeout=15)
-                ct = r.headers.get("content-type", "")
-                out["probes"][label] = {"code": r.status_code,
-                                        "body": (str(r.json())[:1500]
-                                                 if ct.startswith("application/json")
-                                                 else r.text[:300])}
-            except Exception as e:
-                out["probes"][label] = {"err": str(e)[:120]}
-    except Exception as e:
-        out["error"] = str(e)[:200]
-    return out
 
 
 class MJAbonoIn(BaseModel):
