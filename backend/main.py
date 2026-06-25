@@ -4731,9 +4731,29 @@ def mj_sync_post(key: str = "", authorization: Optional[str] = Header(None)):
 
 
 @app.get("/api/mj/debug")
-def mj_debug(user: dict = Depends(_current_user)):
+def mj_debug(oid: str = "", user: dict = Depends(_current_user)):
     """TEMPORAL: vuelca la estructura de pagos de las órdenes ML de MJ para
     diagnosticar la fecha de liberación. Se elimina luego."""
+    if oid:
+        try:
+            from ml_scraper import _ml_session_auth, ML_API as _A
+            s, uid = _ml_session_auth()
+            if not s:
+                return {"error": "sin sesión ML"}
+            try:
+                s.headers.pop("Api-Version", None)
+            except Exception:
+                pass
+            r = s.get(f"{_A}/orders/{oid}", timeout=15)
+            j = r.json() if r.status_code == 200 else {}
+            pays = j.get("payments") or []
+            return {"oid": oid, "status": r.status_code,
+                    "order_status": j.get("status"),
+                    "payment_full": pays[0] if pays else None,
+                    "n_payments": len(pays),
+                    "order_keys": list(j.keys())}
+        except Exception as e:
+            return {"error": str(e)[:200]}
     out = {"orders": []}
     try:
         from ml_scraper import _ml_session_auth, ML_API as _A
