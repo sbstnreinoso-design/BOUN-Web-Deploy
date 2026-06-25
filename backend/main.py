@@ -4751,6 +4751,55 @@ def mj_sync_post(key: str = "", authorization: Optional[str] = Header(None)):
 
 
 
+@app.get("/api/mj/reldebug")
+def mj_reldebug(user: dict = Depends(_current_user)):
+    """TEMPORAL: confirma estado real de liberación de cada pago de MJ."""
+    import datetime as _dt
+    out = {"rows": []}
+    try:
+        from ml_scraper import _ml_session_auth, ML_API as _A
+        s, uid = _ml_session_auth()
+        if not s:
+            return {"error": "sin sesión ML"}
+        try:
+            s.headers.pop("Api-Version", None)
+        except Exception:
+            pass
+        ventas = db._sb_get("mj_ventas?plataforma=eq.mercadolibre&"
+                            "select=order_id,fecha_venta&order=fecha_venta.desc") or []
+        seen = set()
+        for v in ventas:
+            oid = str(v.get("order_id"))
+            if oid in seen:
+                continue
+            seen.add(oid)
+            row = {"oid": oid, "venta": v.get("fecha_venta")}
+            try:
+                od = s.get(f"{_A}/orders/{oid}", timeout=12).json()
+                row["order_status"] = od.get("status")
+                pid = (od.get("payments") or [{}])[0].get("id")
+                row["pid"] = pid
+                if pid:
+                    c = s.get(f"{_A}/collections/{pid}", timeout=12).json()
+                    row["date_approved"] = c.get("date_approved")
+                    row["money_release_date"] = c.get("money_release_date")
+                    row["money_release_status"] = c.get("money_release_status")
+                    row["status"] = c.get("status")
+                    row["status_detail"] = c.get("status_detail")
+                # ¿entregado?
+                sh = (od.get("shipping") or {}).get("id")
+                if sh:
+                    sd = s.get(f"{_A}/shipments/{sh}", timeout=12).json()
+                    row["ship_status"] = sd.get("status")
+                    row["ship_substatus"] = sd.get("substatus")
+            except Exception as e:
+                row["err"] = str(e)[:100]
+            out["rows"].append(row)
+    except Exception as e:
+        out["error"] = str(e)[:200]
+    return out
+
+
 class MJAbonoIn(BaseModel):
     monto: float
     fecha: Optional[str] = None
