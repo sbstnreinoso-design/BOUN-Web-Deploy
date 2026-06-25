@@ -4238,11 +4238,14 @@ def _mj_ml_ad_cost(s, item_ids, since_d, until_d) -> dict:
 
 
 def _mj_ml_release(s, oid, od, co):
-    """Fecha en que ML libera el dinero de una orden y si ya está liberado.
+    """Fecha en que ML libera el dinero de una orden y si YA está liberado.
 
-    OJO: ni /orders ni /orders/{id} traen money_release_date para estas cuentas.
-    El dato vive en el cobro: GET /collections/{payment_id} → money_release_date
-    + money_release_status. Devuelve (fecha|None, liberado_bool)."""
+    OJO: ni /orders ni /orders/{id} traen money_release_date.  El dato vive en
+    el pago.  El endpoint de MercadoPago (/v1/payments/{id}) devuelve la fecha
+    Y el estado real `money_release_status` ('released' = ya disponible); el de
+    ML /collections/{id} da la fecha pero deja el estado en null.  Se usa MP
+    primero (fecha + estado) y /collections como respaldo de fecha.
+    Devuelve (fecha|None, liberado_bool)."""
     import datetime as _dt
     from ml_scraper import ML_API
     pids = [p.get("id") for p in (od.get("payments") or []) if p.get("id")]
@@ -4256,21 +4259,35 @@ def _mj_ml_release(s, oid, od, co):
             pass
     best, released = None, False
     for pid in pids:
+        mr, st = "", ""
         try:
-            r = s.get(f"{ML_API}/collections/{pid}", timeout=12)
-            if r.status_code != 200:
-                continue
-            b = r.json()
-            mr = b.get("money_release_date") or ""
-            if (b.get("money_release_status") or "") == "released":
-                released = True
-            if mr:
+            r = s.get(f"https://api.mercadopago.com/v1/payments/{pid}",
+                      timeout=12)
+            if r.status_code == 200:
+                b = r.json()
+                mr = b.get("money_release_date") or ""
+                st = b.get("money_release_status") or ""
+        except Exception:
+            pass
+        if not mr:
+            try:
+                r = s.get(f"{ML_API}/collections/{pid}", timeout=12)
+                if r.status_code == 200:
+                    b = r.json()
+                    mr = b.get("money_release_date") or ""
+                    st = st or (b.get("money_release_status") or "")
+            except Exception:
+                pass
+        if st == "released":
+            released = True
+        if mr:
+            try:
                 d = _dt.datetime.fromisoformat(
                     mr.replace("Z", "+00:00")).astimezone(co).date()
                 if best is None or d > best:
                     best = d
-        except Exception:
-            pass
+            except Exception:
+                pass
     return best, released
 
 
@@ -4749,55 +4766,6 @@ def mj_sync_post(key: str = "", authorization: Optional[str] = Header(None)):
     return {"ok": True, "sync": r, "kpis": s}
 
 
-
-
-@app.get("/api/mj/reldebug")
-def mj_reldebug(user: dict = Depends(_current_user)):
-    """TEMPORAL: confirma estado real de liberación de cada pago de MJ."""
-    import datetime as _dt
-    out = {"rows": []}
-    try:
-        from ml_scraper import _ml_session_auth, ML_API as _A
-        s, uid = _ml_session_auth()
-        if not s:
-            return {"error": "sin sesión ML"}
-        try:
-            s.headers.pop("Api-Version", None)
-        except Exception:
-            pass
-        ventas = db._sb_get("mj_ventas?plataforma=eq.mercadolibre&"
-                            "select=order_id,fecha_venta&order=fecha_venta.desc") or []
-        seen = set()
-        for v in ventas:
-            oid = str(v.get("order_id"))
-            if oid in seen:
-                continue
-            seen.add(oid)
-            row = {"oid": oid, "venta": v.get("fecha_venta")}
-            try:
-                od = s.get(f"{_A}/orders/{oid}", timeout=12).json()
-                row["order_status"] = od.get("status")
-                pid = (od.get("payments") or [{}])[0].get("id")
-                row["pid"] = pid
-                if pid:
-                    c = s.get(f"{_A}/collections/{pid}", timeout=12).json()
-                    row["date_approved"] = c.get("date_approved")
-                    row["money_release_date"] = c.get("money_release_date")
-                    row["money_release_status"] = c.get("money_release_status")
-                    row["status"] = c.get("status")
-                    row["status_detail"] = c.get("status_detail")
-                # ¿entregado?
-                sh = (od.get("shipping") or {}).get("id")
-                if sh:
-                    sd = s.get(f"{_A}/shipments/{sh}", timeout=12).json()
-                    row["ship_status"] = sd.get("status")
-                    row["ship_substatus"] = sd.get("substatus")
-            except Exception as e:
-                row["err"] = str(e)[:100]
-            out["rows"].append(row)
-    except Exception as e:
-        out["error"] = str(e)[:200]
-    return out
 
 
 class MJAbonoIn(BaseModel):
