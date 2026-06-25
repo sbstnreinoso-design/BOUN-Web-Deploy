@@ -4224,36 +4224,40 @@ def _mj_ml_ad_cost(s, item_ids, since_d, until_d) -> dict:
 
 
 def _mj_ml_release(s, oid, od, co):
-    """Fecha en que ML libera el dinero de una orden (money_release_date).
-    El orders/search a veces no trae los pagos completos → si no está, se pide
-    el detalle de la orden /orders/{id}. Devuelve la fecha más tardía o None."""
+    """Fecha en que ML libera el dinero de una orden y si ya está liberado.
+
+    OJO: ni /orders ni /orders/{id} traen money_release_date para estas cuentas.
+    El dato vive en el cobro: GET /collections/{payment_id} → money_release_date
+    + money_release_status. Devuelve (fecha|None, liberado_bool)."""
     import datetime as _dt
-
-    def _best(arr):
-        best = None
-        for pay in (arr or []):
-            mr = (pay.get("money_release_date")
-                  or pay.get("date_released") or "")
-            if mr:
-                try:
-                    d = _dt.datetime.fromisoformat(
-                        mr.replace("Z", "+00:00")).astimezone(co).date()
-                    if best is None or d > best:
-                        best = d
-                except Exception:
-                    pass
-        return best
-
-    rel = _best(od.get("payments"))
-    if rel is None:
+    from ml_scraper import ML_API
+    pids = [p.get("id") for p in (od.get("payments") or []) if p.get("id")]
+    if not pids:
         try:
-            from ml_scraper import ML_API
             r = s.get(f"{ML_API}/orders/{oid}", timeout=12)
             if r.status_code == 200:
-                rel = _best(r.json().get("payments"))
+                pids = [p.get("id") for p in (r.json().get("payments") or [])
+                        if p.get("id")]
         except Exception:
             pass
-    return rel
+    best, released = None, False
+    for pid in pids:
+        try:
+            r = s.get(f"{ML_API}/collections/{pid}", timeout=12)
+            if r.status_code != 200:
+                continue
+            b = r.json()
+            mr = b.get("money_release_date") or ""
+            if (b.get("money_release_status") or "") == "released":
+                released = True
+            if mr:
+                d = _dt.datetime.fromisoformat(
+                    mr.replace("Z", "+00:00")).astimezone(co).date()
+                if best is None or d > best:
+                    best = d
+        except Exception:
+            pass
+    return best, released
 
 
 def _mj_ml_shipping(s, shipment_id) -> float:
@@ -4372,7 +4376,7 @@ def _mj_sync(window_days=None) -> dict:
                                 co).date()
                         except Exception:
                             fecha = today
-                        rel = _mj_ml_release(s, oid, od, co)
+                        rel, rel_done = _mj_ml_release(s, oid, od, co)
                         ship_id = (od.get("shipping") or {}).get("id")
                         env = _mj_ml_shipping(s, ship_id)
                         tot_u = sum(int(oi.get("quantity") or 0)
@@ -4389,7 +4393,8 @@ def _mj_sync(window_days=None) -> dict:
                                 "iid": iid, "oid": oid, "q": q, "gross": gross,
                                 "fee": fee, "ret": gross * RETENCION_FUENTE,
                                 "env": env * (q / tot_u), "fecha": fecha,
-                                "rel": rel, "info": ml_set.get(iid, {}),
+                                "rel": rel, "rel_done": rel_done,
+                                "info": ml_set.get(iid, {}),
                                 "nombre": (it.get("title")
                                            or ml_set.get(iid, {}).get(
                                                "name", ""))})
@@ -4405,7 +4410,7 @@ def _mj_sync(window_days=None) -> dict:
                         pub = tot_ad * (t["q"] / units_by_item[iid])
                     neto = t["gross"] - t["fee"] - t["ret"] - t["env"] - pub
                     rel = t["rel"]
-                    libre = bool(rel and rel <= today)
+                    libre = bool(t.get("rel_done") or (rel and rel <= today))
                     rows.append({
                         "plataforma": "mercadolibre", "order_id": t["oid"],
                         "item_id": iid,
@@ -4730,107 +4735,6 @@ def mj_sync_post(key: str = "", authorization: Optional[str] = Header(None)):
     return {"ok": True, "sync": r, "kpis": s}
 
 
-@app.get("/api/mj/debug")
-def mj_debug(oid: str = "", user: dict = Depends(_current_user)):
-    """TEMPORAL: vuelca la estructura de pagos de las órdenes ML de MJ para
-    diagnosticar la fecha de liberación. Se elimina luego."""
-    if oid:
-        try:
-            from ml_scraper import _ml_session_auth, ML_API as _A
-            s, uid = _ml_session_auth()
-            if not s:
-                return {"error": "sin sesión ML"}
-            try:
-                s.headers.pop("Api-Version", None)
-            except Exception:
-                pass
-            r = s.get(f"{_A}/orders/{oid}", timeout=15)
-            j = r.json() if r.status_code == 200 else {}
-            pays = j.get("payments") or []
-            pid = (pays[0] or {}).get("id") if pays else None
-            probes = {}
-            for label, url in (
-                ("ml_payments", f"{_A}/payments/{pid}"),
-                ("ml_collections", f"{_A}/collections/{pid}"),
-                ("mp_payments", f"https://api.mercadopago.com/v1/payments/{pid}"),
-            ):
-                try:
-                    rr = s.get(url, timeout=12)
-                    body = rr.json() if rr.status_code == 200 else {}
-                    probes[label] = {
-                        "code": rr.status_code,
-                        "money_release_date": body.get("money_release_date"),
-                        "money_release_status": body.get("money_release_status"),
-                        "has_mrd": "money_release_date" in body}
-                except Exception as e:
-                    probes[label] = {"err": str(e)[:80]}
-            return {"oid": oid, "payment_id": pid,
-                    "order_status": j.get("status"), "probes": probes}
-        except Exception as e:
-            return {"error": str(e)[:200]}
-    out = {"orders": []}
-    try:
-        from ml_scraper import _ml_session_auth, ML_API as _A
-        import datetime as _dt
-        tg = _mj_targets()
-        ml_set = tg["ml"]
-        out["ml_set"] = list(ml_set.keys())
-        s, uid = _ml_session_auth()
-        if not s:
-            out["error"] = "sin sesión ML"
-            return out
-        try:
-            s.headers.pop("Api-Version", None)
-        except Exception:
-            pass
-        co = _dt.timezone(_dt.timedelta(hours=-5))
-        to_d = _dt.datetime.now(co)
-        from_d = to_d - _dt.timedelta(days=120)
-        since = from_d.strftime("%Y-%m-%dT%H:%M:%S.000-05:00")
-        until = to_d.strftime("%Y-%m-%dT%H:%M:%S.000-05:00")
-        r = s.get(f"{_A}/orders/search?seller={uid}"
-                  f"&order.date_created.from={since}"
-                  f"&order.date_created.to={until}"
-                  f"&sort=date_desc&limit=50", timeout=20)
-        out["search_status"] = r.status_code
-        d = r.json() if r.status_code == 200 else {}
-        for od in d.get("results", []):
-            oi_mj = [oi for oi in od.get("order_items", [])
-                     if str((oi.get("item") or {}).get("id") or "") in ml_set]
-            if not oi_mj:
-                continue
-            oid = str(od.get("id"))
-            pays = [{k: p.get(k) for k in
-                     ("money_release_date", "date_approved",
-                      "money_release_status", "status")}
-                    for p in (od.get("payments") or [])]
-            pkeys = list((od.get("payments") or [{}])[0].keys()) \
-                if od.get("payments") else []
-            det = None
-            try:
-                rd = s.get(f"{_A}/orders/{oid}", timeout=12)
-                if rd.status_code == 200:
-                    dj = rd.json()
-                    det = {"payments": [{k: p.get(k) for k in
-                            ("money_release_date", "date_approved",
-                             "money_release_status")}
-                           for p in (dj.get("payments") or [])],
-                           "keys": list(dj.keys())}
-                else:
-                    det = {"status_code": rd.status_code}
-            except Exception as e:
-                det = {"err": str(e)[:120]}
-            # ¿hay info de release a nivel de orden?
-            order_rel = {k: od.get(k) for k in od.keys()
-                         if "release" in k.lower() or "money" in k.lower()}
-            out["orders"].append({
-                "oid": oid, "status": od.get("status"),
-                "date_created": od.get("date_created"),
-                "search_payments": pays, "payment_keys": pkeys,
-                "order_release_fields": order_rel, "detail": det})
-    except Exception as e:
-        out["error"] = str(e)[:200]
-    return out
 
 
 class MJAbonoIn(BaseModel):
