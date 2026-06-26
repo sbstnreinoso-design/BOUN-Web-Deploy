@@ -1161,6 +1161,34 @@ def _shopify_orders(shop: str, token: str, since_iso: str,
     return out
 
 
+def _shopify_orders_full(shop: str, token: str, since_iso: str,
+                         until_iso: str, fields: str) -> list:
+    """Como _shopify_orders pero con campos a medida (incluye envío/cliente).
+    Se usa para el reporte diario de ventas Shopify al equipo."""
+    import requests as _rq
+    import re as _re
+    out = []
+    url = "https://%s/admin/api/2025-01/orders.json" % shop
+    params = {"status": "any", "created_at_min": since_iso,
+              "created_at_max": until_iso, "limit": 250, "fields": fields}
+    headers = {"X-Shopify-Access-Token": token}
+    for _ in range(15):
+        r = _rq.get(url, params=params, headers=headers, timeout=20)
+        if r.status_code != 200:
+            raise Exception("HTTP %d" % r.status_code)
+        out.extend(r.json().get("orders", []) or [])
+        nxt = None
+        for part in (r.headers.get("Link", "") or "").split(","):
+            if 'rel="next"' in part:
+                m = _re.search(r"<([^>]+)>", part)
+                if m:
+                    nxt = m.group(1)
+        if not nxt:
+            break
+        url, params = nxt, None
+    return out
+
+
 def _shopify_product_images(shop: str, token: str, product_ids) -> dict:
     """{str(product_id): url_imagen destacada} para productos Shopify.
     Las órdenes no traen la imagen, así que se consulta /products.json?ids=."""
@@ -3328,6 +3356,15 @@ _CEREBRO_TASKS = [
      "run": "Detectando y denunciando infractores…",
      "done": "Infractores denunciados · estados actualizados",
      "idle": "Próxima corrida a las 8:00 PM"},
+    {"id": "reporte-ventas-shopify", "canal": "shopify",
+     "nombre": "Reporte de ventas Shopify", "icon": "box",
+     "cad": "Diario · 7:00 AM", "hours": [7], "days": None,
+     "desc": "Revisa las ventas del día anterior en Shopify (BOUN + KAT) y, si "
+             "hubo, las reporta al canal #shopify de Slack con el detalle de "
+             "envío para que el equipo despache.",
+     "run": "Revisando ventas Shopify de ayer…",
+     "done": "Ventas reportadas a #shopify",
+     "idle": "Próxima corrida a las 7:00 AM"},
     {"id": "falabella-boun-inventario-diario", "canal": "falabella",
      "nombre": "Corrida diaria de contenido", "icon": "spark",
      "cad": "Diario · 11:00 PM", "hours": [23], "days": None,
@@ -3856,6 +3893,120 @@ def mapeo_scan(key: str = "", authorization: Optional[str] = Header(None)):
             "total": len(audit["pendientes"]), "n_sin_mapear": audit["n_sin_mapear"],
             "n_mal_mapeado": audit["n_mal_mapeado"], "n_huerfano": audit["n_huerfano"],
             "reconciliacion": audit["reconciliacion"], "channels": audit["channels"]}
+
+
+@app.get("/api/shopify/ordenes-dia")
+def shopify_ordenes_dia(date: str = "", key: str = "",
+                        authorization: Optional[str] = Header(None)):
+    """Órdenes Shopify de un día (BOUN + KAT) con detalle de envío para que el
+    equipo pueda despachar. Auth: ?key=BOUN_EXPORT_TOKEN (planificador sin
+    sesión) o sesión admin. `date`=YYYY-MM-DD en zona Colombia; por defecto
+    AYER. La consume la skill diaria 'reporte-ventas-shopify'."""
+    token = os.environ.get("BOUN_EXPORT_TOKEN", "")
+    authed = bool(token and key == token)
+    if not authed:
+        try:
+            u = _current_user(authorization)
+            authed = bool(u and u.get("role") == "admin")
+        except Exception:
+            authed = False
+    if not authed:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import datetime as _dt
+    co = _dt.timezone(_dt.timedelta(hours=-5))
+    try:
+        if date:
+            d = _dt.date.fromisoformat(date[:10])
+        else:
+            d = (_dt.datetime.now(co) - _dt.timedelta(days=1)).date()
+    except Exception:
+        return JSONResponse({"error": "fecha inválida"}, status_code=400)
+    since = _dt.datetime.combine(d, _dt.time(0, 0, 0), co).isoformat()
+    until = _dt.datetime.combine(d, _dt.time(23, 59, 59), co).isoformat()
+    fields = ("id,name,created_at,total_price,subtotal_price,total_tax,"
+              "currency,financial_status,fulfillment_status,line_items,"
+              "shipping_address,customer,email,phone,note,cancelled_at")
+    tiendas = {"BOUN": _SHOPIFY_SHOPS["shopify_boun"],
+               "KAT": _SHOPIFY_SHOPS["shopify_kat"]}
+    out = {"ok": True, "fecha": d.isoformat(), "tiendas": {}}
+    tot_ord = tot_uni = 0
+    tot_ing = 0.0
+    for marca, shop in tiendas.items():
+        tok = db.get_setting("shopify_token::%s" % shop, "")
+        info = {"shop": shop, "ordenes": [], "error": None}
+        if not tok:
+            info["error"] = "sin token"
+            out["tiendas"][marca] = info
+            continue
+        try:
+            raw = _shopify_orders_full(shop, tok, since, until, fields)
+        except Exception as e:
+            info["error"] = str(e)[:120]
+            out["tiendas"][marca] = info
+            continue
+        # Las órdenes no traen la foto del producto → mapear product_id → imagen.
+        pids = []
+        for o in raw:
+            for li in (o.get("line_items") or []):
+                if li.get("product_id"):
+                    pids.append(li.get("product_id"))
+        try:
+            imgs = _shopify_product_images(shop, tok, pids)
+        except Exception:
+            imgs = {}
+        for o in raw:
+            if o.get("cancelled_at"):
+                continue
+            sa = o.get("shipping_address") or {}
+            cust = o.get("customer") or {}
+            items = []
+            uni = 0
+            for li in (o.get("line_items") or []):
+                q = int(li.get("quantity") or 0)
+                uni += q
+                items.append({
+                    "titulo": li.get("title") or "",
+                    "variante": li.get("variant_title") or "",
+                    "sku": li.get("sku") or "",
+                    "cantidad": q,
+                    "precio_unit": li.get("price") or "",
+                    "imagen": imgs.get(str(li.get("product_id")), "")})
+            tel = (sa.get("phone") or cust.get("phone")
+                   or o.get("phone") or "")
+            nombre = (sa.get("name")
+                      or (((cust.get("first_name") or "") + " "
+                           + (cust.get("last_name") or "")).strip())
+                      or "—")
+            info["ordenes"].append({
+                "numero": o.get("name") or "",
+                "creado": o.get("created_at") or "",
+                "cliente": nombre,
+                "telefono": tel,
+                "email": (cust.get("email") or o.get("email") or ""),
+                "direccion": {
+                    "linea1": sa.get("address1") or "",
+                    "linea2": sa.get("address2") or "",
+                    "ciudad": sa.get("city") or "",
+                    "provincia": sa.get("province") or "",
+                    "zip": sa.get("zip") or "",
+                    "pais": sa.get("country") or ""},
+                "items": items,
+                "unidades": uni,
+                "total": o.get("total_price") or "",
+                "moneda": o.get("currency") or "COP",
+                "pago": o.get("financial_status") or "",
+                "envio": o.get("fulfillment_status") or "unfulfilled",
+                "nota": o.get("note") or ""})
+            tot_ord += 1
+            tot_uni += uni
+            try:
+                tot_ing += float(o.get("total_price") or 0)
+            except Exception:
+                pass
+        out["tiendas"][marca] = info
+    out["resumen"] = {"ordenes": tot_ord, "unidades": tot_uni,
+                      "ingresos": tot_ing}
+    return out
 
 
 class MapeoAsociarIn(BaseModel):

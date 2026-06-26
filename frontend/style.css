@@ -386,8 +386,22 @@ tr.mpdetail td{background:var(--surf);padding:8px 14px}
 
   /* ── Inventario ─────────────────────────────────────────────────────── */
   .inv-strip{padding:0 12px 12px 12px;gap:11px}
-  .inv-head{padding:11px 12px;gap:11px}
   .fcol{flex:1 1 calc(50% - 6px)}
+
+  /* Encabezado de tarjeta en móvil: foto + código + nombre ocupan la 1ª
+     fila; las acciones BAJAN a sus propias filas (ya no se salen a la
+     derecha) y quedan a ancho completo y bien tocables. */
+  .inv-head{flex-wrap:wrap;row-gap:9px;padding:11px 12px;gap:10px;align-items:flex-start}
+  .inv-head>div[style*="flex:1"]{flex:1 1 120px;min-width:108px;align-self:center}
+  .inv-head>.btn-ghost,.inv-head>.btn-danger{
+    order:2;flex:1 1 auto;min-width:84px;height:40px;padding:0 12px;
+    display:flex;align-items:center;justify-content:center;text-align:center}
+  /* "📥 Ingreso" = acción principal del equipo de bodega: fila propia,
+     resaltada y grande para que sea imposible de perder. */
+  .inv-head>.btn-ghost[onclick^="ingresoDialog"]{
+    order:1;flex:1 1 100%;height:46px;font-size:14px;font-weight:800;
+    color:#0A0A0A;background:var(--acc);border-color:var(--acc)}
+  .inv-head>.btn-ghost[onclick^="ingresoDialog"]:hover{background:var(--acc-h)}
 
   /* ── Filtros ───────────────────────────────────────────────────────── */
   .filters{gap:7px}
