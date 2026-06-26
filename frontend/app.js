@@ -441,8 +441,8 @@ function invCard(p){
              : fcolRO("Bod. Yopal",Math.round(+p.qty_yopal||0));
   const fTra = isCombo? fcolRO("En camino","🔒","muted") : fcol("En camino",inp(p.id,"qty_transit",p.qty_transit,64));
   return `<div class="inv-card" data-pid="${p.id}" ${cardStyle}>
-    <div class="inv-head">
-      <span class="expand" onclick="togglePanel(${p.id})">▸</span>
+    <div class="inv-head" onclick="headTap(event,${p.id})">
+      <span class="expand">▸</span>
       ${photo}
       ${chip}
       <div style="flex:1">
@@ -503,10 +503,17 @@ async function saveField(pid,field,val){
   try{ await api("/inventory/"+pid,{method:"PATCH",body:JSON.stringify(body)}); }catch(e){ alert(e.message); }
 }
 
+// Tocar el encabezado de la tarjeta despliega/colapsa el detalle (móvil),
+// salvo cuando se toca un botón/control de acción.
+function headTap(e,pid){
+  if(e.target.closest("button,input,a,select,textarea")) return;
+  togglePanel(pid);
+}
 function togglePanel(pid){
   const el=document.getElementById("panel-"+pid); if(!el) return;
-  if(el.classList.contains("open")){ el.classList.remove("open"); setArrow(pid,"▸"); return; }
-  el.classList.add("open"); setArrow(pid,"▾");
+  const card=document.querySelector(`.inv-card[data-pid="${pid}"]`);
+  if(el.classList.contains("open")){ el.classList.remove("open"); if(card)card.classList.remove("card-open"); setArrow(pid,"▸"); return; }
+  el.classList.add("open"); if(card)card.classList.add("card-open"); setArrow(pid,"▾");
   const p=INV.find(x=>x.id===pid); let links=(p.links||[]).slice();
   links.sort((a,b)=>{ const ca=CH_ORDER.indexOf(a.channel||"mercadolibre"),cb=CH_ORDER.indexOf(b.channel||"mercadolibre");
     if(ca!==cb)return ca-cb;

@@ -385,8 +385,16 @@ tr.mpdetail td{background:var(--surf);padding:8px 14px}
   .inv-card [style*="display:flex"]{flex-wrap:wrap;row-gap:8px}
 
   /* ── Inventario ─────────────────────────────────────────────────────── */
-  .inv-strip{padding:0 12px 12px 12px;gap:11px}
+  /* En móvil el detalle del producto (costos, bodegas, KPIs y publicaciones)
+     se COLAPSA: la tarjeta muestra solo el encabezado + acciones, y se abre
+     tocándola (flecha ▸). Así la lista queda compacta y el botón Ingreso
+     siempre queda a la vista. */
+  .inv-strip{display:none;padding:2px 12px 12px 12px;gap:11px}
+  .inv-card.card-open .inv-strip{display:flex}
   .fcol{flex:1 1 calc(50% - 6px)}
+  /* Flecha de expandir: objetivo táctil más grande y claro */
+  .inv-head{cursor:pointer}
+  .expand{font-size:18px;width:22px;padding:2px 0;color:var(--acc)}
 
   /* Encabezado de tarjeta en móvil: foto + código + nombre ocupan la 1ª
      fila; las acciones BAJAN a sus propias filas (ya no se salen a la
