@@ -5473,6 +5473,353 @@ def cola_bodega_full(cid: int, user: dict = Depends(_current_user)):
     return {"ok": True, "id": cid, "estado": "full"}
 
 
+# ── EMBARQUES · Mercancía en camino ──────────────────────────────────────────
+# Un embarque = una compra/importación que viene en camino (China → agente de
+# carga → bodega). Agrupa varias líneas de producto (cada línea = un SKU del
+# inventario). Mientras el embarque está "en_camino", sus unidades se ven en el
+# inventario como "En camino" (qty_transit) producto por producto. Al "arribar"
+# se mueven de tránsito a la bodega destino, el costo del producto se actualiza
+# por PROMEDIO PONDERADO y la parte de María José alimenta su liquidación.
+
+def _emb_now():
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _emb_dt(v):
+    """Normaliza una fecha 'YYYY-MM-DD' (o vacío → None) para Supabase."""
+    v = (v or "").strip()
+    return v[:10] if v else None
+
+
+def _emb_calc_item(it: dict, usa_cbm: bool, cbm_rate: float) -> dict:
+    """Recalcula CBM y flete de una línea de forma consistente en el servidor.
+    CBM = (largo×ancho×alto / 1.000.000) × cant_cajas (cm³ → m³). Con la
+    transportadora que cobra por CBM (usa_cbm) el flete = CBM × tarifa; si no,
+    se respeta el flete que vino escrito a mano."""
+    largo = float(it.get("caja_largo") or 0)
+    ancho = float(it.get("caja_ancho") or 0)
+    alto = float(it.get("caja_alto") or 0)
+    cajas = float(it.get("cantidad_cajas") or 0)
+    cbm = (largo * ancho * alto / 1_000_000.0) * cajas
+    if cbm <= 0:                       # sin medidas: respeta el CBM enviado
+        cbm = float(it.get("cbm") or 0)
+    flete = cbm * float(cbm_rate or 0) if usa_cbm else float(it.get("valor_flete") or 0)
+    return {"cbm": round(cbm, 6), "valor_flete": round(flete, 2)}
+
+
+def _emb_item_row(it: dict, embarque_id: int, usa_cbm: bool,
+                  cbm_rate: float) -> dict:
+    """Arma la fila de embarque_items lista para insertar, tomando el snapshot
+    del producto (código/nombre/foto) del inventario si hace falta."""
+    code = (it.get("code") or "").strip()
+    name = (it.get("name") or "").strip()
+    thumb = (it.get("thumb") or "").strip()
+    pid = it.get("product_id")
+    if pid and (not code or not name):
+        pr = db._sb_get("inventory_products?id=eq.%d&select=code,name"
+                        % int(pid)) or []
+        if pr:
+            code = code or pr[0].get("code") or ""
+            name = name or pr[0].get("name") or ""
+    calc = _emb_calc_item(it, usa_cbm, cbm_rate)
+    return {
+        "embarque_id": embarque_id,
+        "product_id": int(pid) if pid else None,
+        "code": code, "name": name, "thumb": thumb,
+        "cantidad": float(it.get("cantidad") or 0),
+        "costo_unit_china": float(it.get("costo_unit_china") or 0),
+        "bodega_destino": "yopal" if (it.get("bodega_destino") == "yopal")
+                          else "bogota",
+        "caja_largo": float(it.get("caja_largo") or 0),
+        "caja_ancho": float(it.get("caja_ancho") or 0),
+        "caja_alto": float(it.get("caja_alto") or 0),
+        "cantidad_cajas": float(it.get("cantidad_cajas") or 0),
+        "peso": float(it.get("peso") or 0),
+        "cbm": calc["cbm"], "valor_flete": calc["valor_flete"],
+        "mj_cantidad": float(it.get("mj_cantidad") or 0),
+        "mj_anchor": _emb_dt(it.get("mj_anchor")),
+    }
+
+
+def _emb_transit(product_id, delta, code, motivo):
+    """SUMA (o resta, delta<0) unidades a 'En camino' (qty_transit) de un
+    producto, sin bajar de 0, y deja traza en movimiento_stock."""
+    if not product_id or not delta:
+        return
+    rows = db._sb_get("inventory_products?id=eq.%d&select=id,qty_transit"
+                      % int(product_id)) or []
+    if not rows:
+        return
+    actual = float(rows[0].get("qty_transit") or 0)
+    nuevo = max(0.0, actual + float(delta))
+    db._sb_patch("inventory_products", "id=eq.%d" % int(product_id),
+                 {"qty_transit": nuevo})
+    try:
+        db._sb_post("movimiento_stock", {
+            "codigo_boun": code or "", "delta": int(delta),
+            "motivo": motivo, "canal": "manual", "order_id": ""})
+    except Exception:
+        pass
+
+
+def _emb_with_items():
+    """Lee todos los embarques con sus líneas y totales calculados."""
+    embs = db._sb_get("embarques?select=*&order=created_at.desc") or []
+    its = db._sb_get("embarque_items?select=*&order=id.asc") or []
+    by_emb = {}
+    for it in its:
+        by_emb.setdefault(it.get("embarque_id"), []).append(it)
+    for e in embs:
+        items = by_emb.get(e.get("id"), [])
+        e["items"] = items
+        e["n_items"] = len(items)
+        e["total_unidades"] = int(sum(float(i.get("cantidad") or 0)
+                                      for i in items))
+        e["valor_mercancia"] = round(sum(
+            float(i.get("cantidad") or 0) * float(i.get("costo_unit_china") or 0)
+            for i in items), 2)
+        e["valor_flete"] = round(sum(float(i.get("valor_flete") or 0)
+                                     for i in items), 2)
+        e["valor_total"] = round(e["valor_mercancia"] + e["valor_flete"], 2)
+        e["cbm_total"] = round(sum(float(i.get("cbm") or 0)
+                                   for i in items), 4)
+        e["mj_unidades"] = int(sum(float(i.get("mj_cantidad") or 0)
+                                   for i in items))
+    return embs
+
+
+class EmbItemIn(BaseModel):
+    product_id: Optional[int] = None
+    code: Optional[str] = ""
+    name: Optional[str] = ""
+    thumb: Optional[str] = ""
+    cantidad: float = 0
+    costo_unit_china: float = 0
+    bodega_destino: str = "bogota"
+    caja_largo: float = 0
+    caja_ancho: float = 0
+    caja_alto: float = 0
+    cantidad_cajas: float = 0
+    peso: float = 0
+    cbm: float = 0
+    valor_flete: float = 0
+    mj_cantidad: float = 0
+    mj_anchor: Optional[str] = None
+
+
+class EmbarqueIn(BaseModel):
+    nombre: Optional[str] = ""
+    transportadora: str = "Envios DC"
+    usa_cbm: bool = True
+    cbm_rate: float = 1700000
+    fecha_compra: Optional[str] = None
+    fecha_entrega_agente: Optional[str] = None
+    eta: Optional[str] = None
+    notas: Optional[str] = ""
+    items: List[EmbItemIn] = []
+
+
+class EmbarquePatchIn(BaseModel):
+    nombre: Optional[str] = None
+    transportadora: Optional[str] = None
+    usa_cbm: Optional[bool] = None
+    cbm_rate: Optional[float] = None
+    fecha_compra: Optional[str] = None
+    fecha_entrega_agente: Optional[str] = None
+    eta: Optional[str] = None
+    notas: Optional[str] = None
+    items: Optional[List[EmbItemIn]] = None
+
+
+@app.get("/api/embarques")
+def embarques_list(user: dict = Depends(_current_user)):
+    try:
+        embs = _emb_with_items()
+    except Exception:
+        embs = []
+    en_camino = sum(1 for e in embs if e.get("estado") == "en_camino")
+    return {"ok": True, "generado": _emb_now(),
+            "counts": {"en_camino": en_camino, "total": len(embs)},
+            "embarques": embs}
+
+
+@app.get("/api/embarques/count")
+def embarques_count(user: dict = Depends(_current_user)):
+    try:
+        rows = db._sb_get("embarques?estado=eq.en_camino&select=id") or []
+        return {"count": len(rows)}
+    except Exception:
+        return {"count": 0}
+
+
+@app.post("/api/embarques")
+def embarques_create(data: EmbarqueIn, user: dict = Depends(_current_user)):
+    head = {
+        "nombre": (data.nombre or "").strip() or None,
+        "transportadora": (data.transportadora or "Envios DC").strip(),
+        "usa_cbm": bool(data.usa_cbm),
+        "cbm_rate": float(data.cbm_rate or 0),
+        "fecha_compra": _emb_dt(data.fecha_compra),
+        "fecha_entrega_agente": _emb_dt(data.fecha_entrega_agente),
+        "eta": _emb_dt(data.eta),
+        "notas": (data.notas or "").strip() or None,
+        "estado": "en_camino",
+        "created_by": user.get("username", ""),
+        "created_at": _emb_now(),
+    }
+    e = db._sb_post("embarques", head)
+    if not e or not e.get("id"):
+        raise HTTPException(400, "No se pudo crear el embarque")
+    eid = e["id"]
+    for it in (data.items or []):
+        row = _emb_item_row(it.dict(), eid, head["usa_cbm"], head["cbm_rate"])
+        db._sb_post("embarque_items", row)
+        # En camino → suma a "En camino" (qty_transit) del producto.
+        if row.get("product_id") and row["cantidad"] > 0:
+            _emb_transit(row["product_id"], row["cantidad"], row.get("code"),
+                         "embarque_en_camino #%d" % eid)
+    return {"ok": True, "id": eid}
+
+
+@app.patch("/api/embarques/{eid}")
+def embarques_update(eid: int, data: EmbarquePatchIn,
+                     user: dict = Depends(_current_user)):
+    rows = db._sb_get("embarques?id=eq.%d&select=*" % eid) or []
+    if not rows:
+        raise HTTPException(404, "Embarque no encontrado")
+    emb = rows[0]
+    if emb.get("estado") == "arribado":
+        raise HTTPException(409, "El embarque ya arribó; no se puede editar.")
+    head = {}
+    for f in ("nombre", "transportadora", "notas"):
+        v = getattr(data, f)
+        if v is not None:
+            head[f] = (v.strip() or None)
+    if data.usa_cbm is not None:
+        head["usa_cbm"] = bool(data.usa_cbm)
+    if data.cbm_rate is not None:
+        head["cbm_rate"] = float(data.cbm_rate or 0)
+    for f in ("fecha_compra", "fecha_entrega_agente", "eta"):
+        v = getattr(data, f)
+        if v is not None:
+            head[f] = _emb_dt(v)
+    if head:
+        db._sb_patch("embarques", "id=eq.%d" % eid, head)
+    # Si llegan líneas nuevas, se reemplazan (revertiendo el tránsito anterior).
+    if data.items is not None:
+        usa_cbm = head.get("usa_cbm", emb.get("usa_cbm", True))
+        cbm_rate = head.get("cbm_rate", emb.get("cbm_rate", 0))
+        old = db._sb_get("embarque_items?embarque_id=eq.%d&select=*" % eid) or []
+        for it in old:
+            if it.get("product_id") and float(it.get("cantidad") or 0) > 0:
+                _emb_transit(it["product_id"], -float(it["cantidad"]),
+                             it.get("code"), "embarque_editado #%d" % eid)
+        db._sb_delete("embarque_items", "embarque_id=eq.%d" % eid)
+        for it in data.items:
+            row = _emb_item_row(it.dict(), eid, usa_cbm, cbm_rate)
+            db._sb_post("embarque_items", row)
+            if row.get("product_id") and row["cantidad"] > 0:
+                _emb_transit(row["product_id"], row["cantidad"],
+                             row.get("code"), "embarque_en_camino #%d" % eid)
+    return {"ok": True, "id": eid}
+
+
+@app.delete("/api/embarques/{eid}")
+def embarques_delete(eid: int, user: dict = Depends(_admin)):
+    rows = db._sb_get("embarques?id=eq.%d&select=estado" % eid) or []
+    if not rows:
+        raise HTTPException(404, "Embarque no encontrado")
+    if rows[0].get("estado") == "en_camino":
+        its = db._sb_get("embarque_items?embarque_id=eq.%d&select=*"
+                         % eid) or []
+        for it in its:
+            if it.get("product_id") and float(it.get("cantidad") or 0) > 0:
+                _emb_transit(it["product_id"], -float(it["cantidad"]),
+                             it.get("code"), "embarque_eliminado #%d" % eid)
+    db._sb_delete("embarques", "id=eq.%d" % eid)   # cascade → items
+    return {"ok": True}
+
+
+@app.post("/api/embarques/{eid}/arribar")
+def embarques_arribar(eid: int, user: dict = Depends(_current_user)):
+    """Marca el embarque como ARRIBADO. Por cada línea: resta sus unidades de
+    'En camino', las suma a la bodega destino, actualiza el costo del producto
+    por PROMEDIO PONDERADO (costo del stock físico Bogotá+Yopal + costo landed
+    nuevo) y, si parte es de María José, la marca para su liquidación."""
+    rows = db._sb_get("embarques?id=eq.%d&select=*" % eid) or []
+    if not rows:
+        raise HTTPException(404, "Embarque no encontrado")
+    emb = rows[0]
+    if emb.get("estado") == "arribado":
+        raise HTTPException(409, "El embarque ya estaba marcado como arribado.")
+    its = db._sb_get("embarque_items?embarque_id=eq.%d&select=*" % eid) or []
+    aplicados = 0
+    hoy = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    for it in its:
+        pid = it.get("product_id")
+        cant = float(it.get("cantidad") or 0)
+        if not pid or cant <= 0:
+            continue
+        pr = db._sb_get(
+            "inventory_products?id=eq.%d&select=id,code,cost_product,"
+            "cost_shipping,qty_bogota,qty_yopal,qty_transit,owner,mj_qty,"
+            "mj_consumed,mj_anchor" % int(pid)) or []
+        if not pr:
+            continue
+        p = pr[0]
+        # Base del promedio: stock FÍSICO ya costeado (Bogotá + Yopal).
+        phys = float(p.get("qty_bogota") or 0) + float(p.get("qty_yopal") or 0)
+        cp_old = float(p.get("cost_product") or 0)
+        cs_old = float(p.get("cost_shipping") or 0)
+        cp_new = float(it.get("costo_unit_china") or 0)
+        cs_new = (float(it.get("valor_flete") or 0) / cant) if cant else 0.0
+        tot = phys + cant
+        if tot > 0:
+            cp_avg = (phys * cp_old + cant * cp_new) / tot
+            cs_avg = (phys * cs_old + cant * cs_new) / tot
+        else:
+            cp_avg, cs_avg = cp_new, cs_new
+        col = "qty_yopal" if it.get("bodega_destino") == "yopal" else "qty_bogota"
+        bod_actual = float(p.get(col) or 0)
+        transit_new = max(0.0, float(p.get("qty_transit") or 0) - cant)
+        patch = {
+            "cost_product": round(cp_avg, 2),
+            "cost_shipping": round(cs_avg, 2),
+            col: bod_actual + cant,
+            "qty_transit": transit_new,
+        }
+        # ── María José: parte de la línea que es de ella ──
+        mj = float(it.get("mj_cantidad") or 0)
+        if mj > 0:
+            if p.get("owner") == "MARIA_JOSE":
+                patch["mj_qty"] = float(p.get("mj_qty") or 0) + mj
+            else:
+                patch["owner"] = "MARIA_JOSE"
+                patch["mj_qty"] = mj
+                patch["mj_consumed"] = 0
+                patch["mj_anchor"] = _emb_dt(it.get("mj_anchor")) or hoy
+        db._sb_patch("inventory_products", "id=eq.%d" % int(pid), patch)
+        try:
+            db._sb_post("movimiento_stock", {
+                "codigo_boun": it.get("code") or "", "delta": int(cant),
+                "motivo": "arribo_embarque_%s #%d" % (
+                    "yopal" if col == "qty_yopal" else "bogota", eid),
+                "canal": "manual", "order_id": ""})
+        except Exception:
+            pass
+        db._sb_patch("embarque_items", "id=eq.%d" % it.get("id"),
+                     {"arribado": True})
+        aplicados += 1
+    db._sb_patch("embarques", "id=eq.%d" % eid,
+                 {"estado": "arribado", "arribado_at": _emb_now()})
+    # Fuerza re-sync de la liquidación de María José en su próxima carga.
+    try:
+        _MJ_CACHE["ts"] = 0
+    except Exception:
+        pass
+    return {"ok": True, "id": eid, "lineas_aplicadas": aplicados}
+
+
 # ── Shopify OAuth (captura del Admin API token de cada tienda) ───────────────
 # Instala la app "BOUN Sync Stock" en una tienda y guarda su token en Supabase
 # (app_settings), sin que nadie tenga que copiar el token a mano.

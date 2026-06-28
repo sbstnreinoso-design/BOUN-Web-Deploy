@@ -61,6 +61,7 @@ const NAV=[
   ["ventas","↗  Ventas"],
   ["maria_jose","💸  María José"],
   ["inventory","▦  Inventario"],
+  ["embarques","🚢  Mercancía en camino"],
   ["cola","📦  Pendientes de bodega"],
   ["my_products","★  Mis Productos"],
   ["products","▤  Productos para comprar"],
@@ -79,6 +80,7 @@ function showApp(){
   refreshColaBadge();
   refreshMapeoBadge();
   refreshDenunciasBadge();
+  refreshEmbarquesBadge();
   scanGlobalPoll();
 }
 // ── Indicador flotante global de escaneo (badge fijo, cualquier sección) ─────
@@ -137,6 +139,13 @@ async function refreshDenunciasBadge(){
     if(b) b.textContent=r.count>0?r.count:"", b.style.display=r.count>0?"inline-block":"none";
   }catch(e){}
 }
+async function refreshEmbarquesBadge(){
+  try{
+    const r=await api("/embarques/count");
+    const b=document.getElementById("badge-embarques");
+    if(b) b.textContent=r.count>0?r.count:"", b.style.display=r.count>0?"inline-block":"none";
+  }catch(e){}
+}
 
 
 function go(id){
@@ -148,6 +157,7 @@ function go(id){
   else if(id==="ventas") renderSales();
   else if(id==="maria_jose") renderMariaJose();
   else if(id==="inventory") renderInventory();
+  else if(id==="embarques") renderEmbarques();
   else if(id==="cola") renderCola();
   else if(id==="my_products") renderMyProducts();
   else if(id==="products") renderProducts();
@@ -425,11 +435,13 @@ function invCard(p){
   const comboLine=isCombo
     ? `<div class="inv-meta" style="color:${COMBO_COLOR};font-weight:700;margin-top:3px">🧩 Combo = ${comps.map(c=>esc(c.codigo)+" ×"+c.cant).join(" + ")} <span class="muted" style="font-weight:400">· armables: <b style="color:${COMBO_COLOR}">${cc.invTotal}</b> (Bogotá ${cc.armBog} + Yopal ${cc.armYop}) — solo se arma con componentes de la misma bodega</span></div>`
     : "";
-  // Combo: costo/envío/bodegas BLOQUEADOS (se derivan de los componentes).
+  // Costo/Envío BLOQUEADOS: el combo los deriva de los componentes y el resto
+  // los recibe del módulo «🚢 Mercancía en camino» (promedio ponderado al
+  // arribar). Por eso ya no se editan a mano aquí.
   const fCosto = isCombo? fcolRO("Costo prod.","🔒 "+cop(cc.cost_product),"acc")
-                        : fcol("Costo prod.",inp(p.id,"cost_product",p.cost_product));
+                        : fcolRO("Costo prod.","🔒 "+cop(p.cost_product),(+p.cost_product)?"acc":"muted");
   const fEnvio = isCombo? fcolRO("Envío","🔒 "+cop(cc.cost_shipping),"acc")
-                        : fcol("Envío",inp(p.id,"cost_shipping",p.cost_shipping));
+                        : fcolRO("Envío","🔒 "+cop(p.cost_shipping),(+p.cost_shipping)?"acc":"muted");
   // Bodegas: combo siempre bloqueado (🔒). Para usuarios normales son solo
   // lectura (cargan stock con el botón 📥 Ingreso); solo el admin las edita.
   const adminBod=isAdmin();
@@ -439,7 +451,10 @@ function invCard(p){
   const fYop = isCombo? fcolRO("Bod. Yopal","🔒","muted")
              : adminBod? fcol("Bod. Yopal",inp(p.id,"qty_yopal",p.qty_yopal,64))
              : fcolRO("Bod. Yopal",Math.round(+p.qty_yopal||0));
-  const fTra = isCombo? fcolRO("En camino","🔒","muted") : fcol("En camino",inp(p.id,"qty_transit",p.qty_transit,64));
+  // "En camino" lo manejan los embarques (sección 🚢): solo lectura.
+  const traV=Math.round(+p.qty_transit||0);
+  const fTra = isCombo? fcolRO("En camino","🔒","muted")
+                      : fcolRO("En camino",traV?("🚢 "+traV):"🔒 0",traV?"acc":"muted");
   return `<div class="inv-card" data-pid="${p.id}" ${cardStyle}>
     <div class="inv-head" onclick="headTap(event,${p.id})">
       <span class="expand">▸</span>
@@ -554,24 +569,27 @@ function newProduct(){ productForm(null); }
 function editProduct(pid){ productForm(INV.find(x=>x.id===pid)); }
 function productForm(p){
   const nextCode=()=>{ let mx=0; INV.forEach(x=>{const m=(x.code||"").match(/(\d+)\s*$/); if(m)mx=Math.max(mx,+m[1]);}); return "SKU"+String(mx+1).padStart(3,"0"); };
+  const cp=p&&+p.cost_product?cop(p.cost_product):"—", cs=p&&+p.cost_shipping?cop(p.cost_shipping):"—";
   openModal(`<h3>${p?"Editar producto":"Nuevo producto"}</h3>
     <div class="sub">El código identifica el producto físico (ej. SKU001).</div>
     <div id="pfErr" class="err"></div>
     <input id="pfCode" class="field" placeholder="Código" value="${p?esc(p.code):nextCode()}">
     <input id="pfName" class="field" placeholder="Nombre del producto" value="${p?esc(p.name):""}">
-    <div style="display:flex;gap:8px">
-      <input id="pfCp" class="field" placeholder="Costo producto" value="${p&&+p.cost_product?Math.round(p.cost_product):""}">
-      <input id="pfCs" class="field" placeholder="Costo envío" value="${p&&+p.cost_shipping?Math.round(p.cost_shipping):""}">
+    <div style="display:flex;gap:8px;margin-bottom:4px">
+      <div class="fcol" style="flex:1"><span class="cap">Costo producto 🔒</span><span class="ro ${p&&+p.cost_product?"acc":"muted"}">${cp}</span></div>
+      <div class="fcol" style="flex:1"><span class="cap">Costo envío 🔒</span><span class="ro ${p&&+p.cost_shipping?"acc":"muted"}">${cs}</span></div>
     </div>
+    <div class="note" style="font-size:12px;margin-bottom:10px">El costo y el envío se actualizan solos desde <b>🚢 Mercancía en camino</b> (promedio ponderado al arribar el embarque). Por eso aquí van bloqueados.</div>
     <button class="btn-primary" onclick="saveProduct(${p?p.id:0})">Guardar</button>`);
 }
 async function saveProduct(pid){
-  const code=val("pfCode"),name=val("pfName"),cp=num("pfCp"),cs=num("pfCs");
+  const code=val("pfCode"),name=val("pfName");
   const err=document.getElementById("pfErr"); err.textContent="";
   if(code.length<3||!name){ err.textContent="Código (3+) y nombre requeridos."; return; }
   try{
-    if(pid) await api("/inventory/"+pid,{method:"PATCH",body:JSON.stringify({code,name,cost_product:cp,cost_shipping:cs})});
-    else await api("/inventory",{method:"POST",body:JSON.stringify({code,name,cost_product:cp,cost_shipping:cs})});
+    // El costo/envío NO se tocan aquí: son del módulo de embarques.
+    if(pid) await api("/inventory/"+pid,{method:"PATCH",body:JSON.stringify({code,name})});
+    else await api("/inventory",{method:"POST",body:JSON.stringify({code,name})});
     closeModal(); renderInventory();
   }catch(e){ err.textContent=e.message; }
 }
@@ -2509,3 +2527,396 @@ const CB_FALLBACK_SKILLS=[
   {nombre:"Playbook reseñas 1★",icon:"star",tag:"Embebida",desc:"Flujo duplicar → corregir → eliminar para neutralizar reseñas de una estrella."},
   {nombre:"Reportes (Word · Excel · PDF)",icon:"file",tag:"Documentos",desc:"Genera auditorías, resúmenes de ventas y reportes operativos profesionales."},
 ];
+
+/* ════════════════════════════════════════════════════════════════════════════
+   🚢 MERCANCÍA EN CAMINO (Embarques / importaciones)
+   Cada embarque agrupa varias líneas de producto que vienen en camino. Mientras
+   está "en camino" sus unidades se ven como "En camino" en el inventario; al
+   "arribar" se mueven a la bodega destino y el costo del producto se actualiza
+   por promedio ponderado (+ la parte de María José entra a su liquidación).
+   ════════════════════════════════════════════════════════════════════════════ */
+const EMB_BLUE="#2DC6FF";
+const EMB_DEFAULT_RATE=1700000;
+let EMB=[];                 // embarques cargados
+let EMB_INV=[];             // productos del inventario (para el selector de SKU)
+let EMB_DRAFT=null;         // borrador del formulario crear/editar
+let EMB_EDIT_ID=null;       // id si se está editando
+let EMB_SKU_OPEN=-1;        // índice de la línea con el selector de SKU abierto
+
+const embNum=v=>{ const n=parseFloat(String(v==null?"":v).replace(/[^0-9.\-]/g,"")); return isNaN(n)?0:n; };
+function embFmtDate(d){ if(!d) return "—"; const s=String(d).slice(0,10); const[y,m,da]=s.split("-"); return da?`${da}/${m}/${y}`:s; }
+function embDaysToEta(eta){ if(!eta) return null; const a=new Date(String(eta).slice(0,10)+"T00:00:00"); const b=new Date(_isoDay(0)+"T00:00:00"); return Math.round((a-b)/86400000); }
+function embStateChip(st){
+  if(st==="arribado") return `<span style="font-size:11px;font-weight:800;color:#0A0A0A;background:${"#3FCB82"};padding:2px 10px;border-radius:20px">✓ Arribado</span>`;
+  if(st==="cancelado") return `<span style="font-size:11px;font-weight:800;color:var(--muted);background:var(--surf);border:1px solid var(--border);padding:2px 10px;border-radius:20px">✕ Cancelado</span>`;
+  return `<span style="font-size:11px;font-weight:800;color:#06222B;background:${EMB_BLUE};padding:2px 10px;border-radius:20px">🚢 En camino</span>`;
+}
+// Cálculo de una línea: CBM, flete y costo landed por unidad.
+function embCalcItem(it,usaCbm,rate){
+  const l=embNum(it.caja_largo),a=embNum(it.caja_ancho),h=embNum(it.caja_alto),cj=embNum(it.cantidad_cajas);
+  let cbm=(l*a*h/1000000)*cj;
+  if(cbm<=0) cbm=embNum(it.cbm);
+  const flete = usaCbm ? cbm*embNum(rate) : embNum(it.valor_flete);
+  const cant=embNum(it.cantidad), china=embNum(it.costo_unit_china);
+  const fleteUnit = cant>0 ? flete/cant : 0;
+  return { cbm, flete, fleteUnit, landed: china+fleteUnit, mercancia: cant*china };
+}
+
+async function renderEmbarques(){
+  const v=document.getElementById("view");
+  v.innerHTML=`<div class="row-between"><div>
+      <div class="page-title">Mercancía en camino</div>
+      <div class="page-sub">Importaciones que vienen en camino. Al marcarlas «Arribó», suman stock a la bodega y actualizan el costo del producto (promedio ponderado).</div>
+    </div><div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn-ghost" onclick="renderEmbarques()">↻ Actualizar</button>
+      <button class="btn-acc" onclick="newEmbarque()">＋ Nuevo embarque</button></div></div>
+    <div id="embKpis" class="kpis"></div>
+    <div id="embList"><div class="loading"><span class="spinner"></span> Cargando embarques…</div></div>`;
+  try{
+    await embLoadInv();
+    const r=await api("/embarques");
+    EMB=r.embarques||[];
+    refreshEmbarquesBadge();
+    embDrawKpis(); embDrawList();
+  }catch(e){ document.getElementById("embList").innerHTML=`<div class="red">${esc(e.message)}</div>`; }
+}
+
+async function embLoadInv(){
+  // Productos del inventario para el selector (excluye combos: su stock se
+  // deriva de los componentes, no se importan).
+  let combos={};
+  try{ const cr=await api("/combos"); combos=cr.combos||{}; }catch(e){}
+  let inv=[];
+  try{ inv=await api("/inventory"); }catch(e){ inv=[]; }
+  EMB_INV=(inv||[]).filter(p=>!(combos&&Array.isArray(combos[p.code])&&combos[p.code].length));
+}
+
+function embDrawKpis(){
+  const cam=EMB.filter(e=>e.estado==="en_camino");
+  const unid=cam.reduce((s,e)=>s+(+e.total_unidades||0),0);
+  const valor=cam.reduce((s,e)=>s+(+e.valor_total||0),0);
+  const cbm=cam.reduce((s,e)=>s+(+e.cbm_total||0),0);
+  const etas=cam.map(e=>e.eta).filter(Boolean).sort();
+  let prox="—";
+  if(etas.length){ const d=embDaysToEta(etas[0]); prox=embFmtDate(etas[0])+(d!=null?(d<0?` · vencido`:d===0?` · hoy`:` · ${d}d`):""); }
+  const k=[
+    ["Embarques en camino", cam.length, "acc"],
+    ["Unidades en camino", unid.toLocaleString("es-CO"), "acc"],
+    ["Valor en tránsito", cop(valor), "amber"],
+    ["CBM en tránsito", (Math.round(cbm*1000)/1000)+" m³", "muted"],
+    ["Próximo arribo", prox, "green"],
+  ];
+  document.getElementById("embKpis").innerHTML=k.map(([c,vv,cl])=>
+    `<div class="kpi"><div class="cap">${c}</div><div class="val ${cl}">${vv}</div></div>`).join("");
+}
+
+function embDrawList(){
+  const el=document.getElementById("embList");
+  if(!EMB.length){ el.innerHTML=`<div class="empty" style="text-align:center;padding:48px;color:var(--muted)"><div style="font-size:40px">🚢</div><div style="margin-top:8px;font-size:15px">Aún no hay embarques.</div><div style="margin-top:4px;font-size:13px">Crea el primero con «＋ Nuevo embarque».</div></div>`; return; }
+  el.innerHTML=EMB.map(embCard).join("");
+}
+
+function embCard(e){
+  const enCamino=e.estado==="en_camino";
+  const accent = enCamino?EMB_BLUE : e.estado==="arribado"?"#3FCB82":"var(--border)";
+  const d=embDaysToEta(e.eta);
+  const etaTxt=e.eta?`${embFmtDate(e.eta)}${d!=null?(d<0?` · vencido ${Math.abs(d)}d`:d===0?` · hoy`:` · faltan ${d}d`):""}`:"—";
+  const transChip=`<span style="font-size:11px;color:var(--muted)">🚚 ${esc(e.transportadora||"—")}</span>`;
+  const mj=e.mj_unidades>0?`<span title="Unidades de María José" style="font-size:10px;font-weight:800;color:#C9B8FF;background:rgba(125,107,216,.18);border:1px solid #7D6BD855;padding:1px 7px;border-radius:11px">💸 ${e.mj_unidades} MJ</span>`:"";
+  return `<div class="card" id="emb-${e.id}" style="padding:0;margin-bottom:12px;border-left:4px solid ${accent};overflow:hidden">
+    <div onclick="embToggle(${e.id})" style="display:flex;gap:14px;align-items:center;padding:15px 16px;cursor:pointer;flex-wrap:wrap">
+      <span class="expand" id="embarrow-${e.id}" style="color:${accent};font-weight:700">▸</span>
+      <div style="flex:1;min-width:220px">
+        <div style="display:flex;align-items:center;gap:9px;flex-wrap:wrap">
+          ${embStateChip(e.estado)}
+          <span style="font-weight:800;font-size:14.5px">${esc(e.nombre||("Embarque #"+e.id))}</span>
+          ${mj}
+        </div>
+        <div class="muted" style="font-size:12px;margin-top:5px;display:flex;gap:12px;flex-wrap:wrap">
+          ${transChip}
+          <span>📦 <b style="color:var(--text)">${e.total_unidades||0}</b> u · ${e.n_items||0} ${e.n_items===1?"producto":"productos"}</span>
+          <span>🗓 ETA <b style="color:var(--text)">${etaTxt}</b></span>
+          <span>📐 ${(Math.round((+e.cbm_total||0)*1000)/1000)} m³</span>
+        </div>
+      </div>
+      <div style="text-align:right">
+        <div style="font-weight:800;font-size:15px;color:${EMB_BLUE}">${cop(e.valor_total)}</div>
+        <div class="muted" style="font-size:11px">merc. ${cop(e.valor_mercancia)} · flete ${cop(e.valor_flete)}</div>
+      </div>
+    </div>
+    <div class="panel" id="embpanel-${e.id}" style="border-top:1px solid var(--border)"></div>
+  </div>`;
+}
+
+function embToggle(id){
+  const el=document.getElementById("embpanel-"+id); if(!el) return;
+  const arr=document.getElementById("embarrow-"+id);
+  if(el.classList.contains("open")){ el.classList.remove("open"); el.innerHTML=""; if(arr)arr.textContent="▸"; return; }
+  document.querySelectorAll(".panel.open[id^='embpanel-']").forEach(p=>{p.classList.remove("open");p.innerHTML="";});
+  document.querySelectorAll("[id^='embarrow-']").forEach(a=>a.textContent="▸");
+  el.classList.add("open"); if(arr)arr.textContent="▾";
+  const e=EMB.find(x=>x.id===id); if(!e) return;
+  const enCamino=e.estado==="en_camino";
+  const rows=(e.items||[]).map(it=>{
+    const calc=embCalcItem(it,e.usa_cbm,e.cbm_rate);
+    const foto=it.thumb?`<img src="${bigImg(it.thumb)}" style="width:42px;height:42px;border-radius:8px;object-fit:cover;background:var(--surf);border:1px solid var(--border);flex:none">`
+      :`<span style="width:42px;height:42px;border-radius:8px;background:var(--surf);border:1px solid var(--border);flex:none;display:flex;align-items:center;justify-content:center">📦</span>`;
+    const mj=(+it.mj_cantidad>0)?`<span style="font-size:10px;font-weight:800;color:#C9B8FF;background:rgba(125,107,216,.18);border:1px solid #7D6BD855;padding:1px 6px;border-radius:10px;margin-left:6px">💸 ${Math.round(+it.mj_cantidad)} de MJ</span>`:"";
+    return `<div style="display:flex;gap:12px;align-items:center;padding:10px 0;border-bottom:1px solid var(--border)">
+      ${foto}
+      <div style="flex:1;min-width:160px">
+        <div style="font-weight:700;font-size:13px">${esc(it.code||"—")} <span class="muted" style="font-weight:400">· ${esc(it.name||"")}</span>${mj}</div>
+        <div class="muted" style="font-size:11.5px;margin-top:3px">→ ${it.bodega_destino==="yopal"?"Yopal":"Bogotá"} · ${Math.round(+it.cantidad||0)} u · CBM ${Math.round(calc.cbm*1000)/1000} m³${(+it.peso>0)?` · ${(+it.peso)}kg`:""}</div>
+      </div>
+      <div style="text-align:right;min-width:150px">
+        <div style="font-size:12px">Compra unit. <b>${cop(it.costo_unit_china)}</b> · Flete <b>${cop(calc.flete)}</b></div>
+        <div style="font-size:12px;margin-top:2px;color:${EMB_BLUE}">Costo landed/u <b>${cop(calc.landed)}</b></div>
+      </div>
+    </div>`;
+  }).join("")||`<div class="muted" style="padding:10px 0">Sin líneas.</div>`;
+  const acciones = enCamino
+    ? `<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;margin-top:14px">
+         <button class="btn-ghost" onclick="editEmbarque(${id})">✏ Editar</button>
+         ${isAdmin()?`<button class="btn-danger" onclick="embDelete(${id})">✕ Eliminar</button>`:""}
+         <button class="btn-acc" onclick="embArribar(${id})">📥 Marcar arribó</button>
+       </div>`
+    : `<div class="muted" style="font-size:12px;margin-top:12px;text-align:right">${e.estado==="arribado"?`✓ Arribó el ${embFmtDate(e.arribado_at)} · stock y costos aplicados al inventario.`:"Embarque cancelado."}</div>`;
+  el.innerHTML=`<div style="padding:6px 16px 16px">
+    <div class="muted" style="font-size:12px;display:flex;gap:16px;flex-wrap:wrap;margin:6px 0 10px">
+      <span>🛒 Compra: <b style="color:var(--text)">${embFmtDate(e.fecha_compra)}</b></span>
+      <span>📦 Entrega al agente: <b style="color:var(--text)">${embFmtDate(e.fecha_entrega_agente)}</b></span>
+      <span>🗓 ETA: <b style="color:var(--text)">${embFmtDate(e.eta)}</b></span>
+      <span>🚚 ${esc(e.transportadora||"—")}${e.usa_cbm?` · CBM × ${cop(e.cbm_rate)}/m³`:" · flete manual"}</span>
+    </div>
+    ${e.notas?`<div class="note" style="font-size:12px;margin-bottom:8px">📝 ${esc(e.notas)}</div>`:""}
+    ${rows}
+    ${acciones}
+  </div>`;
+}
+
+/* ── Crear / editar embarque ──────────────────────────────────────────────── */
+function embBlankItem(){ return {product_id:null,code:"",name:"",thumb:"",cantidad:"",costo_unit_china:"",bodega_destino:"bogota",caja_largo:"",caja_ancho:"",caja_alto:"",cantidad_cajas:"1",peso:"",cbm:"",valor_flete:"",mj_cantidad:"",mj_anchor:_isoDay(0)}; }
+function newEmbarque(){
+  EMB_EDIT_ID=null; EMB_SKU_OPEN=-1;
+  EMB_DRAFT={nombre:"",transportadora:"Envios DC",usa_cbm:true,cbm_rate:EMB_DEFAULT_RATE,fecha_compra:_isoDay(0),fecha_entrega_agente:"",eta:"",notas:"",items:[embBlankItem()]};
+  embOpenForm();
+}
+function editEmbarque(id){
+  const e=EMB.find(x=>x.id===id); if(!e) return;
+  EMB_EDIT_ID=id; EMB_SKU_OPEN=-1;
+  EMB_DRAFT={
+    nombre:e.nombre||"",transportadora:e.transportadora||"Envios DC",usa_cbm:!!e.usa_cbm,
+    cbm_rate:+e.cbm_rate||EMB_DEFAULT_RATE,fecha_compra:(e.fecha_compra||"").slice(0,10),
+    fecha_entrega_agente:(e.fecha_entrega_agente||"").slice(0,10),eta:(e.eta||"").slice(0,10),
+    notas:e.notas||"",
+    items:(e.items||[]).map(it=>({product_id:it.product_id,code:it.code||"",name:it.name||"",thumb:it.thumb||"",
+      cantidad:+it.cantidad||"",costo_unit_china:+it.costo_unit_china||"",bodega_destino:it.bodega_destino||"bogota",
+      caja_largo:+it.caja_largo||"",caja_ancho:+it.caja_ancho||"",caja_alto:+it.caja_alto||"",cantidad_cajas:+it.cantidad_cajas||"1",
+      peso:+it.peso||"",cbm:+it.cbm||"",valor_flete:+it.valor_flete||"",mj_cantidad:+it.mj_cantidad||"",mj_anchor:(it.mj_anchor||_isoDay(0)).slice(0,10)}))
+  };
+  if(!EMB_DRAFT.items.length) EMB_DRAFT.items=[embBlankItem()];
+  embOpenForm();
+}
+function embOpenForm(){
+  openModal(`<div style="display:flex;align-items:center;justify-content:space-between;gap:10px">
+      <h3 style="margin:0">${EMB_EDIT_ID?"Editar embarque":"🚢 Nuevo embarque"}</h3>
+      <span style="font-size:11px;font-weight:800;color:#06222B;background:${EMB_BLUE};padding:2px 10px;border-radius:20px">Mercancía en camino</span>
+    </div>
+    <div class="sub" style="margin-bottom:10px">Agrega los productos que vienen en camino. El CBM y el flete se calculan solos.</div>
+    <div id="embFormBody"></div>`, true);
+  embRenderForm();
+}
+function embRenderForm(){
+  const d=EMB_DRAFT;
+  const usaCbm=d.usa_cbm;
+  const head=`<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;margin-bottom:6px">
+    <div class="fcol2"><label>Nombre del embarque</label><input class="field" value="${esc(d.nombre)}" placeholder="Ej. Importación China · Jun" oninput="embHead('nombre',this.value)"></div>
+    <div class="fcol2"><label>Transportadora</label>
+      <select class="field" onchange="embTransport(this.value)">
+        <option value="Envios DC" ${d.transportadora==="Envios DC"?"selected":""}>Envios DC (calcula CBM)</option>
+        <option value="__otra" ${d.transportadora!=="Envios DC"?"selected":""}>Otra (flete manual)</option>
+      </select></div>
+    ${d.transportadora!=="Envios DC"?`<div class="fcol2"><label>Nombre transportadora</label><input class="field" value="${esc(d.transportadora==="__otra"?"":d.transportadora)}" placeholder="Escribe la empresa" oninput="embHead('transportadora',this.value)"></div>`:""}
+    ${usaCbm?`<div class="fcol2"><label>Tarifa CBM ($/m³)</label><input class="field" value="${d.cbm_rate?Math.round(d.cbm_rate):""}" oninput="embHead('cbm_rate',this.value);embReprice()"></div>`:""}
+    <div class="fcol2"><label>Fecha de compra</label><input type="date" class="field" value="${esc(d.fecha_compra)}" max="${_isoDay(0)}" onchange="embHead('fecha_compra',this.value)"></div>
+    <div class="fcol2"><label>Entrega al agente</label><input type="date" class="field" value="${esc(d.fecha_entrega_agente)}" onchange="embHead('fecha_entrega_agente',this.value)"></div>
+    <div class="fcol2"><label>Arribo estimado (ETA)</label><input type="date" class="field" value="${esc(d.eta)}" onchange="embHead('eta',this.value)"></div>
+  </div>`;
+  const items=d.items.map((it,i)=>embItemHtml(it,i,usaCbm)).join("");
+  const body=`${head}
+    <div style="display:flex;align-items:center;justify-content:space-between;margin:14px 0 6px">
+      <div style="font-weight:800;font-size:13px;letter-spacing:.02em">PRODUCTOS EN CAMINO</div>
+      <button class="btn-ghost" style="padding:6px 12px" onclick="embAddItem()">＋ Agregar producto</button>
+    </div>
+    <div id="embItems">${items}</div>
+    <div class="fcol2" style="margin-top:10px"><label>Notas (opcional)</label><input class="field" value="${esc(d.notas)}" placeholder="Ej. nº de contenedor, factura proveedor" oninput="embHead('notas',this.value)"></div>
+    <div id="embTotals" style="margin-top:14px"></div>
+    <div id="embErr" class="red" style="font-size:12.5px;margin-top:8px"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+      <button class="btn-ghost" onclick="closeModal()">Cancelar</button>
+      <button class="btn-acc" onclick="embSave()">${EMB_EDIT_ID?"Guardar cambios":"Crear embarque"}</button>
+    </div>`;
+  document.getElementById("embFormBody").innerHTML=body;
+  embRenderTotals();
+}
+
+function embItemHtml(it,i,usaCbm){
+  const calc=embCalcItem(it,usaCbm,EMB_DRAFT.cbm_rate);
+  const sel = it.product_id
+    ? `<div style="display:flex;align-items:center;gap:10px">
+         ${it.thumb?`<img src="${bigImg(it.thumb)}" style="width:40px;height:40px;border-radius:8px;object-fit:cover;border:1px solid var(--border);flex:none">`:`<span style="width:40px;height:40px;border-radius:8px;background:var(--surf);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;flex:none">📦</span>`}
+         <div style="flex:1;min-width:0"><div style="font-weight:700;font-size:13px">${esc(it.code)}</div><div class="muted" style="font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(it.name)}</div></div>
+         <button class="btn-ghost" style="padding:5px 10px" onclick="embSkuToggle(${i})">Cambiar ▾</button>
+       </div>`
+    : `<button class="btn-ghost" style="width:100%;justify-content:center;border-style:dashed;color:${EMB_BLUE};border-color:${EMB_BLUE}" onclick="embSkuToggle(${i})">🔎 Seleccionar producto (SKU) ▾</button>`;
+  const fleteField = usaCbm
+    ? `<div class="fcol2"><label>Flete (auto)</label><span class="ro acc" id="emb-flete-${i}" style="display:block;padding:8px 0">${cop(calc.flete)}</span></div>`
+    : `<div class="fcol2"><label>Valor del flete</label><input class="field" value="${it.valor_flete!==""?Math.round(embNum(it.valor_flete)):""}" placeholder="$ manual" oninput="embItem(${i},'valor_flete',this.value)"></div>`;
+  return `<div class="card" style="padding:13px;margin-bottom:10px;border-color:${it.product_id?"var(--border)":EMB_BLUE+"66"}">
+    <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
+      <div style="flex:1">${sel}</div>
+      ${EMB_DRAFT.items.length>1?`<button class="btn-danger" style="padding:5px 9px" title="Quitar línea" onclick="embDelItem(${i})">✕</button>`:""}
+    </div>
+    <div id="embSku-${i}" style="display:${EMB_SKU_OPEN===i?"block":"none"};margin-top:10px"></div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-top:12px">
+      <div class="fcol2"><label>Cantidad total</label><input class="field" value="${it.cantidad!==""?Math.round(embNum(it.cantidad)):""}" placeholder="0" oninput="embItem(${i},'cantidad',this.value)"></div>
+      <div class="fcol2"><label>Compra unit. (China)</label><input class="field" value="${it.costo_unit_china!==""?Math.round(embNum(it.costo_unit_china)):""}" placeholder="$" oninput="embItem(${i},'costo_unit_china',this.value)"></div>
+      <div class="fcol2"><label>Bodega destino</label>
+        <select class="field" onchange="embItem(${i},'bodega_destino',this.value)">
+          <option value="bogota" ${it.bodega_destino!=="yopal"?"selected":""}>Bogotá</option>
+          <option value="yopal" ${it.bodega_destino==="yopal"?"selected":""}>Yopal</option>
+        </select></div>
+      <div class="fcol2"><label>Costo total línea</label><span class="ro" id="emb-merc-${i}" style="display:block;padding:8px 0">${cop(calc.mercancia)}</span></div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(90px,1fr));gap:10px;margin-top:10px">
+      <div class="fcol2"><label>Caja largo (cm)</label><input class="field" value="${it.caja_largo!==""?embNum(it.caja_largo):""}" placeholder="0" oninput="embItem(${i},'caja_largo',this.value)"></div>
+      <div class="fcol2"><label>Caja ancho (cm)</label><input class="field" value="${it.caja_ancho!==""?embNum(it.caja_ancho):""}" placeholder="0" oninput="embItem(${i},'caja_ancho',this.value)"></div>
+      <div class="fcol2"><label>Caja alto (cm)</label><input class="field" value="${it.caja_alto!==""?embNum(it.caja_alto):""}" placeholder="0" oninput="embItem(${i},'caja_alto',this.value)"></div>
+      <div class="fcol2"><label># de cajas</label><input class="field" value="${it.cantidad_cajas!==""?embNum(it.cantidad_cajas):""}" placeholder="1" oninput="embItem(${i},'cantidad_cajas',this.value)"></div>
+      <div class="fcol2"><label>Peso total (kg)</label><input class="field" value="${it.peso!==""?embNum(it.peso):""}" placeholder="0" oninput="embItem(${i},'peso',this.value)"></div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-top:10px;align-items:end">
+      <div class="fcol2"><label>CBM (auto)</label><span class="ro" id="emb-cbm-${i}" style="display:block;padding:8px 0">${Math.round(calc.cbm*1000)/1000} m³</span></div>
+      ${fleteField}
+      <div class="fcol2"><label>Costo landed/u</label><span class="ro acc" id="emb-landed-${i}" style="display:block;padding:8px 0;font-weight:800">${cop(calc.landed)}</span></div>
+      <div class="fcol2"><label>¿Unidades de María José?</label><input class="field" value="${it.mj_cantidad!==""?Math.round(embNum(it.mj_cantidad)):""}" placeholder="0 = ninguna" oninput="embItem(${i},'mj_cantidad',this.value)"></div>
+    </div>
+  </div>`;
+}
+
+// Panel del selector de SKU (con foto), filtrable.
+function embSkuToggle(i){
+  if(EMB_SKU_OPEN===i){ EMB_SKU_OPEN=-1; const el=document.getElementById("embSku-"+i); if(el){el.style.display="none";el.innerHTML="";} return; }
+  EMB_SKU_OPEN=i;
+  document.querySelectorAll("[id^='embSku-']").forEach(el=>{el.style.display="none";el.innerHTML="";});
+  const el=document.getElementById("embSku-"+i); if(!el) return;
+  el.style.display="block";
+  el.innerHTML=`<input class="field" id="embSkuQ-${i}" placeholder="Buscar por código o nombre…" oninput="embSkuList(${i},this.value)" autocomplete="off" style="margin-bottom:8px">
+    <div id="embSkuRes-${i}" style="max-height:260px;overflow:auto;border:1px solid var(--border);border-radius:10px"></div>`;
+  embSkuList(i,"");
+  const q=document.getElementById("embSkuQ-"+i); if(q) q.focus();
+}
+function embSkuList(i,q){
+  q=(q||"").toLowerCase().trim();
+  const res=document.getElementById("embSkuRes-"+i); if(!res) return;
+  let list=EMB_INV;
+  if(q) list=list.filter(p=>((p.code||"")+" "+(p.name||"")).toLowerCase().includes(q));
+  if(!list.length){ res.innerHTML=`<div class="muted" style="padding:14px;text-align:center;font-size:13px">Sin productos. Créalo primero en Inventario.</div>`; return; }
+  res.innerHTML=list.slice(0,60).map(p=>{
+    const foto=p.thumb?`<img src="${bigImg(p.thumb)}" style="width:38px;height:38px;border-radius:7px;object-fit:cover;border:1px solid var(--border);flex:none">`:`<span style="width:38px;height:38px;border-radius:7px;background:var(--surf);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;flex:none">📦</span>`;
+    return `<div onclick="embSkuPick(${i},${p.id})" style="display:flex;gap:10px;align-items:center;padding:8px 10px;cursor:pointer;border-bottom:1px solid var(--border)" onmouseover="this.style.background='var(--surf)'" onmouseout="this.style.background=''">
+      ${foto}
+      <div style="flex:1;min-width:0"><div style="font-weight:700;font-size:13px">${esc(p.code)}</div><div class="muted" style="font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(p.name)}</div></div>
+      ${(+p.cost_product||+p.cost_shipping)?`<span class="muted" style="font-size:11px">costo ${cop((+p.cost_product||0)+(+p.cost_shipping||0))}</span>`:""}
+    </div>`;
+  }).join("");
+}
+function embSkuPick(i,pid){
+  const p=EMB_INV.find(x=>x.id===pid); if(!p) return;
+  const it=EMB_DRAFT.items[i];
+  it.product_id=p.id; it.code=p.code; it.name=p.name; it.thumb=p.thumb||"";
+  EMB_SKU_OPEN=-1;
+  embRenderForm();
+}
+
+function embHead(field,value){
+  if(field==="cbm_rate") EMB_DRAFT.cbm_rate=embNum(value);
+  else EMB_DRAFT[field]=value;
+}
+function embTransport(value){
+  if(value==="Envios DC"){ EMB_DRAFT.transportadora="Envios DC"; EMB_DRAFT.usa_cbm=true; if(!EMB_DRAFT.cbm_rate) EMB_DRAFT.cbm_rate=EMB_DEFAULT_RATE; }
+  else { EMB_DRAFT.transportadora=EMB_DRAFT.transportadora==="Envios DC"?"":EMB_DRAFT.transportadora; EMB_DRAFT.usa_cbm=false; }
+  embRenderForm();
+}
+function embItem(i,field,value){
+  EMB_DRAFT.items[i][field]=value;
+  embRefreshItemCalc(i);
+  embRenderTotals();
+}
+function embReprice(){ EMB_DRAFT.items.forEach((_,i)=>embRefreshItemCalc(i)); embRenderTotals(); }
+function embRefreshItemCalc(i){
+  const it=EMB_DRAFT.items[i]; const calc=embCalcItem(it,EMB_DRAFT.usa_cbm,EMB_DRAFT.cbm_rate);
+  const set=(id,v)=>{const el=document.getElementById(id);if(el)el.textContent=v;};
+  set("emb-cbm-"+i,(Math.round(calc.cbm*1000)/1000)+" m³");
+  set("emb-merc-"+i,cop(calc.mercancia));
+  set("emb-landed-"+i,cop(calc.landed));
+  if(EMB_DRAFT.usa_cbm) set("emb-flete-"+i,cop(calc.flete));
+}
+function embRenderTotals(){
+  const el=document.getElementById("embTotals"); if(!el) return;
+  let u=0,merc=0,flete=0,cbm=0,mj=0;
+  EMB_DRAFT.items.forEach(it=>{ const c=embCalcItem(it,EMB_DRAFT.usa_cbm,EMB_DRAFT.cbm_rate);
+    u+=embNum(it.cantidad); merc+=c.mercancia; flete+=c.flete; cbm+=c.cbm; mj+=embNum(it.mj_cantidad); });
+  el.innerHTML=`<div style="display:flex;gap:18px;flex-wrap:wrap;align-items:center;padding:12px 14px;background:var(--surf);border:1px solid ${EMB_BLUE}55;border-radius:12px">
+    <div><div class="cap">Unidades</div><div style="font-weight:800;font-size:15px">${Math.round(u).toLocaleString("es-CO")}${mj>0?` <span style="font-size:11px;color:#C9B8FF">(${Math.round(mj)} MJ)</span>`:""}</div></div>
+    <div><div class="cap">CBM total</div><div style="font-weight:800;font-size:15px">${Math.round(cbm*1000)/1000} m³</div></div>
+    <div><div class="cap">Mercancía</div><div style="font-weight:800;font-size:15px">${cop(merc)}</div></div>
+    <div><div class="cap">Flete</div><div style="font-weight:800;font-size:15px">${cop(flete)}</div></div>
+    <div style="margin-left:auto;text-align:right"><div class="cap">TOTAL importación</div><div style="font-weight:800;font-size:18px;color:${EMB_BLUE}">${cop(merc+flete)}</div></div>
+  </div>`;
+}
+function embAddItem(){ EMB_DRAFT.items.push(embBlankItem()); EMB_SKU_OPEN=-1; embRenderForm(); }
+function embDelItem(i){ EMB_DRAFT.items.splice(i,1); if(!EMB_DRAFT.items.length)EMB_DRAFT.items=[embBlankItem()]; EMB_SKU_OPEN=-1; embRenderForm(); }
+
+async function embSave(){
+  const d=EMB_DRAFT; const err=document.getElementById("embErr"); err.textContent="";
+  if(d.usa_cbm===false && !(d.transportadora||"").trim()){ err.textContent="Escribe el nombre de la transportadora."; return; }
+  const items=d.items.filter(it=>it.product_id);
+  if(!items.length){ err.textContent="Agrega al menos un producto (selecciona su SKU)."; return; }
+  for(const it of items){ if(embNum(it.cantidad)<=0){ err.textContent=`El producto ${it.code||""} necesita una cantidad mayor a 0.`; return; }
+    if(embNum(it.mj_cantidad)>embNum(it.cantidad)){ err.textContent=`En ${it.code}: las unidades de María José no pueden superar la cantidad total.`; return; } }
+  const payload={
+    nombre:d.nombre||"", transportadora:(d.transportadora||"Envios DC").trim()||"Envios DC",
+    usa_cbm:!!d.usa_cbm, cbm_rate:embNum(d.cbm_rate),
+    fecha_compra:d.fecha_compra||null, fecha_entrega_agente:d.fecha_entrega_agente||null, eta:d.eta||null,
+    notas:d.notas||"",
+    items:items.map(it=>({
+      product_id:it.product_id, code:it.code, name:it.name, thumb:it.thumb,
+      cantidad:embNum(it.cantidad), costo_unit_china:embNum(it.costo_unit_china),
+      bodega_destino:it.bodega_destino==="yopal"?"yopal":"bogota",
+      caja_largo:embNum(it.caja_largo), caja_ancho:embNum(it.caja_ancho), caja_alto:embNum(it.caja_alto),
+      cantidad_cajas:embNum(it.cantidad_cajas), peso:embNum(it.peso),
+      cbm:embNum(it.cbm), valor_flete:embNum(it.valor_flete),
+      mj_cantidad:embNum(it.mj_cantidad), mj_anchor:it.mj_anchor||null
+    }))
+  };
+  try{
+    if(EMB_EDIT_ID) await api("/embarques/"+EMB_EDIT_ID,{method:"PATCH",body:JSON.stringify(payload)});
+    else await api("/embarques",{method:"POST",body:JSON.stringify(payload)});
+    closeModal(); renderEmbarques();
+  }catch(e){ err.textContent=e.message; }
+}
+
+async function embArribar(id){
+  const e=EMB.find(x=>x.id===id); if(!e) return;
+  if(!confirm(`¿Marcar como ARRIBADO «${e.nombre||("Embarque #"+id)}»?\n\nSe sumarán ${e.total_unidades||0} u a las bodegas destino, se descontarán de «En camino» y se actualizará el costo de cada producto (promedio ponderado).${e.mj_unidades>0?`\n\n${e.mj_unidades} u entrarán a la liquidación de María José.`:""}`)) return;
+  try{
+    const r=await api("/embarques/"+id+"/arribar",{method:"POST"});
+    renderEmbarques();
+  }catch(e){ alert(e.message); }
+}
+async function embDelete(id){
+  const e=EMB.find(x=>x.id===id); if(!e) return;
+  if(!confirm(`¿Eliminar «${e.nombre||("Embarque #"+id)}»? Sus unidades saldrán de «En camino». Esta acción no se puede deshacer.`)) return;
+  try{ await api("/embarques/"+id,{method:"DELETE"}); renderEmbarques(); }catch(e){ alert(e.message); }
+}

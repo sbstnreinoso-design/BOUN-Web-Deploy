@@ -97,6 +97,11 @@ a{color:inherit}
 .fcol input:focus{outline:none;border-color:var(--acc)}
 .fcol .ro{font-size:13px;font-weight:700;height:28px;display:flex;align-items:center}
 .vsep{width:1px;background:var(--border);align-self:stretch;margin:0 2px}
+/* Embarques · campos de formulario con etiqueta arriba */
+.fcol2{display:flex;flex-direction:column;gap:4px;min-width:0}
+.fcol2 label{color:var(--muted);font-size:11px;font-weight:600}
+.fcol2 .field{height:38px;font-size:13px}
+.fcol2 .ro{font-size:13.5px;font-weight:700}
 .expand{cursor:pointer;color:var(--acc);font-weight:700;font-size:14px;width:16px;user-select:none}
 .panel{padding:6px 14px 12px 30px;border-top:1px solid var(--border);display:none}
 .panel.open{display:block}
