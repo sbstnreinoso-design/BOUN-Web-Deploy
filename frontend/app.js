@@ -2577,6 +2577,25 @@ function embStepper(st){
         </div>${line}</div>`;
     }).join("")+`</div>`;
 }
+// Reparto BOUN / María José de una línea. Fuente: el campo "mj_cantidad" del
+// embarque si se llenó; si no, el dueño del producto en el inventario (un
+// producto marcado como de María José cuenta toda su línea como de ella).
+function embLineOwner(it){
+  const cant=Math.round(+it.cantidad||0);
+  const mjField=Math.round(+it.mj_cantidad||0);
+  const prod=(EMB_INV||[]).find(p=>p.id===it.product_id);
+  const ownerMJ=!!(prod&&prod.owner==="MARIA_JOSE");
+  let mj=0;
+  if(mjField>0) mj=Math.min(mjField,cant);
+  else if(ownerMJ) mj=cant;
+  return {cant, mj, boun:Math.max(cant-mj,0), ownerMJ};
+}
+function embOwnerTag(it){
+  const o=embLineOwner(it);
+  if(o.mj<=0) return `<span style="font-size:10px;font-weight:700;color:#7FB3E0;background:rgba(127,179,224,.15);border:1px solid #7FB3E055;padding:1px 7px;border-radius:10px">🏷 BOUN</span>`;
+  if(o.boun<=0) return `<span style="font-size:10px;font-weight:800;color:#C9B8FF;background:rgba(125,107,216,.18);border:1px solid #7D6BD855;padding:1px 7px;border-radius:10px">💸 María José</span>`;
+  return `<span style="font-size:10px;font-weight:700;color:#C9B8FF;background:rgba(125,107,216,.18);border:1px solid #7D6BD855;padding:1px 7px;border-radius:10px">💸 MJ ${o.mj} · 🏷 BOUN ${o.boun}</span>`;
+}
 // Cálculo de una línea: CBM, flete y costo landed por unidad.
 function embCalcItem(it,usaCbm,rate){
   const l=embNum(it.caja_largo),a=embNum(it.caja_ancho),h=embNum(it.caja_alto),cj=embNum(it.cantidad_cajas);
@@ -2647,7 +2666,8 @@ function embCard(e){
   const d=embDaysToEta(e.eta);
   const etaTxt=e.eta?`${embFmtDate(e.eta)}${d!=null?(d<0?` · vencido ${Math.abs(d)}d`:d===0?` · hoy`:` · faltan ${d}d`):""}`:"—";
   const transChip=`<span style="font-size:11px;color:var(--muted)">🚚 ${esc(e.transportadora||"—")}${e.contenedor?` · 📦 ${esc(e.contenedor)}`:""}</span>`;
-  const mj=e.mj_unidades>0?`<span title="Unidades de María José" style="font-size:10px;font-weight:800;color:#C9B8FF;background:rgba(125,107,216,.18);border:1px solid #7D6BD855;padding:1px 7px;border-radius:11px">💸 ${e.mj_unidades} MJ</span>`:"";
+  const _mjTot=(e.items||[]).reduce((s,it)=>s+embLineOwner(it).mj,0);
+  const mj=_mjTot>0?`<span title="Unidades de María José" style="font-size:10px;font-weight:800;color:#C9B8FF;background:rgba(125,107,216,.18);border:1px solid #7D6BD855;padding:1px 7px;border-radius:11px">💸 ${_mjTot} MJ</span>`:"";
   return `<div class="card" id="emb-${e.id}" style="padding:0;margin-bottom:12px;border-left:4px solid ${accent};overflow:hidden">
     <div onclick="embToggle(${e.id})" style="display:flex;gap:14px;align-items:center;padding:15px 16px;cursor:pointer;flex-wrap:wrap">
       <span class="expand" id="embarrow-${e.id}" style="color:${accent};font-weight:700">▸</span>
@@ -2660,6 +2680,7 @@ function embCard(e){
         <div class="muted" style="font-size:12px;margin-top:5px;display:flex;gap:12px;flex-wrap:wrap">
           ${transChip}
           <span>📦 <b style="color:var(--text)">${e.total_unidades||0}</b> u · ${e.n_items||0} ${e.n_items===1?"producto":"productos"}</span>
+          <span>🗃 <b style="color:var(--text)">${e.cajas_total||0}</b> ${(e.cajas_total||0)===1?"caja":"cajas"}</span>
           <span>🗓 ETA <b style="color:var(--text)">${etaTxt}</b></span>
           <span>📐 ${(Math.round((+e.cbm_total||0)*1000)/1000)} m³</span>
         </div>
@@ -2688,7 +2709,7 @@ function embToggle(id){
     const th=it.thumb||(prod&&prod.thumb)||"";
     const foto=th?`<img src="${bigImg(th)}" style="width:46px;height:46px;border-radius:8px;object-fit:cover;background:var(--surf);border:1px solid var(--border);flex:none">`
       :`<span style="width:46px;height:46px;border-radius:8px;background:var(--surf);border:1px solid var(--border);flex:none;display:flex;align-items:center;justify-content:center">📦</span>`;
-    const mj=(+it.mj_cantidad>0)?`<span style="font-size:10px;font-weight:800;color:#C9B8FF;background:rgba(125,107,216,.18);border:1px solid #7D6BD855;padding:1px 6px;border-radius:10px;margin-left:6px">💸 ${Math.round(+it.mj_cantidad)} de MJ</span>`:"";
+    const mj=`<span style="margin-left:6px">${embOwnerTag(it)}</span>`;
     return `<div style="display:flex;gap:12px;align-items:center;padding:10px 0;border-bottom:1px solid var(--border)">
       ${foto}
       <div style="flex:1;min-width:160px">
@@ -2750,6 +2771,7 @@ function embToggle(id){
       <span>🗓 ETA: <b style="color:var(--text)">${embFmtDate(e.eta)}</b></span>
       <span>🚚 ${esc(e.transportadora||"—")}${e.usa_cbm?` · CBM × ${cop(e.cbm_rate)}/m³`:" · flete manual"}</span>
       <span>🧾 Contenedor: <b style="color:var(--text)">${e.contenedor?esc(e.contenedor):"—"}</b></span>
+      <span>🗃 Cajas/bultos: <b style="color:var(--text)">${e.cajas_total||0}</b></span>
     </div>
     ${e.notas?`<div class="note" style="font-size:12px;margin-bottom:8px">📝 ${esc(e.notas)}</div>`:""}
     ${rows}
@@ -2809,10 +2831,10 @@ async function embReciboDelete(rid){
 }
 
 /* ── Crear / editar embarque ──────────────────────────────────────────────── */
-function embBlankItem(){ return {product_id:null,code:"",name:"",thumb:"",cantidad:"",costo_unit_china:"",bodega_destino:"bogota",caja_largo:"",caja_ancho:"",caja_alto:"",cantidad_cajas:"1",peso:"",cbm:"",valor_flete:"",mj_cantidad:"",mj_anchor:_isoDay(0)}; }
+function embBlankItem(){ return {product_id:null,code:"",name:"",thumb:"",cantidad:"",costo_unit_china:"",bodega_destino:"bogota",caja_largo:"",caja_ancho:"",caja_alto:"",cantidad_cajas:"1",peso:"",cbm:"",valor_flete:"",owner_sel:"",mj_cantidad:"",mj_anchor:_isoDay(0)}; }
 function newEmbarque(){
   EMB_EDIT_ID=null; EMB_SKU_OPEN=-1;
-  EMB_DRAFT={nombre:"",transportadora:"Envios DC",usa_cbm:true,cbm_rate:EMB_DEFAULT_RATE,fecha_compra:_isoDay(0),fecha_entrega_agente:"",eta:"",estado:"bodega_agente",contenedor:"",notas:"",items:[embBlankItem()]};
+  EMB_DRAFT={nombre:"",transportadora:"Envios DC",usa_cbm:true,cbm_rate:EMB_DEFAULT_RATE,fecha_compra:_isoDay(0),fecha_entrega_agente:"",eta:"",estado:"bodega_agente",contenedor:"",total_cajas:"",notas:"",items:[embBlankItem()]};
   embOpenForm();
 }
 function editEmbarque(id){
@@ -2823,11 +2845,13 @@ function editEmbarque(id){
     cbm_rate:+e.cbm_rate||EMB_DEFAULT_RATE,fecha_compra:(e.fecha_compra||"").slice(0,10),
     fecha_entrega_agente:(e.fecha_entrega_agente||"").slice(0,10),eta:(e.eta||"").slice(0,10),
     estado:embIsTransit(e.estado)?e.estado:"en_camino", contenedor:e.contenedor||"",
+    total_cajas:+e.total_cajas||"",
     notas:e.notas||"",
     items:(e.items||[]).map(it=>({product_id:it.product_id,code:it.code||"",name:it.name||"",thumb:it.thumb||"",
       cantidad:+it.cantidad||"",costo_unit_china:+it.costo_unit_china||"",bodega_destino:it.bodega_destino||"bogota",
       caja_largo:+it.caja_largo||"",caja_ancho:+it.caja_ancho||"",caja_alto:+it.caja_alto||"",cantidad_cajas:+it.cantidad_cajas||"1",
-      peso:+it.peso||"",cbm:+it.cbm||"",valor_flete:+it.valor_flete||"",mj_cantidad:+it.mj_cantidad||"",mj_anchor:(it.mj_anchor||_isoDay(0)).slice(0,10)}))
+      peso:+it.peso||"",cbm:+it.cbm||"",valor_flete:+it.valor_flete||"",mj_cantidad:+it.mj_cantidad||"",mj_anchor:(it.mj_anchor||_isoDay(0)).slice(0,10),
+      owner_sel:((c,m,pr)=>m>0?(m>=c?"mj":"mixto"):((pr&&pr.owner==="MARIA_JOSE")?"mj":"boun"))(+it.cantidad||0,+it.mj_cantidad||0,(EMB_INV||[]).find(p=>p.id===it.product_id))}))
   };
   if(!EMB_DRAFT.items.length) EMB_DRAFT.items=[embBlankItem()];
   embOpenForm();
@@ -2854,6 +2878,7 @@ function embRenderForm(){
     ${d.transportadora!=="Envios DC"?`<div class="fcol2"><label>Nombre transportadora</label><input class="field" value="${esc(d.transportadora==="__otra"?"":d.transportadora)}" placeholder="Escribe la empresa" oninput="embHead('transportadora',this.value)"></div>`:""}
     ${usaCbm?`<div class="fcol2"><label>Tarifa CBM ($/m³)</label><input class="field" value="${d.cbm_rate?Math.round(d.cbm_rate):""}" oninput="embHead('cbm_rate',this.value);embReprice()"></div>`:""}
     <div class="fcol2"><label>Nº de contenedor</label><input class="field" value="${esc(d.contenedor||"")}" placeholder="Asignado por Envío DC" oninput="embHead('contenedor',this.value)"></div>
+    <div class="fcol2"><label>Total de cajas/bultos</label><input class="field" value="${d.total_cajas?Math.round(embNum(d.total_cajas)):""}" placeholder="para verificar al recibir" oninput="embHead('total_cajas',this.value)"></div>
     <div class="fcol2"><label>Etapa</label>
       <select class="field" onchange="embHead('estado',this.value)">
         <option value="bodega_agente" ${d.estado==="bodega_agente"?"selected":""}>📦 En bodega del agente</option>
@@ -2922,7 +2947,14 @@ function embItemHtml(it,i,usaCbm){
       <div class="fcol2"><label>CBM (auto)</label><span class="ro" id="emb-cbm-${i}" style="display:block;padding:8px 0">${Math.round(calc.cbm*1000)/1000} m³</span></div>
       ${fleteField}
       <div class="fcol2"><label>Costo landed/u</label><span class="ro acc" id="emb-landed-${i}" style="display:block;padding:8px 0;font-weight:800">${cop(calc.landed)}</span></div>
-      <div class="fcol2"><label>¿Unidades de María José?</label><input class="field" value="${it.mj_cantidad!==""?Math.round(embNum(it.mj_cantidad)):""}" placeholder="0 = ninguna" oninput="embItem(${i},'mj_cantidad',this.value)"></div>
+      <div class="fcol2"><label>Dueño *</label>
+        <select class="field" style="${!it.owner_sel?'border-color:'+EMB_BLUE:''}" onchange="embOwnerSel(${i},this.value)">
+          <option value="" ${!it.owner_sel?"selected":""}>— elegir —</option>
+          <option value="boun" ${it.owner_sel==="boun"?"selected":""}>🏷 Todo BOUN</option>
+          <option value="mj" ${it.owner_sel==="mj"?"selected":""}>💸 Todo María José</option>
+          <option value="mixto" ${it.owner_sel==="mixto"?"selected":""}>↔ Mixto (repartido)</option>
+        </select></div>
+      ${it.owner_sel==="mixto"?`<div class="fcol2"><label>Unidades de María José *</label><input class="field" value="${(it.mj_cantidad!==''&&+it.mj_cantidad>0)?Math.round(embNum(it.mj_cantidad)):''}" placeholder="ej. 10" oninput="embItem(${i},'mj_cantidad',this.value)"></div>`:""}
     </div>
   </div>`;
 }
@@ -2958,6 +2990,7 @@ function embSkuPick(i,pid){
   const p=EMB_INV.find(x=>x.id===pid); if(!p) return;
   const it=EMB_DRAFT.items[i];
   it.product_id=p.id; it.code=p.code; it.name=p.name; it.thumb=p.thumb||"";
+  if(!it.owner_sel) it.owner_sel=(p.owner==="MARIA_JOSE")?"mj":"boun";  // sugerido por el dueño del producto
   EMB_SKU_OPEN=-1;
   embRenderForm();
 }
@@ -2975,6 +3008,11 @@ function embItem(i,field,value){
   EMB_DRAFT.items[i][field]=value;
   embRefreshItemCalc(i);
   embRenderTotals();
+}
+function embOwnerSel(i,val){
+  const it=EMB_DRAFT.items[i]; it.owner_sel=val;
+  if(val==="boun"||val==="mj") it.mj_cantidad="";   // se deriva al guardar
+  embRenderForm();
 }
 function embReprice(){ EMB_DRAFT.items.forEach((_,i)=>embRefreshItemCalc(i)); embRenderTotals(); }
 function embRefreshItemCalc(i){
@@ -3006,13 +3044,21 @@ async function embSave(){
   if(d.usa_cbm===false && !(d.transportadora||"").trim()){ err.textContent="Escribe el nombre de la transportadora."; return; }
   const items=d.items.filter(it=>it.product_id);
   if(!items.length){ err.textContent="Agrega al menos un producto (selecciona su SKU)."; return; }
-  for(const it of items){ if(embNum(it.cantidad)<=0){ err.textContent=`El producto ${it.code||""} necesita una cantidad mayor a 0.`; return; }
-    if(embNum(it.mj_cantidad)>embNum(it.cantidad)){ err.textContent=`En ${it.code}: las unidades de María José no pueden superar la cantidad total.`; return; } }
+  for(const it of items){
+    const cant=embNum(it.cantidad);
+    if(cant<=0){ err.textContent=`El producto ${it.code||""} necesita una cantidad mayor a 0.`; return; }
+    if(!it.owner_sel){ err.textContent=`Indica el dueño de ${it.code||"cada producto"} (BOUN / María José / Mixto).`; return; }
+    if(it.owner_sel==="boun") it._mjval=0;
+    else if(it.owner_sel==="mj") it._mjval=cant;
+    else { const m=embNum(it.mj_cantidad);
+      if(m<=0||m>=cant){ err.textContent=`En ${it.code}: en «Mixto» las unidades de María José deben ser entre 1 y ${Math.round(cant)-1}.`; return; }
+      it._mjval=m; }
+  }
   const payload={
     nombre:d.nombre||"", transportadora:(d.transportadora||"Envios DC").trim()||"Envios DC",
     usa_cbm:!!d.usa_cbm, cbm_rate:embNum(d.cbm_rate),
     fecha_compra:d.fecha_compra||null, fecha_entrega_agente:d.fecha_entrega_agente||null, eta:d.eta||null,
-    estado:d.estado||"en_camino", contenedor:d.contenedor||"",
+    estado:d.estado||"en_camino", contenedor:d.contenedor||"", total_cajas:embNum(d.total_cajas),
     notas:d.notas||"",
     items:items.map(it=>{ const _p=(EMB_INV||[]).find(p=>p.id===it.product_id); return {
       product_id:it.product_id, code:it.code, name:it.name, thumb:it.thumb||(_p&&_p.thumb)||"",
@@ -3021,7 +3067,7 @@ async function embSave(){
       caja_largo:embNum(it.caja_largo), caja_ancho:embNum(it.caja_ancho), caja_alto:embNum(it.caja_alto),
       cantidad_cajas:embNum(it.cantidad_cajas), peso:embNum(it.peso),
       cbm:embNum(it.cbm), valor_flete:embNum(it.valor_flete),
-      mj_cantidad:embNum(it.mj_cantidad), mj_anchor:it.mj_anchor||null
+      mj_cantidad:(it._mjval||0), mj_anchor:it.mj_anchor||null
     };})
   };
   try{
@@ -3053,8 +3099,14 @@ function embArribar(id){
       </select>
     </div>`;
   }).join("");
+  const _mjTot=(e.items||[]).reduce((s,it)=>s+embLineOwner(it).mj,0);
   openModal(`<h3>📥 Confirmar arribo a bodega</h3>
-    <div class="sub">Confirma a qué bodega entra cada producto. Al aceptar: se descuenta de «En camino», se <b>suma el stock</b> a la bodega elegida y se actualiza el costo del producto (promedio ponderado).${e.mj_unidades>0?` <b>${e.mj_unidades} u</b> entran a la liquidación de María José.`:""}</div>
+    <div class="sub">Confirma a qué bodega entra cada producto. Al aceptar: se descuenta de «En camino», se <b>suma el stock</b> a la bodega elegida y se actualiza el costo del producto (promedio ponderado).${_mjTot>0?` <b>${_mjTot} u</b> entran a la liquidación de María José.`:""}</div>
+    <div style="display:flex;gap:16px;flex-wrap:wrap;padding:8px 12px;background:var(--surf);border:1px solid ${EMB_BLUE}55;border-radius:10px;margin-bottom:10px;font-size:13px">
+      <span>🗃 Cajas/bultos a recibir: <b>${e.cajas_total||0}</b></span>
+      <span>📦 Unidades: <b>${e.total_unidades||0}</b></span>
+      ${e.contenedor?`<span>🧾 ${esc(e.contenedor)}</span>`:""}
+    </div>
     <div style="display:flex;align-items:center;gap:8px;margin:6px 0 10px">
       <span class="cap">Aplicar a todas:</span>
       <button class="btn-ghost" style="padding:5px 10px" onclick="embArrSetAll('bogota')">🏢 Bogotá</button>

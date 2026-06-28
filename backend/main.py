@@ -5590,6 +5590,11 @@ def _emb_with_items():
         e["valor_total"] = round(e["valor_mercancia"] + e["valor_flete"], 2)
         e["cbm_total"] = round(sum(float(i.get("cbm") or 0)
                                    for i in items), 4)
+        # Total de cajas/bultos: el valor manual del envío o, si no, la suma
+        # de las cajas de cada línea (para verificar al recibir).
+        e["cajas_total"] = int(round(float(e.get("total_cajas") or 0)
+                               or sum(float(i.get("cantidad_cajas") or 0)
+                                      for i in items)))
         e["mj_unidades"] = int(sum(float(i.get("mj_cantidad") or 0)
                                    for i in items))
     return embs
@@ -5630,6 +5635,7 @@ class EmbarqueIn(BaseModel):
     eta: Optional[str] = None
     estado: Optional[str] = "bodega_agente"
     contenedor: Optional[str] = ""
+    total_cajas: Optional[float] = 0
     notas: Optional[str] = ""
     items: List[EmbItemIn] = []
 
@@ -5644,6 +5650,7 @@ class EmbarquePatchIn(BaseModel):
     eta: Optional[str] = None
     estado: Optional[str] = None
     contenedor: Optional[str] = None
+    total_cajas: Optional[float] = None
     notas: Optional[str] = None
     items: Optional[List[EmbItemIn]] = None
 
@@ -5684,6 +5691,7 @@ def embarques_create(data: EmbarqueIn, user: dict = Depends(_current_user)):
         "fecha_entrega_agente": _emb_dt(data.fecha_entrega_agente),
         "eta": _emb_dt(data.eta),
         "contenedor": (data.contenedor or "").strip() or None,
+        "total_cajas": float(data.total_cajas or 0) or None,
         "notas": (data.notas or "").strip() or None,
         "estado": est,
         "created_by": user.get("username", ""),
@@ -5725,6 +5733,8 @@ def embarques_update(eid: int, data: EmbarquePatchIn,
         head["usa_cbm"] = bool(data.usa_cbm)
     if data.cbm_rate is not None:
         head["cbm_rate"] = float(data.cbm_rate or 0)
+    if data.total_cajas is not None:
+        head["total_cajas"] = float(data.total_cajas or 0) or None
     for f in ("fecha_compra", "fecha_entrega_agente", "eta"):
         v = getattr(data, f)
         if v is not None:

@@ -96,8 +96,9 @@ create table if not exists public.embarque_recibos (
 );
 create index if not exists embarque_recibos_emb_idx on public.embarque_recibos (embarque_id);
 
--- Migración para tablas ya creadas: nº de contenedor + estados nuevos.
-alter table public.embarques add column if not exists contenedor text;
+-- Migración para tablas ya creadas: nº de contenedor + total de cajas/bultos.
+alter table public.embarques add column if not exists contenedor  text;
+alter table public.embarques add column if not exists total_cajas numeric;
 
 -- Coherente con el resto del motor: RLS deshabilitado (acceso por service/anon key).
 alter table public.embarques        disable row level security;
