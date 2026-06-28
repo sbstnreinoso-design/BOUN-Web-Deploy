@@ -5614,6 +5614,12 @@ class EmbItemIn(BaseModel):
     mj_anchor: Optional[str] = None
 
 
+# Estados en tránsito (la mercancía aún no llega a bodega): mantienen las
+# unidades en "En camino" (qty_transit). 'arribado' se hace por /arribar y
+# 'cancelado' por DELETE; ninguno de esos dos se setea por PATCH de estado.
+_EMB_TRANSIT = ("bodega_agente", "en_camino", "nacionalizacion")
+
+
 class EmbarqueIn(BaseModel):
     nombre: Optional[str] = ""
     transportadora: str = "Envios DC"
@@ -5622,6 +5628,8 @@ class EmbarqueIn(BaseModel):
     fecha_compra: Optional[str] = None
     fecha_entrega_agente: Optional[str] = None
     eta: Optional[str] = None
+    estado: Optional[str] = "bodega_agente"
+    contenedor: Optional[str] = ""
     notas: Optional[str] = ""
     items: List[EmbItemIn] = []
 
@@ -5634,6 +5642,8 @@ class EmbarquePatchIn(BaseModel):
     fecha_compra: Optional[str] = None
     fecha_entrega_agente: Optional[str] = None
     eta: Optional[str] = None
+    estado: Optional[str] = None
+    contenedor: Optional[str] = None
     notas: Optional[str] = None
     items: Optional[List[EmbItemIn]] = None
 
@@ -5653,7 +5663,8 @@ def embarques_list(user: dict = Depends(_current_user)):
 @app.get("/api/embarques/count")
 def embarques_count(user: dict = Depends(_current_user)):
     try:
-        rows = db._sb_get("embarques?estado=eq.en_camino&select=id") or []
+        rows = db._sb_get("embarques?estado=in.(%s)&select=id"
+                          % ",".join(_EMB_TRANSIT)) or []
         return {"count": len(rows)}
     except Exception:
         return {"count": 0}
@@ -5661,6 +5672,9 @@ def embarques_count(user: dict = Depends(_current_user)):
 
 @app.post("/api/embarques")
 def embarques_create(data: EmbarqueIn, user: dict = Depends(_current_user)):
+    est = (data.estado or "bodega_agente")
+    if est not in _EMB_TRANSIT:
+        est = "bodega_agente"
     head = {
         "nombre": (data.nombre or "").strip() or None,
         "transportadora": (data.transportadora or "Envios DC").strip(),
@@ -5669,8 +5683,9 @@ def embarques_create(data: EmbarqueIn, user: dict = Depends(_current_user)):
         "fecha_compra": _emb_dt(data.fecha_compra),
         "fecha_entrega_agente": _emb_dt(data.fecha_entrega_agente),
         "eta": _emb_dt(data.eta),
+        "contenedor": (data.contenedor or "").strip() or None,
         "notas": (data.notas or "").strip() or None,
-        "estado": "en_camino",
+        "estado": est,
         "created_by": user.get("username", ""),
         "created_at": _emb_now(),
     }
@@ -5698,10 +5713,14 @@ def embarques_update(eid: int, data: EmbarquePatchIn,
     if emb.get("estado") == "arribado":
         raise HTTPException(409, "El embarque ya arribó; no se puede editar.")
     head = {}
-    for f in ("nombre", "transportadora", "notas"):
+    for f in ("nombre", "transportadora", "contenedor", "notas"):
         v = getattr(data, f)
         if v is not None:
             head[f] = (v.strip() or None)
+    if data.estado is not None and data.estado in _EMB_TRANSIT:
+        # Cambio de etapa de tránsito (no toca stock). 'arribado' va por
+        # /arribar y 'cancelado' por DELETE.
+        head["estado"] = data.estado
     if data.usa_cbm is not None:
         head["usa_cbm"] = bool(data.usa_cbm)
     if data.cbm_rate is not None:

@@ -2546,10 +2546,36 @@ let EMB_SKU_OPEN=-1;        // índice de la línea con el selector de SKU abier
 const embNum=v=>{ const n=parseFloat(String(v==null?"":v).replace(/[^0-9.\-]/g,"")); return isNaN(n)?0:n; };
 function embFmtDate(d){ if(!d) return "—"; const s=String(d).slice(0,10); const[y,m,da]=s.split("-"); return da?`${da}/${m}/${y}`:s; }
 function embDaysToEta(eta){ if(!eta) return null; const a=new Date(String(eta).slice(0,10)+"T00:00:00"); const b=new Date(_isoDay(0)+"T00:00:00"); return Math.round((a-b)/86400000); }
+// Estados del embarque (etapas). Las 3 primeras son "en tránsito".
+const EMB_STAGES=["bodega_agente","en_camino","nacionalizacion","arribado"];
+const EMB_STATE={
+  bodega_agente:{lbl:"En bodega del agente",short:"Bodega agente",ico:"📦",col:"#E0A23C",fg:"#1A1206"},
+  en_camino:    {lbl:"En camino",          short:"En camino",    ico:"🚢",col:"#2DC6FF",fg:"#06222B"},
+  nacionalizacion:{lbl:"En nacionalización",short:"Nacionalización",ico:"🛃",col:"#C58CE6",fg:"#1A0A24"},
+  arribado:     {lbl:"Arribado",           short:"Arribado",     ico:"✓", col:"#3FCB82",fg:"#06210F"},
+  cancelado:    {lbl:"Cancelado",          short:"Cancelado",    ico:"✕", col:"var(--surf)",fg:"var(--muted)"},
+};
+function embStMeta(st){ return EMB_STATE[st]||EMB_STATE.en_camino; }
+function embIsTransit(st){ return st==="bodega_agente"||st==="en_camino"||st==="nacionalizacion"; }
 function embStateChip(st){
-  if(st==="arribado") return `<span style="font-size:11px;font-weight:800;color:#0A0A0A;background:${"#3FCB82"};padding:2px 10px;border-radius:20px">✓ Arribado</span>`;
-  if(st==="cancelado") return `<span style="font-size:11px;font-weight:800;color:var(--muted);background:var(--surf);border:1px solid var(--border);padding:2px 10px;border-radius:20px">✕ Cancelado</span>`;
-  return `<span style="font-size:11px;font-weight:800;color:#06222B;background:${EMB_BLUE};padding:2px 10px;border-radius:20px">🚢 En camino</span>`;
+  const m=embStMeta(st);
+  const brd=st==="cancelado"?"border:1px solid var(--border);":"";
+  return `<span style="font-size:11px;font-weight:800;color:${m.fg};background:${m.col};${brd}padding:2px 10px;border-radius:20px">${m.ico} ${m.lbl}</span>`;
+}
+// Mini-stepper de etapas para la tarjeta expandida.
+function embStepper(st){
+  if(st==="cancelado") return "";
+  const cur=EMB_STAGES.indexOf(st);
+  return `<div style="display:flex;align-items:center;gap:0;margin:4px 0 12px;flex-wrap:wrap">`+
+    EMB_STAGES.map((s,i)=>{
+      const m=EMB_STATE[s]; const done=i<=cur && cur>=0;
+      const dotbg=done?m.col:"var(--surf)"; const dotfg=done?m.fg:"var(--muted)";
+      const line=i<EMB_STAGES.length-1?`<div style="width:26px;height:2px;background:${i<cur?EMB_STATE[EMB_STAGES[i+1]].col:'var(--border)'}"></div>`:"";
+      return `<div style="display:flex;align-items:center;gap:0">
+        <div title="${m.lbl}" style="display:flex;align-items:center;gap:5px;padding:3px 9px;border-radius:20px;background:${dotbg};border:1px solid ${done?'transparent':'var(--border)'}">
+          <span style="font-size:12px">${m.ico}</span><span style="font-size:10.5px;font-weight:700;color:${dotfg}">${m.short}</span>
+        </div>${line}</div>`;
+    }).join("")+`</div>`;
 }
 // Cálculo de una línea: CBM, flete y costo landed por unidad.
 function embCalcItem(it,usaCbm,rate){
@@ -2592,7 +2618,7 @@ async function embLoadInv(){
 }
 
 function embDrawKpis(){
-  const cam=EMB.filter(e=>e.estado==="en_camino");
+  const cam=EMB.filter(e=>embIsTransit(e.estado));
   const unid=cam.reduce((s,e)=>s+(+e.total_unidades||0),0);
   const valor=cam.reduce((s,e)=>s+(+e.valor_total||0),0);
   const cbm=cam.reduce((s,e)=>s+(+e.cbm_total||0),0);
@@ -2600,7 +2626,7 @@ function embDrawKpis(){
   let prox="—";
   if(etas.length){ const d=embDaysToEta(etas[0]); prox=embFmtDate(etas[0])+(d!=null?(d<0?` · vencido`:d===0?` · hoy`:` · ${d}d`):""); }
   const k=[
-    ["Embarques en camino", cam.length, "acc"],
+    ["Embarques en tránsito", cam.length, "acc"],
     ["Unidades en camino", unid.toLocaleString("es-CO"), "acc"],
     ["Valor en tránsito", cop(valor), "amber"],
     ["CBM en tránsito", (Math.round(cbm*1000)/1000)+" m³", "muted"],
@@ -2617,11 +2643,10 @@ function embDrawList(){
 }
 
 function embCard(e){
-  const enCamino=e.estado==="en_camino";
-  const accent = enCamino?EMB_BLUE : e.estado==="arribado"?"#3FCB82":"var(--border)";
+  const accent = embStMeta(e.estado).col;
   const d=embDaysToEta(e.eta);
   const etaTxt=e.eta?`${embFmtDate(e.eta)}${d!=null?(d<0?` · vencido ${Math.abs(d)}d`:d===0?` · hoy`:` · faltan ${d}d`):""}`:"—";
-  const transChip=`<span style="font-size:11px;color:var(--muted)">🚚 ${esc(e.transportadora||"—")}</span>`;
+  const transChip=`<span style="font-size:11px;color:var(--muted)">🚚 ${esc(e.transportadora||"—")}${e.contenedor?` · 📦 ${esc(e.contenedor)}`:""}</span>`;
   const mj=e.mj_unidades>0?`<span title="Unidades de María José" style="font-size:10px;font-weight:800;color:#C9B8FF;background:rgba(125,107,216,.18);border:1px solid #7D6BD855;padding:1px 7px;border-radius:11px">💸 ${e.mj_unidades} MJ</span>`:"";
   return `<div class="card" id="emb-${e.id}" style="padding:0;margin-bottom:12px;border-left:4px solid ${accent};overflow:hidden">
     <div onclick="embToggle(${e.id})" style="display:flex;gap:14px;align-items:center;padding:15px 16px;cursor:pointer;flex-wrap:wrap">
@@ -2656,11 +2681,13 @@ function embToggle(id){
   document.querySelectorAll("[id^='embarrow-']").forEach(a=>a.textContent="▸");
   el.classList.add("open"); if(arr)arr.textContent="▾";
   const e=EMB.find(x=>x.id===id); if(!e) return;
-  const enCamino=e.estado==="en_camino";
+  const transit=embIsTransit(e.estado);
   const rows=(e.items||[]).map(it=>{
     const calc=embCalcItem(it,e.usa_cbm,e.cbm_rate);
-    const foto=it.thumb?`<img src="${bigImg(it.thumb)}" style="width:42px;height:42px;border-radius:8px;object-fit:cover;background:var(--surf);border:1px solid var(--border);flex:none">`
-      :`<span style="width:42px;height:42px;border-radius:8px;background:var(--surf);border:1px solid var(--border);flex:none;display:flex;align-items:center;justify-content:center">📦</span>`;
+    const prod=(EMB_INV||[]).find(p=>p.id===it.product_id);
+    const th=it.thumb||(prod&&prod.thumb)||"";
+    const foto=th?`<img src="${bigImg(th)}" style="width:46px;height:46px;border-radius:8px;object-fit:cover;background:var(--surf);border:1px solid var(--border);flex:none">`
+      :`<span style="width:46px;height:46px;border-radius:8px;background:var(--surf);border:1px solid var(--border);flex:none;display:flex;align-items:center;justify-content:center">📦</span>`;
     const mj=(+it.mj_cantidad>0)?`<span style="font-size:10px;font-weight:800;color:#C9B8FF;background:rgba(125,107,216,.18);border:1px solid #7D6BD855;padding:1px 6px;border-radius:10px;margin-left:6px">💸 ${Math.round(+it.mj_cantidad)} de MJ</span>`:"";
     return `<div style="display:flex;gap:12px;align-items:center;padding:10px 0;border-bottom:1px solid var(--border)">
       ${foto}
@@ -2674,11 +2701,22 @@ function embToggle(id){
       </div>
     </div>`;
   }).join("")||`<div class="muted" style="padding:10px 0">Sin líneas.</div>`;
-  const acciones = enCamino
-    ? `<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;margin-top:14px">
+  const stateCtl = transit
+    ? `<div style="display:flex;align-items:center;gap:8px;margin-top:12px;flex-wrap:wrap">
+         <span class="cap">Etapa:</span>
+         <select class="field" style="height:34px;max-width:210px;width:auto" onchange="embSetEstado(${id},this.value)">
+           <option value="bodega_agente" ${e.estado==="bodega_agente"?"selected":""}>📦 En bodega del agente</option>
+           <option value="en_camino" ${e.estado==="en_camino"?"selected":""}>🚢 En camino (navegando)</option>
+           <option value="nacionalizacion" ${e.estado==="nacionalizacion"?"selected":""}>🛃 En nacionalización</option>
+         </select>
+         <span class="muted" style="font-size:11px">cambia la etapa según avanza el envío</span>
+       </div>`
+    : "";
+  const acciones = transit
+    ? `${stateCtl}<div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;margin-top:14px">
          <button class="btn-ghost" onclick="editEmbarque(${id})">✏ Editar</button>
          ${isAdmin()?`<button class="btn-danger" onclick="embDelete(${id})">✕ Eliminar</button>`:""}
-         <button class="btn-acc" onclick="embArribar(${id})">📥 Marcar arribó</button>
+         <button class="btn-acc" onclick="embArribar(${id})">📥 Marcar arribó (a bodega)</button>
        </div>`
     : `<div class="muted" style="font-size:12px;margin-top:12px;text-align:right">${e.estado==="arribado"?`✓ Arribó el ${embFmtDate(e.arribado_at)} · stock y costos aplicados al inventario.`:"Embarque cancelado."}</div>`;
   const recs=e.recibos||[];
@@ -2704,12 +2742,14 @@ function embToggle(id){
         </div>`;
       }).join('')+`</div>` : `<div class="muted" style="font-size:12px">Aún sin recibos. Sube el recibo de Envío DC (imagen o PDF) para tener la prueba de recepción y dar seguimiento.</div>`}
   </div>`;
-  el.innerHTML=`<div style="padding:6px 16px 16px">
+  el.innerHTML=`<div style="padding:10px 16px 16px">
+    ${embStepper(e.estado)}
     <div class="muted" style="font-size:12px;display:flex;gap:16px;flex-wrap:wrap;margin:6px 0 10px">
       <span>🛒 Compra: <b style="color:var(--text)">${embFmtDate(e.fecha_compra)}</b></span>
       <span>📦 Entrega al agente: <b style="color:var(--text)">${embFmtDate(e.fecha_entrega_agente)}</b></span>
       <span>🗓 ETA: <b style="color:var(--text)">${embFmtDate(e.eta)}</b></span>
       <span>🚚 ${esc(e.transportadora||"—")}${e.usa_cbm?` · CBM × ${cop(e.cbm_rate)}/m³`:" · flete manual"}</span>
+      <span>🧾 Contenedor: <b style="color:var(--text)">${e.contenedor?esc(e.contenedor):"—"}</b></span>
     </div>
     ${e.notas?`<div class="note" style="font-size:12px;margin-bottom:8px">📝 ${esc(e.notas)}</div>`:""}
     ${rows}
@@ -2772,7 +2812,7 @@ async function embReciboDelete(rid){
 function embBlankItem(){ return {product_id:null,code:"",name:"",thumb:"",cantidad:"",costo_unit_china:"",bodega_destino:"bogota",caja_largo:"",caja_ancho:"",caja_alto:"",cantidad_cajas:"1",peso:"",cbm:"",valor_flete:"",mj_cantidad:"",mj_anchor:_isoDay(0)}; }
 function newEmbarque(){
   EMB_EDIT_ID=null; EMB_SKU_OPEN=-1;
-  EMB_DRAFT={nombre:"",transportadora:"Envios DC",usa_cbm:true,cbm_rate:EMB_DEFAULT_RATE,fecha_compra:_isoDay(0),fecha_entrega_agente:"",eta:"",notas:"",items:[embBlankItem()]};
+  EMB_DRAFT={nombre:"",transportadora:"Envios DC",usa_cbm:true,cbm_rate:EMB_DEFAULT_RATE,fecha_compra:_isoDay(0),fecha_entrega_agente:"",eta:"",estado:"bodega_agente",contenedor:"",notas:"",items:[embBlankItem()]};
   embOpenForm();
 }
 function editEmbarque(id){
@@ -2782,6 +2822,7 @@ function editEmbarque(id){
     nombre:e.nombre||"",transportadora:e.transportadora||"Envios DC",usa_cbm:!!e.usa_cbm,
     cbm_rate:+e.cbm_rate||EMB_DEFAULT_RATE,fecha_compra:(e.fecha_compra||"").slice(0,10),
     fecha_entrega_agente:(e.fecha_entrega_agente||"").slice(0,10),eta:(e.eta||"").slice(0,10),
+    estado:embIsTransit(e.estado)?e.estado:"en_camino", contenedor:e.contenedor||"",
     notas:e.notas||"",
     items:(e.items||[]).map(it=>({product_id:it.product_id,code:it.code||"",name:it.name||"",thumb:it.thumb||"",
       cantidad:+it.cantidad||"",costo_unit_china:+it.costo_unit_china||"",bodega_destino:it.bodega_destino||"bogota",
@@ -2812,6 +2853,13 @@ function embRenderForm(){
       </select></div>
     ${d.transportadora!=="Envios DC"?`<div class="fcol2"><label>Nombre transportadora</label><input class="field" value="${esc(d.transportadora==="__otra"?"":d.transportadora)}" placeholder="Escribe la empresa" oninput="embHead('transportadora',this.value)"></div>`:""}
     ${usaCbm?`<div class="fcol2"><label>Tarifa CBM ($/m³)</label><input class="field" value="${d.cbm_rate?Math.round(d.cbm_rate):""}" oninput="embHead('cbm_rate',this.value);embReprice()"></div>`:""}
+    <div class="fcol2"><label>Nº de contenedor</label><input class="field" value="${esc(d.contenedor||"")}" placeholder="Asignado por Envío DC" oninput="embHead('contenedor',this.value)"></div>
+    <div class="fcol2"><label>Etapa</label>
+      <select class="field" onchange="embHead('estado',this.value)">
+        <option value="bodega_agente" ${d.estado==="bodega_agente"?"selected":""}>📦 En bodega del agente</option>
+        <option value="en_camino" ${(d.estado==="en_camino"||!d.estado)?"selected":""}>🚢 En camino (navegando)</option>
+        <option value="nacionalizacion" ${d.estado==="nacionalizacion"?"selected":""}>🛃 En nacionalización</option>
+      </select></div>
     <div class="fcol2"><label>Fecha de compra</label><input type="date" class="field" value="${esc(d.fecha_compra)}" max="${_isoDay(0)}" onchange="embHead('fecha_compra',this.value)"></div>
     <div class="fcol2"><label>Entrega al agente</label><input type="date" class="field" value="${esc(d.fecha_entrega_agente)}" onchange="embHead('fecha_entrega_agente',this.value)"></div>
     <div class="fcol2"><label>Arribo estimado (ETA)</label><input type="date" class="field" value="${esc(d.eta)}" onchange="embHead('eta',this.value)"></div>
@@ -2836,9 +2884,10 @@ function embRenderForm(){
 
 function embItemHtml(it,i,usaCbm){
   const calc=embCalcItem(it,usaCbm,EMB_DRAFT.cbm_rate);
+  const _p=(EMB_INV||[]).find(p=>p.id===it.product_id); const _th=it.thumb||(_p&&_p.thumb)||"";
   const sel = it.product_id
     ? `<div style="display:flex;align-items:center;gap:10px">
-         ${it.thumb?`<img src="${bigImg(it.thumb)}" style="width:40px;height:40px;border-radius:8px;object-fit:cover;border:1px solid var(--border);flex:none">`:`<span style="width:40px;height:40px;border-radius:8px;background:var(--surf);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;flex:none">📦</span>`}
+         ${_th?`<img src="${bigImg(_th)}" style="width:40px;height:40px;border-radius:8px;object-fit:cover;border:1px solid var(--border);flex:none">`:`<span style="width:40px;height:40px;border-radius:8px;background:var(--surf);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;flex:none">📦</span>`}
          <div style="flex:1;min-width:0"><div style="font-weight:700;font-size:13px">${esc(it.code)}</div><div class="muted" style="font-size:11.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(it.name)}</div></div>
          <button class="btn-ghost" style="padding:5px 10px" onclick="embSkuToggle(${i})">Cambiar ▾</button>
        </div>`
@@ -2963,16 +3012,17 @@ async function embSave(){
     nombre:d.nombre||"", transportadora:(d.transportadora||"Envios DC").trim()||"Envios DC",
     usa_cbm:!!d.usa_cbm, cbm_rate:embNum(d.cbm_rate),
     fecha_compra:d.fecha_compra||null, fecha_entrega_agente:d.fecha_entrega_agente||null, eta:d.eta||null,
+    estado:d.estado||"en_camino", contenedor:d.contenedor||"",
     notas:d.notas||"",
-    items:items.map(it=>({
-      product_id:it.product_id, code:it.code, name:it.name, thumb:it.thumb,
+    items:items.map(it=>{ const _p=(EMB_INV||[]).find(p=>p.id===it.product_id); return {
+      product_id:it.product_id, code:it.code, name:it.name, thumb:it.thumb||(_p&&_p.thumb)||"",
       cantidad:embNum(it.cantidad), costo_unit_china:embNum(it.costo_unit_china),
       bodega_destino:it.bodega_destino==="yopal"?"yopal":"bogota",
       caja_largo:embNum(it.caja_largo), caja_ancho:embNum(it.caja_ancho), caja_alto:embNum(it.caja_alto),
       cantidad_cajas:embNum(it.cantidad_cajas), peso:embNum(it.peso),
       cbm:embNum(it.cbm), valor_flete:embNum(it.valor_flete),
       mj_cantidad:embNum(it.mj_cantidad), mj_anchor:it.mj_anchor||null
-    }))
+    };})
   };
   try{
     if(EMB_EDIT_ID) await api("/embarques/"+EMB_EDIT_ID,{method:"PATCH",body:JSON.stringify(payload)});
@@ -2981,6 +3031,10 @@ async function embSave(){
   }catch(e){ err.textContent=e.message; }
 }
 
+async function embSetEstado(id,estado){
+  try{ await api("/embarques/"+id,{method:"PATCH",body:JSON.stringify({estado})}); renderEmbarques(); }
+  catch(e){ alert(e.message); }
+}
 async function embArribar(id){
   const e=EMB.find(x=>x.id===id); if(!e) return;
   if(!confirm(`¿Marcar como ARRIBADO «${e.nombre||("Embarque #"+id)}»?\n\nSe sumarán ${e.total_unidades||0} u a las bodegas destino, se descontarán de «En camino» y se actualizará el costo de cada producto (promedio ponderado).${e.mj_unidades>0?`\n\n${e.mj_unidades} u entrarán a la liquidación de María José.`:""}`)) return;

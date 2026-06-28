@@ -35,7 +35,8 @@ create table if not exists public.embarques (
   fecha_compra           date,                              -- cuándo se compró
   fecha_entrega_agente   date,                              -- entrega al agente de carga
   eta                    date,                              -- tiempo estimado de arribo (ETA)
-  estado                 text not null default 'en_camino', -- en_camino | arribado | cancelado
+  estado                 text not null default 'en_camino', -- bodega_agente | en_camino | nacionalizacion | arribado | cancelado
+  contenedor             text,                              -- nº de contenedor que asigna Envío DC (para rastreo)
   arribado_at            timestamptz,                       -- cuándo se marcó arribado
   notas                  text,
   created_by             text,
@@ -94,6 +95,9 @@ create table if not exists public.embarque_recibos (
   created_at   timestamptz not null default now()
 );
 create index if not exists embarque_recibos_emb_idx on public.embarque_recibos (embarque_id);
+
+-- Migración para tablas ya creadas: nº de contenedor + estados nuevos.
+alter table public.embarques add column if not exists contenedor text;
 
 -- Coherente con el resto del motor: RLS deshabilitado (acceso por service/anon key).
 alter table public.embarques        disable row level security;
