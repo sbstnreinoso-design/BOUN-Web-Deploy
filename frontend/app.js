@@ -2687,12 +2687,22 @@ function embToggle(id){
       <div style="font-weight:700;font-size:12.5px">📄 Recibos Envío DC <span class="muted" style="font-weight:400">· para reportar y rastrear el paquete</span></div>
       <button class="btn-ghost" style="padding:6px 12px" onclick="embReciboPick(${id})">⬆ Subir recibo</button>
     </div>
-    ${recs.length? recs.map(r=>`<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border)">
-        <span style="font-size:18px">${(r.mime||'').includes('pdf')?'📕':'🖼'}</span>
-        <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(r.nombre||'recibo')}</div><div class="muted" style="font-size:11px">${r.nota?('Nº '+esc(r.nota)+' · '):''}${Math.round((+r.size_bytes||0)/1024)} KB · ${embFmtDate(r.created_at)}</div></div>
-        <button class="btn-ghost" style="padding:5px 10px" onclick="embReciboView(${r.id})">Ver</button>
-        <button class="btn-danger" style="padding:5px 9px" title="Eliminar recibo" onclick="embReciboDelete(${r.id})">✕</button>
-      </div>`).join('') : `<div class="muted" style="font-size:12px">Aún sin recibos. Sube el recibo de Envío DC (imagen o PDF) para tener la prueba de recepción y dar seguimiento.</div>`}
+    ${recs.length? `<div style="display:flex;flex-wrap:wrap;gap:12px">`+recs.map(r=>{
+        const isImg=(r.mime||'').startsWith('image');
+        const prev = isImg
+          ? `<img class="emb-recthumb" data-rid="${r.id}" onclick="embReciboView(${r.id})" title="Ver recibo ampliado" style="width:88px;height:88px;object-fit:cover;border-radius:10px;border:1px solid var(--border);background:var(--surf);cursor:pointer;display:block">`
+          : `<div onclick="embReciboView(${r.id})" title="Abrir recibo" style="width:88px;height:88px;border-radius:10px;border:1px solid var(--border);background:var(--surf);display:flex;align-items:center;justify-content:center;font-size:34px;cursor:pointer">📕</div>`;
+        return `<div style="width:150px;border:1px solid var(--border);border-radius:12px;padding:10px;background:var(--surf)">
+          ${prev}
+          <div style="font-size:12px;font-weight:600;margin-top:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(r.nombre||'recibo')}</div>
+          <div class="muted" style="font-size:10.5px;margin-top:2px">${r.nota?('Nº '+esc(r.nota)+' · '):''}${Math.round((+r.size_bytes||0)/1024)} KB</div>
+          <div class="muted" style="font-size:10.5px">${embFmtDate(r.created_at)}</div>
+          <div style="display:flex;gap:6px;margin-top:8px">
+            <button class="btn-ghost" style="flex:1;padding:5px 0;font-size:12px" onclick="embReciboView(${r.id})">Ver</button>
+            <button class="btn-danger" style="padding:5px 9px" title="Eliminar recibo" onclick="embReciboDelete(${r.id})">✕</button>
+          </div>
+        </div>`;
+      }).join('')+`</div>` : `<div class="muted" style="font-size:12px">Aún sin recibos. Sube el recibo de Envío DC (imagen o PDF) para tener la prueba de recepción y dar seguimiento.</div>`}
   </div>`;
   el.innerHTML=`<div style="padding:6px 16px 16px">
     <div class="muted" style="font-size:12px;display:flex;gap:16px;flex-wrap:wrap;margin:6px 0 10px">
@@ -2706,8 +2716,23 @@ function embToggle(id){
     ${recibosHtml}
     ${acciones}
   </div>`;
+  embReciboLoadThumbs();
 }
 // ── Recibos Envío DC (subir / ver / eliminar) ───────────────────────────────
+// Carga las miniaturas de los recibos-imagen con fetch autenticado (el endpoint
+// requiere sesión, por eso no se puede poner el src directo).
+function embReciboLoadThumbs(){
+  document.querySelectorAll("img.emb-recthumb[data-rid]").forEach(async img=>{
+    if(img.dataset.loaded) return; img.dataset.loaded="1";
+    const rid=img.getAttribute("data-rid");
+    try{
+      const r=await fetch("/api/embarques/recibo/"+rid,
+        {headers: TOKEN?{"Authorization":"Bearer "+TOKEN}:{}});
+      if(!r.ok) return;
+      const b=await r.blob(); img.src=URL.createObjectURL(b);
+    }catch(e){}
+  });
+}
 function embReciboPick(eid){
   const inp=document.createElement("input");
   inp.type="file"; inp.accept="image/*,application/pdf";
