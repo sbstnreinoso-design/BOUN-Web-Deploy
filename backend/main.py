@@ -5766,12 +5766,20 @@ def embarques_delete(eid: int, user: dict = Depends(_admin)):
     return {"ok": True}
 
 
+class ArribarIn(BaseModel):
+    # {"<item_id>": "bogota"|"yopal"} — bodega elegida al confirmar el arribo.
+    bodegas: dict = {}
+
+
 @app.post("/api/embarques/{eid}/arribar")
-def embarques_arribar(eid: int, user: dict = Depends(_current_user)):
+def embarques_arribar(eid: int, data: ArribarIn = ArribarIn(),
+                      user: dict = Depends(_current_user)):
     """Marca el embarque como ARRIBADO. Por cada línea: resta sus unidades de
-    'En camino', las suma a la bodega destino, actualiza el costo del producto
-    por PROMEDIO PONDERADO (costo del stock físico Bogotá+Yopal + costo landed
-    nuevo) y, si parte es de María José, la marca para su liquidación."""
+    'En camino', las suma a la bodega destino (la que se confirma al arribar,
+    o la guardada en la línea), actualiza el costo del producto por PROMEDIO
+    PONDERADO (costo del stock físico Bogotá+Yopal + costo landed nuevo) y, si
+    parte es de María José, la marca para su liquidación."""
+    bodegas = data.bodegas or {}
     rows = db._sb_get("embarques?id=eq.%d&select=*" % eid) or []
     if not rows:
         raise HTTPException(404, "Embarque no encontrado")
@@ -5805,7 +5813,9 @@ def embarques_arribar(eid: int, user: dict = Depends(_current_user)):
             cs_avg = (phys * cs_old + cant * cs_new) / tot
         else:
             cp_avg, cs_avg = cp_new, cs_new
-        col = "qty_yopal" if it.get("bodega_destino") == "yopal" else "qty_bogota"
+        bod = bodegas.get(str(it.get("id"))) or it.get("bodega_destino")
+        bod = "yopal" if bod == "yopal" else "bogota"
+        col = "qty_yopal" if bod == "yopal" else "qty_bogota"
         bod_actual = float(p.get(col) or 0)
         transit_new = max(0.0, float(p.get("qty_transit") or 0) - cant)
         patch = {
@@ -5834,7 +5844,7 @@ def embarques_arribar(eid: int, user: dict = Depends(_current_user)):
         except Exception:
             pass
         db._sb_patch("embarque_items", "id=eq.%d" % it.get("id"),
-                     {"arribado": True})
+                     {"arribado": True, "bodega_destino": bod})
         aplicados += 1
     db._sb_patch("embarques", "id=eq.%d" % eid,
                  {"estado": "arribado", "arribado_at": _emb_now()})

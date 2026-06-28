@@ -3035,13 +3035,47 @@ async function embSetEstado(id,estado){
   try{ await api("/embarques/"+id,{method:"PATCH",body:JSON.stringify({estado})}); renderEmbarques(); }
   catch(e){ alert(e.message); }
 }
-async function embArribar(id){
+// Al confirmar el arribo se abre una ventana para elegir/confirmar a qué bodega
+// entra cada producto, antes de cargar el stock.
+function embArribar(id){
   const e=EMB.find(x=>x.id===id); if(!e) return;
-  if(!confirm(`¿Marcar como ARRIBADO «${e.nombre||("Embarque #"+id)}»?\n\nSe sumarán ${e.total_unidades||0} u a las bodegas destino, se descontarán de «En camino» y se actualizará el costo de cada producto (promedio ponderado).${e.mj_unidades>0?`\n\n${e.mj_unidades} u entrarán a la liquidación de María José.`:""}`)) return;
+  const items=(e.items||[]).filter(it=>it.product_id&&(+it.cantidad>0));
+  const filas=items.map(it=>{
+    const prod=(EMB_INV||[]).find(p=>p.id===it.product_id);
+    const th=it.thumb||(prod&&prod.thumb)||"";
+    const foto=th?`<img src="${bigImg(th)}" style="width:40px;height:40px;border-radius:8px;object-fit:cover;border:1px solid var(--border);flex:none">`:`<span style="width:40px;height:40px;border-radius:8px;background:var(--bg);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;flex:none">📦</span>`;
+    return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+      ${foto}
+      <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:700">${esc(it.code||"")}</div><div class="muted" style="font-size:11px">${Math.round(+it.cantidad||0)} u</div></div>
+      <select class="field emb-arr-bod" data-iid="${it.id}" style="height:34px;width:auto;max-width:140px">
+        <option value="bogota" ${it.bodega_destino!=="yopal"?"selected":""}>🏢 Bogotá</option>
+        <option value="yopal" ${it.bodega_destino==="yopal"?"selected":""}>🏬 Yopal</option>
+      </select>
+    </div>`;
+  }).join("");
+  openModal(`<h3>📥 Confirmar arribo a bodega</h3>
+    <div class="sub">Confirma a qué bodega entra cada producto. Al aceptar: se descuenta de «En camino», se <b>suma el stock</b> a la bodega elegida y se actualiza el costo del producto (promedio ponderado).${e.mj_unidades>0?` <b>${e.mj_unidades} u</b> entran a la liquidación de María José.`:""}</div>
+    <div style="display:flex;align-items:center;gap:8px;margin:6px 0 10px">
+      <span class="cap">Aplicar a todas:</span>
+      <button class="btn-ghost" style="padding:5px 10px" onclick="embArrSetAll('bogota')">🏢 Bogotá</button>
+      <button class="btn-ghost" style="padding:5px 10px" onclick="embArrSetAll('yopal')">🏬 Yopal</button>
+    </div>
+    <div style="max-height:300px;overflow:auto">${filas||'<div class="muted">Sin productos.</div>'}</div>
+    <div id="embArrErr" class="red" style="font-size:12px;margin-top:8px"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:14px">
+      <button class="btn-ghost" onclick="closeModal()">Cancelar</button>
+      <button class="btn-acc" onclick="embArribarConfirm(${id})">✓ Confirmar arribo</button>
+    </div>`);
+}
+function embArrSetAll(bod){ document.querySelectorAll("select.emb-arr-bod").forEach(s=>s.value=bod); }
+async function embArribarConfirm(id){
+  const bodegas={};
+  document.querySelectorAll("select.emb-arr-bod").forEach(s=>{ bodegas[s.getAttribute("data-iid")]=s.value; });
+  const err=document.getElementById("embArrErr"); if(err)err.textContent="";
   try{
-    const r=await api("/embarques/"+id+"/arribar",{method:"POST"});
-    renderEmbarques();
-  }catch(e){ alert(e.message); }
+    await api("/embarques/"+id+"/arribar",{method:"POST",body:JSON.stringify({bodegas})});
+    closeModal(); renderEmbarques();
+  }catch(e){ if(err)err.textContent=e.message; else alert(e.message); }
 }
 async function embDelete(id){
   const e=EMB.find(x=>x.id===id); if(!e) return;
