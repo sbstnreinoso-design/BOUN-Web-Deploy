@@ -76,9 +76,29 @@ create index if not exists embarque_items_prod_idx    on public.embarque_items (
 create index if not exists embarques_estado_idx       on public.embarques (estado);
 create index if not exists embarques_created_idx      on public.embarques (created_at desc);
 
+-- ── Recibos del agente (Envío DC) ────────────────────────────────────────────
+-- Cuando el agente en China (Envío DC) RECIBE el paquete, le entrega al
+-- proveedor un recibo (ENCARGOS DC CHINA): con ese recibo se reporta el paquete
+-- a Envío DC y se rastrea hasta que llega a la bodega. Aquí se guardan esos
+-- recibos (imagen o PDF) adjuntos a cada embarque. El archivo se guarda en
+-- base64 en `data` (se sirve aparte; NO se incluye en el listado para no pesar).
+create table if not exists public.embarque_recibos (
+  id           bigint generated always as identity primary key,
+  embarque_id  bigint not null references public.embarques(id) on delete cascade,
+  nombre       text,            -- nombre del archivo
+  mime         text,            -- image/jpeg, application/pdf, …
+  data         text,            -- contenido en base64
+  size_bytes   bigint not null default 0,
+  nota         text,            -- nº de recibo / referencia (ej. "0000849")
+  created_by   text,
+  created_at   timestamptz not null default now()
+);
+create index if not exists embarque_recibos_emb_idx on public.embarque_recibos (embarque_id);
+
 -- Coherente con el resto del motor: RLS deshabilitado (acceso por service/anon key).
-alter table public.embarques      disable row level security;
-alter table public.embarque_items disable row level security;
+alter table public.embarques        disable row level security;
+alter table public.embarque_items   disable row level security;
+alter table public.embarque_recibos disable row level security;
 
 -- Verificación rápida (opcional):
 --   select estado, count(*) from embarques group by estado;

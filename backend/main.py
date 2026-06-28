@@ -5566,10 +5566,17 @@ def _emb_with_items():
     """Lee todos los embarques con sus líneas y totales calculados."""
     embs = db._sb_get("embarques?select=*&order=created_at.desc") or []
     its = db._sb_get("embarque_items?select=*&order=id.asc") or []
+    # Recibos: solo metadatos (NO el base64 'data', para no pesar el listado).
+    recs = db._sb_get("embarque_recibos?select=id,embarque_id,nombre,mime,"
+                      "size_bytes,nota,created_at&order=id.asc") or []
     by_emb = {}
     for it in its:
         by_emb.setdefault(it.get("embarque_id"), []).append(it)
+    rec_by_emb = {}
+    for r in recs:
+        rec_by_emb.setdefault(r.get("embarque_id"), []).append(r)
     for e in embs:
+        e["recibos"] = rec_by_emb.get(e.get("id"), [])
         items = by_emb.get(e.get("id"), [])
         e["items"] = items
         e["n_items"] = len(items)
@@ -5818,6 +5825,79 @@ def embarques_arribar(eid: int, user: dict = Depends(_current_user)):
     except Exception:
         pass
     return {"ok": True, "id": eid, "lineas_aplicadas": aplicados}
+
+
+# ── Recibos del agente (Envío DC) adjuntos a un embarque ─────────────────────
+class EmbReciboIn(BaseModel):
+    nombre: str = "recibo"
+    mime: str = "image/jpeg"
+    data: str = ""              # base64 (sin el prefijo data:...;base64,)
+    nota: Optional[str] = ""
+
+
+@app.post("/api/embarques/{eid}/recibo")
+def embarque_recibo_add(eid: int, body: EmbReciboIn,
+                        user: dict = Depends(_current_user)):
+    """Adjunta un recibo (imagen/PDF) a un embarque. El archivo llega en base64;
+    se guarda para reportarlo a Envío DC y rastrear la mercancía."""
+    rows = db._sb_get("embarques?id=eq.%d&select=id" % eid) or []
+    if not rows:
+        raise HTTPException(404, "Embarque no encontrado")
+    raw = (body.data or "")
+    if "," in raw[:64] and raw[:5] == "data:":   # por si llega el dataURL entero
+        raw = raw.split(",", 1)[1]
+    if not raw:
+        raise HTTPException(400, "Archivo vacío")
+    # Tamaño aproximado del binario a partir del base64.
+    size = int(len(raw) * 3 / 4)
+    if size > 9 * 1024 * 1024:
+        raise HTTPException(400, "El archivo supera 9 MB; sube uno más liviano.")
+    r = db._sb_post("embarque_recibos", {
+        "embarque_id": eid,
+        "nombre": (body.nombre or "recibo")[:200],
+        "mime": (body.mime or "application/octet-stream")[:80],
+        "data": raw,
+        "size_bytes": size,
+        "nota": (body.nota or "")[:200],
+        "created_by": user.get("username", ""),
+    })
+    if not r or not r.get("id"):
+        raise HTTPException(400, "No se pudo guardar el recibo")
+    return {"ok": True, "id": r["id"], "size_bytes": size}
+
+
+@app.get("/api/embarques/recibo/{rid}")
+def embarque_recibo_get(rid: int, authorization: Optional[str] = Header(None),
+                        k: str = ""):
+    """Devuelve el archivo del recibo. Auth por sesión (Bearer) o ?k=token."""
+    token = os.environ.get("BOUN_EXPORT_TOKEN", "")
+    authed = bool(token and k == token)
+    if not authed:
+        try:
+            authed = bool(_current_user(authorization))
+        except Exception:
+            authed = False
+    if not authed:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    rows = db._sb_get("embarque_recibos?id=eq.%d&select=nombre,mime,data" % rid) or []
+    if not rows:
+        raise HTTPException(404, "Recibo no encontrado")
+    rec = rows[0]
+    try:
+        blob = base64.b64decode(rec.get("data") or "")
+    except Exception:
+        raise HTTPException(500, "Recibo corrupto")
+    headers = {"Content-Disposition": 'inline; filename="%s"'
+               % (rec.get("nombre") or "recibo")}
+    return Response(content=blob,
+                    media_type=rec.get("mime") or "application/octet-stream",
+                    headers=headers)
+
+
+@app.delete("/api/embarques/recibo/{rid}")
+def embarque_recibo_delete(rid: int, user: dict = Depends(_current_user)):
+    db._sb_delete("embarque_recibos", "id=eq.%d" % rid)
+    return {"ok": True}
 
 
 # ── Shopify OAuth (captura del Admin API token de cada tienda) ───────────────

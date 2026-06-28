@@ -2681,6 +2681,19 @@ function embToggle(id){
          <button class="btn-acc" onclick="embArribar(${id})">📥 Marcar arribó</button>
        </div>`
     : `<div class="muted" style="font-size:12px;margin-top:12px;text-align:right">${e.estado==="arribado"?`✓ Arribó el ${embFmtDate(e.arribado_at)} · stock y costos aplicados al inventario.`:"Embarque cancelado."}</div>`;
+  const recs=e.recibos||[];
+  const recibosHtml=`<div style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+      <div style="font-weight:700;font-size:12.5px">📄 Recibos Envío DC <span class="muted" style="font-weight:400">· para reportar y rastrear el paquete</span></div>
+      <button class="btn-ghost" style="padding:6px 12px" onclick="embReciboPick(${id})">⬆ Subir recibo</button>
+    </div>
+    ${recs.length? recs.map(r=>`<div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border)">
+        <span style="font-size:18px">${(r.mime||'').includes('pdf')?'📕':'🖼'}</span>
+        <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(r.nombre||'recibo')}</div><div class="muted" style="font-size:11px">${r.nota?('Nº '+esc(r.nota)+' · '):''}${Math.round((+r.size_bytes||0)/1024)} KB · ${embFmtDate(r.created_at)}</div></div>
+        <button class="btn-ghost" style="padding:5px 10px" onclick="embReciboView(${r.id})">Ver</button>
+        <button class="btn-danger" style="padding:5px 9px" title="Eliminar recibo" onclick="embReciboDelete(${r.id})">✕</button>
+      </div>`).join('') : `<div class="muted" style="font-size:12px">Aún sin recibos. Sube el recibo de Envío DC (imagen o PDF) para tener la prueba de recepción y dar seguimiento.</div>`}
+  </div>`;
   el.innerHTML=`<div style="padding:6px 16px 16px">
     <div class="muted" style="font-size:12px;display:flex;gap:16px;flex-wrap:wrap;margin:6px 0 10px">
       <span>🛒 Compra: <b style="color:var(--text)">${embFmtDate(e.fecha_compra)}</b></span>
@@ -2690,8 +2703,44 @@ function embToggle(id){
     </div>
     ${e.notas?`<div class="note" style="font-size:12px;margin-bottom:8px">📝 ${esc(e.notas)}</div>`:""}
     ${rows}
+    ${recibosHtml}
     ${acciones}
   </div>`;
+}
+// ── Recibos Envío DC (subir / ver / eliminar) ───────────────────────────────
+function embReciboPick(eid){
+  const inp=document.createElement("input");
+  inp.type="file"; inp.accept="image/*,application/pdf";
+  inp.onchange=async()=>{
+    const f=inp.files&&inp.files[0]; if(!f) return;
+    if(f.size>9*1024*1024){ alert("El archivo supera 9 MB; sube uno más liviano."); return; }
+    const nota=(prompt("Nº de recibo o referencia (opcional):","")||"").trim();
+    const reader=new FileReader();
+    reader.onload=async()=>{
+      const data=String(reader.result||"").split(",")[1]||"";
+      try{
+        await api("/embarques/"+eid+"/recibo",{method:"POST",
+          body:JSON.stringify({nombre:f.name,mime:f.type||"application/octet-stream",data,nota})});
+        renderEmbarques();
+      }catch(e){ alert("No se pudo subir el recibo: "+e.message); }
+    };
+    reader.readAsDataURL(f);
+  };
+  inp.click();
+}
+async function embReciboView(rid){
+  try{
+    const r=await fetch("/api/embarques/recibo/"+rid,
+      {headers: TOKEN?{"Authorization":"Bearer "+TOKEN}:{}});
+    if(!r.ok) throw new Error("No se pudo abrir el recibo");
+    const b=await r.blob(); const u=URL.createObjectURL(b);
+    window.open(u,"_blank"); setTimeout(()=>URL.revokeObjectURL(u),60000);
+  }catch(e){ alert(e.message); }
+}
+async function embReciboDelete(rid){
+  if(!confirm("¿Eliminar este recibo?")) return;
+  try{ await api("/embarques/recibo/"+rid,{method:"DELETE"}); renderEmbarques(); }
+  catch(e){ alert(e.message); }
 }
 
 /* ── Crear / editar embarque ──────────────────────────────────────────────── */
