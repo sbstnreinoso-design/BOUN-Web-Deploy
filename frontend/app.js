@@ -142,9 +142,22 @@ async function refreshDenunciasBadge(){
 async function refreshEmbarquesBadge(){
   try{
     const r=await api("/embarques/count");
+    const states=r.states||{};
     const b=document.getElementById("badge-embarques");
-    if(b) b.textContent=r.count>0?r.count:"", b.style.display=r.count>0?"inline-block":"none";
+    let seen=null; try{ seen=JSON.parse(localStorage.getItem("emb_seen")||"null"); }catch(e){}
+    // Primera vez: marca todo como visto, sin notificar.
+    if(!seen){ localStorage.setItem("emb_seen",JSON.stringify(states));
+      if(b){ b.textContent=""; b.style.display="none"; } return; }
+    // Cuenta embarques con cambio de estado (o nuevos) desde la última vista.
+    let n=0; for(const id in states){ if(seen[id]!==states[id]) n++; }
+    if(b){ b.textContent=n>0?n:""; b.style.display=n>0?"inline-block":"none"; }
   }catch(e){}
+}
+// Marca el estado actual de los embarques como "visto" (limpia la notificación).
+function embMarkSeen(){
+  const st={}; (EMB||[]).forEach(e=>st[e.id]=e.estado);
+  localStorage.setItem("emb_seen",JSON.stringify(st));
+  const b=document.getElementById("badge-embarques"); if(b){ b.textContent=""; b.style.display="none"; }
 }
 
 
@@ -2619,7 +2632,7 @@ async function renderEmbarques(){
     await embLoadInv();
     const r=await api("/embarques");
     EMB=r.embarques||[];
-    refreshEmbarquesBadge();
+    embMarkSeen();              // abrir la sección limpia la notificación
     embDrawKpis(); embDrawPagos(); embDrawList();
   }catch(e){ document.getElementById("embList").innerHTML=`<div class="red">${esc(e.message)}</div>`; }
 }

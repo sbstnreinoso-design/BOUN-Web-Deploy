@@ -5669,12 +5669,16 @@ def embarques_list(user: dict = Depends(_current_user)):
 
 @app.get("/api/embarques/count")
 def embarques_count(user: dict = Depends(_current_user)):
+    """Devuelve el estado de cada embarque (id→estado) para que el badge del
+    menú sea una NOTIFICACIÓN de cambios (solo aparece cuando un estado cambió
+    desde la última vez que se abrió la sección), no un contador permanente."""
     try:
-        rows = db._sb_get("embarques?estado=in.(%s)&select=id"
-                          % ",".join(_EMB_TRANSIT)) or []
-        return {"count": len(rows)}
+        rows = db._sb_get("embarques?select=id,estado") or []
+        states = {str(r.get("id")): r.get("estado") for r in rows}
+        transit = sum(1 for r in rows if r.get("estado") in _EMB_TRANSIT)
+        return {"count": transit, "states": states}
     except Exception:
-        return {"count": 0}
+        return {"count": 0, "states": {}}
 
 
 @app.post("/api/embarques")
