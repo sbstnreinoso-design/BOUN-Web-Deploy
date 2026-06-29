@@ -2759,7 +2759,7 @@ function embToggle(id){
     return `<div style="display:flex;gap:12px;align-items:center;padding:10px 0;border-bottom:1px solid var(--border)">
       ${foto}
       <div style="flex:1;min-width:160px">
-        <div style="font-weight:700;font-size:13px">${esc(it.code||"—")} <span class="muted" style="font-weight:400">· ${esc(it.name||"")}</span>${mj}</div>
+        <div style="font-weight:700;font-size:13px">${it.recibo?`<span title="Nº de recibo Envío DC" style="font-size:10px;font-weight:800;color:#0A0A0A;background:#E0A23C;padding:1px 7px;border-radius:10px;margin-right:6px">🧾 ${esc(it.recibo)}</span>`:""}${esc(it.code||"—")} <span class="muted" style="font-weight:400">· ${esc(it.name||"")}</span>${mj}</div>
         <div class="muted" style="font-size:11.5px;margin-top:3px">→ ${it.bodega_destino==="yopal"?"Yopal":"Bogotá"} · ${Math.round(+it.cantidad||0)} u · CBM ${Math.round(calc.cbm*1000)/1000} m³${(+it.peso>0)?` · ${(+it.peso)}kg`:""}</div>
       </div>
       <div style="text-align:right;min-width:150px">
@@ -2877,7 +2877,7 @@ async function embReciboDelete(rid){
 }
 
 /* ── Crear / editar embarque ──────────────────────────────────────────────── */
-function embBlankItem(){ return {product_id:null,code:"",name:"",thumb:"",cantidad:"",costo_unit_china:"",bodega_destino:"bogota",caja_largo:"",caja_ancho:"",caja_alto:"",cantidad_cajas:"1",peso:"",cbm:"",valor_flete:"",owner_sel:"",mj_cantidad:"",mj_anchor:_isoDay(0)}; }
+function embBlankItem(){ return {product_id:null,code:"",name:"",thumb:"",cantidad:"",costo_unit_china:"",bodega_destino:"bogota",caja_largo:"",caja_ancho:"",caja_alto:"",cantidad_cajas:"1",peso:"",cbm:"",valor_flete:"",owner_sel:"",mj_cantidad:"",mj_anchor:_isoDay(0),recibo:""}; }
 function newEmbarque(){
   EMB_EDIT_ID=null; EMB_SKU_OPEN=-1;
   EMB_DRAFT={nombre:"",transportadora:"Envios DC",usa_cbm:true,cbm_rate:EMB_DEFAULT_RATE,fecha_compra:_isoDay(0),fecha_entrega_agente:"",eta:"",estado:"bodega_agente",contenedor:"",total_cajas:"",notas:"",items:[embBlankItem()]};
@@ -2897,6 +2897,7 @@ function editEmbarque(id){
       cantidad:+it.cantidad||"",costo_unit_china:+it.costo_unit_china||"",bodega_destino:it.bodega_destino||"bogota",
       caja_largo:+it.caja_largo||"",caja_ancho:+it.caja_ancho||"",caja_alto:+it.caja_alto||"",cantidad_cajas:+it.cantidad_cajas||"1",
       peso:+it.peso||"",cbm:+it.cbm||"",valor_flete:+it.valor_flete||"",mj_cantidad:+it.mj_cantidad||"",mj_anchor:(it.mj_anchor||_isoDay(0)).slice(0,10),
+      recibo:it.recibo||"",
       owner_sel:((c,m,pr)=>m>0?(m>=c?"mj":"mixto"):((pr&&pr.owner==="MARIA_JOSE")?"mj":"boun"))(+it.cantidad||0,+it.mj_cantidad||0,(EMB_INV||[]).find(p=>p.id===it.product_id))}))
   };
   if(!EMB_DRAFT.items.length) EMB_DRAFT.items=[embBlankItem()];
@@ -3001,6 +3002,7 @@ function embItemHtml(it,i,usaCbm){
           <option value="mixto" ${it.owner_sel==="mixto"?"selected":""}>↔ Mixto (repartido)</option>
         </select></div>
       ${it.owner_sel==="mixto"?`<div class="fcol2"><label>Unidades de María José *</label><input class="field" value="${(it.mj_cantidad!==''&&+it.mj_cantidad>0)?Math.round(embNum(it.mj_cantidad)):''}" placeholder="ej. 10" oninput="embItem(${i},'mj_cantidad',this.value)"></div>`:""}
+      <div class="fcol2"><label>Nº de recibo Envío DC</label><input class="field" value="${esc(it.recibo||'')}" placeholder="ej. 0000847" oninput="embItem(${i},'recibo',this.value)"></div>
     </div>
   </div>`;
 }
@@ -3113,7 +3115,7 @@ async function embSave(){
       caja_largo:embNum(it.caja_largo), caja_ancho:embNum(it.caja_ancho), caja_alto:embNum(it.caja_alto),
       cantidad_cajas:embNum(it.cantidad_cajas), peso:embNum(it.peso),
       cbm:embNum(it.cbm), valor_flete:embNum(it.valor_flete),
-      mj_cantidad:(it._mjval||0), mj_anchor:it.mj_anchor||null
+      mj_cantidad:(it._mjval||0), mj_anchor:it.mj_anchor||null, recibo:it.recibo||""
     };})
   };
   try{

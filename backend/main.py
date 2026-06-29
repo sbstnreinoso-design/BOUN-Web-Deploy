@@ -5538,6 +5538,7 @@ def _emb_item_row(it: dict, embarque_id: int, usa_cbm: bool,
         "cbm": calc["cbm"], "valor_flete": calc["valor_flete"],
         "mj_cantidad": float(it.get("mj_cantidad") or 0),
         "mj_anchor": _emb_dt(it.get("mj_anchor")),
+        "recibo": (it.get("recibo") or "").strip() or None,
     }
 
 
@@ -5617,6 +5618,7 @@ class EmbItemIn(BaseModel):
     valor_flete: float = 0
     mj_cantidad: float = 0
     mj_anchor: Optional[str] = None
+    recibo: Optional[str] = ""
 
 
 # Estados en tránsito (la mercancía aún no llega a bodega): mantienen las

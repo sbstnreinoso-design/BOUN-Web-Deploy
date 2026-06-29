@@ -67,6 +67,7 @@ create table if not exists public.embarque_items (
   -- María José (parte de la línea que es de ella)
   mj_cantidad       numeric not null default 0,
   mj_anchor         date,
+  recibo            text,            -- Nº de recibo Envío DC al que corresponde la línea
 
   arribado          boolean not null default false,
   created_at        timestamptz not null default now()
@@ -99,6 +100,7 @@ create index if not exists embarque_recibos_emb_idx on public.embarque_recibos (
 -- Migración para tablas ya creadas: nº de contenedor + total de cajas/bultos.
 alter table public.embarques add column if not exists contenedor  text;
 alter table public.embarques add column if not exists total_cajas numeric;
+alter table public.embarque_items add column if not exists recibo text;
 
 -- Coherente con el resto del motor: RLS deshabilitado (acceso por service/anon key).
 alter table public.embarques        disable row level security;
