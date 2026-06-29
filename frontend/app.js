@@ -2695,7 +2695,16 @@ function embDrawPagos(){
 function embDrawList(){
   const el=document.getElementById("embList");
   if(!EMB.length){ el.innerHTML=`<div class="empty" style="text-align:center;padding:48px;color:var(--muted)"><div style="font-size:40px">🚢</div><div style="margin-top:8px;font-size:15px">Aún no hay embarques.</div><div style="margin-top:4px;font-size:13px">Crea el primero con «＋ Nuevo embarque».</div></div>`; return; }
-  el.innerHTML=EMB.map(embCard).join("");
+  // Prioriza los que están más cerca de llegar: en tránsito primero, luego por
+  // ETA ascendente (los sin fecha o nuevos quedan abajo), y arribados al final.
+  const order=EMB.slice().sort((a,b)=>{
+    const ta=embIsTransit(a.estado)?0:1, tb=embIsTransit(b.estado)?0:1;
+    if(ta!==tb) return ta-tb;
+    const ea=(a.eta||"9999-99-99"), eb=(b.eta||"9999-99-99");
+    if(ea!==eb) return ea<eb?-1:1;
+    return String(b.created_at||"").localeCompare(String(a.created_at||""));
+  });
+  el.innerHTML=order.map(embCard).join("");
 }
 
 function embCard(e){
@@ -2791,7 +2800,7 @@ function embToggle(id){
         return `<div style="width:150px;border:1px solid var(--border);border-radius:12px;padding:10px;background:var(--surf)">
           ${prev}
           <div style="font-size:12px;font-weight:600;margin-top:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(r.nombre||'recibo')}</div>
-          <div class="muted" style="font-size:10.5px;margin-top:2px">${r.nota?('Nº '+esc(r.nota)+' · '):''}${Math.round((+r.size_bytes||0)/1024)} KB</div>
+          <div class="muted" style="font-size:10.5px;margin-top:2px">${r.nota?('📦 '+esc(r.nota)):(Math.round((+r.size_bytes||0)/1024)+' KB')}</div>
           <div class="muted" style="font-size:10.5px">${embFmtDate(r.created_at)}</div>
           <div style="display:flex;gap:6px;margin-top:8px">
             <button class="btn-ghost" style="flex:1;padding:5px 0;font-size:12px" onclick="embReciboView(${r.id})">Ver</button>
@@ -2838,7 +2847,7 @@ function embReciboPick(eid){
   inp.onchange=async()=>{
     const f=inp.files&&inp.files[0]; if(!f) return;
     if(f.size>9*1024*1024){ alert("El archivo supera 9 MB; sube uno más liviano."); return; }
-    const nota=(prompt("Nº de recibo o referencia (opcional):","")||"").trim();
+    const nota=(prompt("¿A qué mercancía corresponde este recibo? (ej. Guantes, Protectores) — puedes incluir el Nº:","")||"").trim();
     const reader=new FileReader();
     reader.onload=async()=>{
       const data=String(reader.result||"").split(",")[1]||"";
