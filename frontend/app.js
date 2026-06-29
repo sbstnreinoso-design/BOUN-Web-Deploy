@@ -2550,6 +2550,10 @@ const CB_FALLBACK_SKILLS=[
    ════════════════════════════════════════════════════════════════════════════ */
 const EMB_BLUE="#2DC6FF";
 const EMB_DEFAULT_RATE=1700000;
+// Color por Nº de recibo (mismo recibo = mismo color, para identificar por color).
+const EMB_REC_COLORS=["#E0A23C","#2DC6FF","#3FCB82","#C58CE6","#E68CA8","#F2C14E","#7FB3E0","#FF8A1F"];
+function embReciboColor(s){ s=String(s||"").trim(); if(!s) return "#9B9A96"; let h=0; for(let i=0;i<s.length;i++) h=(h*31+s.charCodeAt(i))>>>0; return EMB_REC_COLORS[h%EMB_REC_COLORS.length]; }
+function embReciboNum(s){ const m=String(s||"").match(/(\d{4,})/); return m?m[1]:String(s||""); }
 let EMB=[];                 // embarques cargados
 let EMB_INV=[];             // productos del inventario (para el selector de SKU)
 let EMB_DRAFT=null;         // borrador del formulario crear/editar
@@ -2759,7 +2763,7 @@ function embToggle(id){
     return `<div style="display:flex;gap:12px;align-items:center;padding:10px 0;border-bottom:1px solid var(--border)">
       ${foto}
       <div style="flex:1;min-width:160px">
-        <div style="font-weight:700;font-size:13px">${it.recibo?`<span title="Nº de recibo Envío DC" style="font-size:10px;font-weight:800;color:#0A0A0A;background:#E0A23C;padding:1px 7px;border-radius:10px;margin-right:6px">🧾 ${esc(it.recibo)}</span>`:""}${esc(it.code||"—")} <span class="muted" style="font-weight:400">· ${esc(it.name||"")}</span>${mj}</div>
+        <div style="font-weight:700;font-size:13px">${it.recibo?`<span title="Nº de recibo Envío DC" style="font-size:10px;font-weight:800;color:#0A0A0A;background:${embReciboColor(it.recibo)};padding:1px 7px;border-radius:10px;margin-right:6px">🧾 ${esc(it.recibo)}</span>`:""}${esc(it.code||"—")} <span class="muted" style="font-weight:400">· ${esc(it.name||"")}</span>${mj}</div>
         <div class="muted" style="font-size:11.5px;margin-top:3px">→ ${it.bodega_destino==="yopal"?"Yopal":"Bogotá"} · ${Math.round(+it.cantidad||0)} u · CBM ${Math.round(calc.cbm*1000)/1000} m³${(+it.peso>0)?` · ${(+it.peso)}kg`:""}</div>
       </div>
       <div style="text-align:right;min-width:150px">
@@ -2797,7 +2801,9 @@ function embToggle(id){
         const prev = isImg
           ? `<img class="emb-recthumb" data-rid="${r.id}" onclick="embReciboView(${r.id})" title="Ver recibo ampliado" style="width:88px;height:88px;object-fit:cover;border-radius:10px;border:1px solid var(--border);background:var(--surf);cursor:pointer;display:block">`
           : `<div onclick="embReciboView(${r.id})" title="Abrir recibo" style="width:88px;height:88px;border-radius:10px;border:1px solid var(--border);background:var(--surf);display:flex;align-items:center;justify-content:center;font-size:34px;cursor:pointer">📕</div>`;
-        return `<div style="width:150px;border:1px solid var(--border);border-radius:12px;padding:10px;background:var(--surf)">
+        const rc=embReciboColor(embReciboNum(r.nota||r.nombre));
+        return `<div style="width:150px;border:1px solid var(--border);border-top:4px solid ${rc};border-radius:12px;padding:10px;background:var(--surf)">
+          <div style="display:inline-block;font-size:10px;font-weight:800;color:#0A0A0A;background:${rc};padding:1px 7px;border-radius:10px;margin-bottom:6px">🧾 ${esc(embReciboNum(r.nota||r.nombre))}</div>
           ${prev}
           <div style="font-size:12px;font-weight:600;margin-top:7px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(r.nombre||'recibo')}</div>
           <div class="muted" style="font-size:10.5px;margin-top:2px">${r.nota?('📦 '+esc(r.nota)):(Math.round((+r.size_bytes||0)/1024)+' KB')}</div>

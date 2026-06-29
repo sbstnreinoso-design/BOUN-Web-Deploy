@@ -127,7 +127,7 @@ tr:hover td{background:var(--hov)}
 
 /* ── Modal ─────────────────────────────────────────────────────────── */
 .modal-bg{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);
-  align-items:center;justify-content:center;z-index:50}
+  align-items:center;justify-content:center;z-index:100}
 .modal-bg.open{display:flex}
 .modal{background:var(--surf);border:1px solid var(--border);border-radius:14px;
   padding:26px 24px;width:440px;max-height:86vh;overflow-y:auto}
