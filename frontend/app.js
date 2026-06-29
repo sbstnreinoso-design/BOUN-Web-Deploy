@@ -2702,7 +2702,7 @@ function embDrawList(){
     if(ta!==tb) return ta-tb;
     const ea=(a.eta||"9999-99-99"), eb=(b.eta||"9999-99-99");
     if(ea!==eb) return ea<eb?-1:1;
-    return String(b.created_at||"").localeCompare(String(a.created_at||""));
+    return String(a.created_at||"").localeCompare(String(b.created_at||"")); // nuevos abajo
   });
   el.innerHTML=order.map(embCard).join("");
 }
