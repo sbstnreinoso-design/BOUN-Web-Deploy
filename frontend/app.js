@@ -2582,13 +2582,10 @@ function embStepper(st){
 // producto marcado como de María José cuenta toda su línea como de ella).
 function embLineOwner(it){
   const cant=Math.round(+it.cantidad||0);
-  const mjField=Math.round(+it.mj_cantidad||0);
-  const prod=(EMB_INV||[]).find(p=>p.id===it.product_id);
-  const ownerMJ=!!(prod&&prod.owner==="MARIA_JOSE");
-  let mj=0;
-  if(mjField>0) mj=Math.min(mjField,cant);
-  else if(ownerMJ) mj=cant;
-  return {cant, mj, boun:Math.max(cant-mj,0), ownerMJ};
+  // El reparto depende SOLO de lo declarado en el envío (mj_cantidad). Si no
+  // hay unidades de María José marcadas, la línea es de BOUN.
+  const mj=Math.min(Math.max(Math.round(+it.mj_cantidad||0),0),cant);
+  return {cant, mj, boun:Math.max(cant-mj,0)};
 }
 function embOwnerTag(it){
   const o=embLineOwner(it);
@@ -2616,13 +2613,14 @@ async function renderEmbarques(){
       <button class="btn-ghost" onclick="renderEmbarques()">↻ Actualizar</button>
       <button class="btn-acc" onclick="newEmbarque()">＋ Nuevo embarque</button></div></div>
     <div id="embKpis" class="kpis"></div>
+    <div id="embPagos"></div>
     <div id="embList"><div class="loading"><span class="spinner"></span> Cargando embarques…</div></div>`;
   try{
     await embLoadInv();
     const r=await api("/embarques");
     EMB=r.embarques||[];
     refreshEmbarquesBadge();
-    embDrawKpis(); embDrawList();
+    embDrawKpis(); embDrawPagos(); embDrawList();
   }catch(e){ document.getElementById("embList").innerHTML=`<div class="red">${esc(e.message)}</div>`; }
 }
 
@@ -2655,6 +2653,32 @@ function embDrawKpis(){
     `<div class="kpi"><div class="cap">${c}</div><div class="val ${cl}">${vv}</div></div>`).join("");
 }
 
+// Panel de pagos de transporte (flete) que se le deben a Envío DC, por envío,
+// asociado a su fecha tentativa de entrega (ETA).
+function embDrawPagos(){
+  const el=document.getElementById("embPagos"); if(!el) return;
+  const list=EMB.filter(e=>(e.transportadora||"").toLowerCase().includes("envios dc")
+                         && embIsTransit(e.estado) && (+e.valor_flete>0));
+  if(!list.length){ el.innerHTML=""; return; }
+  list.sort((a,b)=>String(a.eta||"9999-99-99").localeCompare(String(b.eta||"9999-99-99")));
+  const total=list.reduce((s,e)=>s+(+e.valor_flete||0),0);
+  const rows=list.map(e=>{
+    const d=embDaysToEta(e.eta);
+    const eta=e.eta?`${embFmtDate(e.eta)}${d!=null?(d<0?` · vencido ${Math.abs(d)}d`:d===0?` · hoy`:` · faltan ${d}d`):""}`:"sin fecha estimada";
+    const m=embStMeta(e.estado);
+    return `<div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+      <div style="flex:1;min-width:0"><div style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(e.nombre||("Embarque #"+e.id))}</div><div class="muted" style="font-size:11px">${e.contenedor?esc(e.contenedor)+" · ":""}${m.ico} ${m.short}</div></div>
+      <div style="text-align:right;min-width:150px"><div class="muted" style="font-size:11px">🗓 entrega aprox. ${eta}</div><div style="font-weight:800;color:#E0A23C">${cop(e.valor_flete)}</div></div>
+    </div>`;
+  }).join("");
+  el.innerHTML=`<div class="card" style="padding:14px 16px;margin-bottom:12px;border-left:4px solid #E0A23C">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:8px">
+      <div style="font-weight:800;font-size:13.5px">💵 Pagos de transporte a Envío DC</div>
+      <div style="font-size:12.5px" class="muted">Total a pagar: <b style="color:#E0A23C;font-size:14px">${cop(total)}</b></div>
+    </div>
+    ${rows}
+  </div>`;
+}
 function embDrawList(){
   const el=document.getElementById("embList");
   if(!EMB.length){ el.innerHTML=`<div class="empty" style="text-align:center;padding:48px;color:var(--muted)"><div style="font-size:40px">🚢</div><div style="margin-top:8px;font-size:15px">Aún no hay embarques.</div><div style="margin-top:4px;font-size:13px">Crea el primero con «＋ Nuevo embarque».</div></div>`; return; }

@@ -5729,6 +5729,16 @@ def embarques_update(eid: int, data: EmbarquePatchIn,
         # Cambio de etapa de tránsito (no toca stock). 'arribado' va por
         # /arribar y 'cancelado' por DELETE.
         head["estado"] = data.estado
+        # ETA automática: al pasar a "navegando" (en_camino) con Envío DC, si no
+        # hay fecha de arribo, se estima en +2 meses (≈60 días).
+        if (data.estado == "en_camino" and emb.get("estado") != "en_camino"):
+            trans = (head.get("transportadora") or emb.get("transportadora")
+                     or "").lower()
+            cur_eta = head.get("eta", emb.get("eta"))
+            if "envios dc" in trans and not cur_eta:
+                from datetime import timedelta as _td
+                head["eta"] = (datetime.now(timezone.utc).date()
+                               + _td(days=60)).isoformat()
     if data.usa_cbm is not None:
         head["usa_cbm"] = bool(data.usa_cbm)
     if data.cbm_rate is not None:
