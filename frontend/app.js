@@ -2290,11 +2290,18 @@ async function renderCollaborators(){
 }
 async function loadCols(){
   try{ const us=await api("/users");
+    const admins=us.filter(x=>x.role==="admin").length;
     document.getElementById("colList").innerHTML=us.map(u=>{
       const adm=u.role==="admin";
-      return `<div class="inv-card" style="padding:13px 16px;display:flex;align-items:center;gap:12px">
-        <div style="flex:1"><b>${esc(u.username)}</b>${u.username===USER.username?' · tú':''}
-          <div style="font-size:11px;color:${u.active?'var(--green)':'var(--red)'}">${adm?"Administrador":"Colaborador"}${u.active?"":" · desactivado"}</div></div>
+      // Quitar admin: permitido salvo que sea el último administrador.
+      const canDemote=adm&&admins>1;
+      const roleBtn=adm
+        ? (canDemote?`<button class="btn-ghost" title="Devolver a colaborador" onclick="setRole('${esc(u.username)}','colaborador')">Quitar admin</button>`:"")
+        : `<button class="btn-ghost" style="color:var(--acc);border-color:var(--acc)" title="Dar acceso total (incluye crear combos)" onclick="setRole('${esc(u.username)}','admin')">★ Hacer admin</button>`;
+      return `<div class="inv-card" style="padding:13px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <div style="flex:1;min-width:160px"><b>${esc(u.username)}</b>${u.username===USER.username?' · tú':''}
+          <div style="font-size:11px;color:${u.active?'var(--green)':'var(--red)'}">${adm?"★ Administrador":"Colaborador"}${u.active?"":" · desactivado"}</div></div>
+        ${roleBtn}
         ${adm?"":`
           <button class="btn-ghost" onclick="resetCol('${esc(u.username)}')">Restablecer</button>
           <button class="btn-ghost" onclick="toggleCol('${esc(u.username)}',${!u.active})">${u.active?"Desactivar":"Activar"}</button>
@@ -2320,6 +2327,16 @@ async function resetCol(u){ const p=prompt(`Nueva contraseña temporal para ${u}
   if(p.length<6){ alert("Mínimo 6 caracteres."); return; }
   try{ await api("/users/"+encodeURIComponent(u)+"/reset",{method:"POST",body:JSON.stringify({new_password:p})});
     alert("Contraseña restablecida. El colaborador deberá cambiarla al entrar."); }catch(e){ alert(e.message); } }
+async function setRole(u,role){
+  const toAdmin=role==="admin";
+  const msg=toAdmin
+    ? `¿Hacer ADMINISTRADOR a "${u}"?\n\nTendrá acceso total: crear/editar combos, inventario, configuración, conexiones y colaboradores.`
+    : `¿Quitar el rol de administrador a "${u}" y dejarlo como colaborador?`;
+  if(!confirm(msg))return;
+  try{ await api("/users/"+encodeURIComponent(u)+"/role",{method:"PATCH",body:JSON.stringify({role})});
+    alert(toAdmin?`"${u}" ahora es administrador. Si tiene la sesión abierta, debe recargar la página.`:`"${u}" vuelve a ser colaborador.`);
+    loadCols();
+  }catch(e){ alert(e.message); } }
 
 // ── Utils ────────────────────────────────────────────────────────────────────
 const esc=s=>(s==null?"":String(s)).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));

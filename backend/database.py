@@ -541,6 +541,19 @@ def set_user_active(username: str, active: bool) -> bool:
                      {"active": bool(active)})
 
 
+def set_user_role(username: str, role: str) -> bool:
+    """Cambia el rol de un usuario ('admin' | 'colaborador')."""
+    role = "admin" if (role or "").strip().lower() == "admin" else "colaborador"
+    return _sb_patch("users", f"username=eq.{(username or '').strip().lower()}",
+                     {"role": role})
+
+
+def count_admins() -> int:
+    """Cuántos administradores activos hay (para no quedarnos sin admin)."""
+    rows = _sb_get("users?select=username&role=eq.admin&active=eq.true")
+    return len(rows) if rows is not None else -1
+
+
 # ── INVENTARIO (productos físicos ↔ publicaciones ML) ─────────────────────────
 
 def inv_list_products() -> list:

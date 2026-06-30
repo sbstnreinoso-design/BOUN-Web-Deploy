@@ -153,6 +153,40 @@ def reset_pw(username: str, data: ResetIn, user: dict = Depends(_admin)):
     return {"ok": True}
 
 
+class RoleIn(BaseModel):
+    role: str     # 'admin' | 'colaborador'
+
+
+@app.patch("/api/users/{username}/role")
+def set_role(username: str, data: RoleIn, user: dict = Depends(_admin)):
+    """Promueve a admin o devuelve a colaborador. Un admin tiene acceso total
+    (incluye crear/editar combos). Guarda: nunca dejar la cuenta sin ningún
+    administrador activo."""
+    uname = (username or "").strip().lower()
+    new_role = "admin" if (data.role or "").strip().lower() == "admin" else "colaborador"
+
+    if new_role != "admin":
+        # Democión: no permitir quedarse sin admins.
+        n = db.count_admins()
+        if n == -1:
+            raise HTTPException(503, "Sin conexión. Intenta de nuevo.")
+        target = next((u for u in (db.list_users() or [])
+                       if u.get("username") == uname), None)
+        target_is_active_admin = bool(target and target.get("role") == "admin"
+                                      and target.get("active", True))
+        if target_is_active_admin and n <= 1:
+            raise HTTPException(400, "No puedes quitar el último administrador.")
+
+    if not db.set_user_role(uname, new_role):
+        raise HTTPException(400, "No se pudo cambiar el rol.")
+
+    # Si el usuario tiene sesiones abiertas, refleja el rol al instante.
+    for s in _SESSIONS.values():
+        if s.get("username") == uname:
+            s["role"] = new_role
+    return {"ok": True, "username": uname, "role": new_role}
+
+
 # ── Inventario ───────────────────────────────────────────────────────────────
 
 @app.get("/api/inventory")
