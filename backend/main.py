@@ -6094,6 +6094,33 @@ def shopify_status(key: str = ""):
     return JSONResponse({"configurado": out}, headers=_EXPORT_CORS)
 
 
+# ── Ofertas relámpago: plan/decisiones/metricas (aprobación móvil) ────────────
+
+@app.get("/api/relampago/{clave}")
+def relampago_get(clave: str, user: dict = Depends(_current_user)):
+    import json as _rjson
+    raw = db.get_setting("relampago_" + clave, "") or ""
+    try:
+        datos = _rjson.loads(raw) if raw else None
+    except Exception:
+        datos = None
+    return {"ok": True, "clave": clave, "datos": datos}
+
+
+@app.post("/api/relampago/{clave}")
+def relampago_set(clave: str, datos: dict, user: dict = Depends(_current_user)):
+    import json as _rjson
+    from datetime import datetime as _rdt
+    datos = dict(datos or {})
+    datos["_actualizado"] = _rdt.utcnow().isoformat() + "Z"
+    try:
+        datos["_por"] = str((user or {}).get("username") or (user or {}).get("name") or "web")
+    except Exception:
+        datos["_por"] = "web"
+    db.set_setting("relampago_" + clave, _rjson.dumps(datos, ensure_ascii=False))
+    return {"ok": True, "clave": clave}
+
+
 # ── Frontend estático ────────────────────────────────────────────────────────
 
 _FRONT = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
