@@ -1,0 +1,11 @@
+{
+  "name": "Ofertas Relámpago BOUN",
+  "short_name": "Relámpago",
+  "description": "Aprobación y métricas de ofertas relámpago BOUN en MercadoLibre",
+  "start_url": "/ofertas.html",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#252427",
+  "theme_color": "#252427",
+  "icons": [{"src": "/icon-relampago-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"}]
+}
