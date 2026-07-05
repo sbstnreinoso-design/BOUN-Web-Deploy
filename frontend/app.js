@@ -728,7 +728,7 @@ function drawAssign(filter=""){
     const m=chMeta(it.channel);
     const meta=[it.sku||it.item_id]; if(it.inventory!=null)meta.push(Math.round(+it.inventory||0)+" disp.");
     return `<div class="assign-row" style="border-left:3px solid ${m.col}">
-      <input type="checkbox" ${it._mine?"checked":""} data-iid="${esc(it.item_id)}" data-ch="${it.channel}" style="width:16px;height:16px">
+      <input type="checkbox" ${it._mine?"checked":""} data-iid="${esc(it.item_id)}" data-ch="${it.channel}" onchange="toggleAssign(this)" style="width:16px;height:16px">
       ${it.thumbnail?`<img src="${it.thumbnail}">`:`<div style="width:38px;height:38px;background:var(--bg);border-radius:6px"></div>`}
       <div class="t">${esc(it.title||it.item_id)}
         <div class="m">${chBadge(it.channel)} ${esc(meta.join(" · "))}</div></div>
@@ -738,11 +738,11 @@ function drawAssign(filter=""){
   }).join("") || `<div class="loading">Sin resultados en este canal.</div>`;
 }
 function filterAssign(){ drawAssign(val("asearch")); }
+// Persistir el check en los datos: el buscador oculta filas y el DOM no es fiable.
+function toggleAssign(cb){ const it=ASSIGN_ITEMS.find(x=>(x.channel||"mercadolibre")===cb.dataset.ch && String(x.item_id)===cb.dataset.iid); if(it) it._mine=cb.checked; }
 async function saveAssign(){
-  const sel=[...document.querySelectorAll("#alist input[type=checkbox]:checked")]
-    .map(c=>aKey(c.dataset.ch,c.dataset.iid));
-  const byKey={}; ASSIGN_ITEMS.forEach(it=>byKey[aKey(it.channel,it.item_id)]=it);
-  const items=sel.map(k=>{ const it=byKey[k]; if(!it) return null;
+  // El estado vive en it._mine (no en el DOM): el filtro oculta filas y no deben perderse vínculos.
+  const items=ASSIGN_ITEMS.filter(it=>it._mine).map(it=>{
     return [it.item_id,it.title||"",it.thumbnail||"",it.sold_total||0,it.inventory||0,it.logistic_type||"",
             it.price||0,it.net_unit||0,it.margin_pct||0,it.ad_roas||0,it.ad_acos||0,it.sold_60d||0,
             it.inventory_id||"",it.upid||"",it.channel||"mercadolibre"]; }).filter(Boolean);
