@@ -5002,6 +5002,28 @@ def _mj_sync(window_days=None) -> dict:
         except Exception:
             pass
 
+    # Limpieza de filas obsoletas: borra de mj_ventas las ventas de productos de
+    # María que YA NO están en el corte actual — órdenes canceladas o REEMITIDAS
+    # por ML (p. ej. packs que cambian de order_id al confirmarse el pago, lo que
+    # duplicaba la venta), o ventas que quedaron fuera del anchor/cupo. Sin esto,
+    # las filas viejas se quedaban pegadas e inflaban el total.
+    try:
+        keep = set((r.get("plataforma"), str(r.get("order_id") or ""),
+                    str(r.get("item_id") or "")) for r in final_rows)
+        _mj_pids = [int(p) for p in meta.keys()]
+        if _mj_pids:
+            _existing = db._sb_get(
+                "mj_ventas?product_id=in.(%s)"
+                "&select=id,plataforma,order_id,item_id"
+                % ",".join(str(p) for p in _mj_pids)) or []
+            for e in _existing:
+                key = (e.get("plataforma"), str(e.get("order_id") or ""),
+                       str(e.get("item_id") or ""))
+                if key not in keep:
+                    db._sb_delete("mj_ventas", "id=eq.%d" % int(e["id"]))
+    except Exception:
+        pass
+
     # Guardar lo consumido por producto. IMPORTANTE: cuando se agota el cupo NO
     # se cambia el dueño a BOUN. El producto sigue marcado como de María José
     # (queda "agotado", 0 restantes) por dos motivos:

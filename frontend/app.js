@@ -1004,7 +1004,7 @@ function drawMJ(){
       :`<span style="color:var(--amber);font-weight:700">○ Libera</span><div class="cap" style="font-size:9.5px;color:var(--amber)">${mjDate(vv.release_date)}</div>`;
     const ads=(vv.roas||vv.acos)?`<div class="cap" style="font-size:9.5px">ROAS ${vv.roas?vv.roas+"x":"—"} · ACOS ${vv.acos?vv.acos+"%":"—"}</div>`:"";
     return `<tr>
-      <td style="display:flex;align-items:center;gap:9px">${foto}<div><div style="font-weight:600;font-size:12px;line-height:1.25">${esc((vv.nombre||"").slice(0,46))}</div><div class="cap" style="font-size:10px">${esc(vv.codigo||"")} · ${mjDate(vv.fecha_venta)}</div></div></td>
+      <td style="display:flex;align-items:center;gap:9px">${foto}<div><div style="font-weight:600;font-size:12px;line-height:1.25">${esc((vv.nombre||"").slice(0,46))}</div><div class="cap" style="font-size:10px">${esc(vv.codigo||"")} · ${mjDate(vv.fecha_venta)}</div>${vv.order_id?`<div class="cap" style="font-size:9.5px;opacity:.75">#${esc(String(vv.order_id))}</div>`:""}</div></td>
       <td>${mjPlatChip(vv.plataforma)}</td>
       <td style="text-align:center">${vv.unidades}</td>
       <td style="text-align:right;font-weight:700">${cop(vv.precio_venta)}</td>
