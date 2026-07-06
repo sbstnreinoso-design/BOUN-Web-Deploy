@@ -191,7 +191,19 @@ def set_role(username: str, data: RoleIn, user: dict = Depends(_admin)):
 
 @app.get("/api/inventory")
 def inventory(user: dict = Depends(_current_user)):
-    return db.inv_list_products()
+    prods = db.inv_list_products()
+    # Vendidos 60d MULTICANAL: al sold60 de ML (por link) se le suman las ventas
+    # de Falabella y Shopify (que ML no incluye). Cacheado y no bloqueante.
+    try:
+        mc = _mc60_map()
+        if mc:
+            for p in prods:
+                extra = mc.get(_mc60_norm(p.get("code")), 0)
+                if extra:
+                    p["sold60_total"] = int(p.get("sold60_total") or 0) + int(extra)
+    except Exception:
+        pass
+    return prods
 
 
 class InvProductIn(BaseModel):
@@ -1469,6 +1481,100 @@ def _sold7_map(force: bool = False) -> dict:
     except Exception:
         pass
     return _SOLD7_CACHE["map"]
+
+
+# ── Vendidos 60d multicanal (Falabella + Shopify) ────────────────────────────
+# El sold60 de ML ya viene por link (ml_sold60). Falabella y Shopify NO, así
+# que el "Vendidos 60d" del inventario los ignoraba. Esto los cuenta aparte,
+# cacheado 30 min y NO bloqueante (se refresca en background; mientras tanto
+# devuelve lo último). Clave = código BOUN normalizado (espacios colapsados).
+_MC60_CACHE = {"ts": 0.0, "map": {}, "running": False}
+_MC60_TTL = 30 * 60
+_MC60_LOCK = threading.Lock()
+
+
+def _mc60_norm(c) -> str:
+    return " ".join(str(c or "").split())
+
+
+def _mc60_refresh():
+    """Calcula {codigo -> unidades 60d en Falabella + Shopify}. Best-effort."""
+    import datetime as _dt
+    m = {}
+    try:
+        co = timezone(timedelta(hours=-5))
+        to_d = _dt.datetime.now(co)
+        from_d = (to_d - timedelta(days=60)).replace(
+            hour=0, minute=0, second=0, microsecond=0)
+        # ── Falabella (por tramos de 30 días: GetOrders falla con ventanas grandes) ──
+        try:
+            import falabella as fb
+            import sync as _sync
+            if fb.is_connected():
+                orders, seen = [], set()
+                cur, step = from_d, timedelta(days=30)
+                while cur < to_d:
+                    nxt = min(cur + step, to_d)
+                    try:
+                        chunk = fb.get_orders(cur.isoformat(), nxt.isoformat())
+                    except Exception:
+                        chunk = []
+                    for o in chunk:
+                        oid = str(o.get("OrderId") or "")
+                        if oid and oid not in seen:
+                            seen.add(oid)
+                            orders.append(o)
+                    cur = nxt
+                oids = [str(o.get("OrderId")) for o in orders if o.get("OrderId")]
+                items = fb._all_order_items(oids) if oids else []
+                for it in items:
+                    code = None
+                    for cand in (it.get("Sku"), it.get("SellerSku")):
+                        c = str(cand or "").strip()
+                        if c and _sync.FAL_SKU_TO_BOUN.get(c):
+                            code = _sync.FAL_SKU_TO_BOUN.get(c)
+                            break
+                    if code:
+                        k = _mc60_norm(code)
+                        m[k] = m.get(k, 0) + 1
+        except Exception:
+            pass
+        # ── Shopify (SKU del line_item = código BOUN) ──
+        try:
+            since_iso = from_d.isoformat()
+            until_iso = to_d.isoformat()
+            for ckey, shop in _SHOPIFY_SHOPS.items():
+                tok = db.get_setting("shopify_token::%s" % shop, "")
+                if not tok:
+                    continue
+                try:
+                    orders = _shopify_orders(shop, tok, since_iso, until_iso)
+                except Exception:
+                    continue
+                for od in orders:
+                    for li in od.get("line_items", []):
+                        code = _mc60_norm(li.get("sku"))
+                        if code:
+                            m[code] = m.get(code, 0) + int(li.get("quantity") or 0)
+        except Exception:
+            pass
+        _MC60_CACHE["ts"] = time.time()
+        _MC60_CACHE["map"] = m
+    finally:
+        _MC60_CACHE["running"] = False
+
+
+def _mc60_map() -> dict:
+    """Devuelve el mapa cacheado; si está vencido dispara un refresco en
+    background (no bloquea) y devuelve lo último disponible."""
+    now = time.time()
+    stale = (now - _MC60_CACHE["ts"]) >= _MC60_TTL
+    if stale and not _MC60_CACHE["running"]:
+        with _MC60_LOCK:
+            if not _MC60_CACHE["running"]:
+                _MC60_CACHE["running"] = True
+                threading.Thread(target=_mc60_refresh, daemon=True).start()
+    return _MC60_CACHE["map"]
 
 
 _EXPORT_CORS = {
