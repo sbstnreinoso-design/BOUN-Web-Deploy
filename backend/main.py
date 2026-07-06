@@ -4690,8 +4690,22 @@ def _mj_sync(window_days=None) -> dict:
             items = fb._all_order_items(oids) if oids else []
             agg = {}
             for it in items:
-                sku = str(it.get("SellerSku") or it.get("Sku") or "")
-                info = fa_set.get(sku) or tg["codes"].get(sku.strip().upper())
+                # Falabella devuelve el SKU del vendedor unas veces en 'Sku' y
+                # otras en 'SellerSku' (y el otro campo trae el id interno de
+                # Falabella). El poller de stock y el reporte diario mapean por
+                # 'Sku'; aquí probamos AMBOS contra los links (fa_set) y los
+                # códigos para no perder ventas de María José según qué campo
+                # traiga el SKU vendedor. (Fix jul-2026: la venta del arenero
+                # KAT ASTRO no entraba porque solo se miraba 'SellerSku'.)
+                info, sku = None, ""
+                for _cand in (it.get("Sku"), it.get("SellerSku")):
+                    _c = str(_cand or "").strip()
+                    if not _c:
+                        continue
+                    info = fa_set.get(_c) or tg["codes"].get(_c.upper())
+                    if info:
+                        sku = _c
+                        break
                 if not info:
                     continue
                 oid = str(it.get("OrderId") or "")
