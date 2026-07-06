@@ -3210,6 +3210,30 @@ def falabella_find(sku: str = "", dias: int = 30,
             "n_orders_total": len(orders), "n_match": len(rows), "rows": rows}
 
 
+@app.get("/api/sync/order-trace")
+def sync_order_trace(order_id: str = "", canal: str = "",
+                     user: dict = Depends(_admin)):
+    """Diagnóstico READ-ONLY de una venta: para un OrderId (el interno) devuelve
+    su fila de `evento_venta`, todos los `movimiento_stock` y las filas de
+    `cola_bodega` asociadas. Sirve para confirmar si una venta descontó bodega
+    (busca un movimiento 'asignacion_bodega_*' o una cola 'confirmado'). No
+    escribe nada."""
+    oid = str(order_id or "").strip()
+    if not oid:
+        return {"ok": False, "error": "order_id (interno) requerido"}
+    fev = "evento_venta?order_id=eq.%s&select=*" % _q_(oid)
+    fmv = "movimiento_stock?order_id=eq.%s&select=*&order=id.asc" % _q_(oid)
+    fcb = "cola_bodega?order_id=eq.%s&select=*" % _q_(oid)
+    if canal:
+        fev += "&canal=eq.%s" % _q_(canal)
+        fmv += "&canal=eq.%s" % _q_(canal)
+        fcb += "&canal=eq.%s" % _q_(canal)
+    return {"ok": True, "order_id": oid,
+            "evento_venta": db._sb_get(fev) or [],
+            "movimiento_stock": db._sb_get(fmv) or [],
+            "cola_bodega": db._sb_get(fcb) or []}
+
+
 @app.get("/api/sync/simular")
 def sync_simular(key: str = "", canal: str = "test", order_id: str = "",
                  codigo: str = "", cantidad: int = 1, full: str = ""):
