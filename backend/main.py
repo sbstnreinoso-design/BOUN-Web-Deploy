@@ -4709,7 +4709,28 @@ def _mj_sync(window_days=None) -> dict:
             import falabella as fb
             fee_pct = _mj_setting_f("mj_falabella_fee_pct", 0.18)
             rel_days = int(_mj_setting_f("mj_falabella_release_days", 30))
-            orders = fb.get_orders(from_d.isoformat())
+            # OJO: GetOrders de Falabella es INCONSISTENTE con ventanas grandes
+            # (probado jul-2026: 400d→0 órdenes; 120d devuelve 164 pero pierde
+            # las más recientes). Por eso MJ, que mira ~400 días desde el anchor,
+            # nunca recibía ninguna venta Falabella. Se consulta por tramos de
+            # 30 días (CreatedAfter+CreatedBefore) y se deduplica por OrderId.
+            orders, _seen_o = [], set()
+            _cur, _step = from_d, _dt.timedelta(days=30)
+            while _cur < to_d:
+                _nxt = min(_cur + _step, to_d)
+                try:
+                    _chunk = fb.get_orders(_cur.isoformat(), _nxt.isoformat())
+                except Exception:
+                    _chunk = []
+                for _o in _chunk:
+                    _oid = str(_o.get("OrderId") or "")
+                    if _oid and _oid not in _seen_o:
+                        _seen_o.add(_oid)
+                        orders.append(_o)
+                _cur = _nxt
+            # Más nuevas primero: si Falabella limita por rate al traer ítems,
+            # que se pierdan las viejas (menos relevantes) y no las recientes.
+            orders.sort(key=lambda o: str(o.get("CreatedAt") or ""), reverse=True)
             oids = [str(o.get("OrderId")) for o in orders if o.get("OrderId")]
             items = fb._all_order_items(oids) if oids else []
             agg = {}
