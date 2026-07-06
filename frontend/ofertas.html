@@ -466,5 +466,26 @@ window.__renderEstados=async function(){try{var tk=localStorage.getItem('boun_to
 var act=items.filter(function(i){return i.estado==='activa';}),blo=items.filter(function(i){return i.estado==='bloqueada';}),pen=items.filter(function(i){return i.estado==='pendiente'||i.estado==='enviada';});if(!act.length&&!blo.length&&!pen.length)return;var host=document.getElementById('estadoHost');if(!host){window.__estadoBanner();host=document.getElementById('estadoHost');}host.style.display='block';host.innerHTML='<div style="display:flex;gap:14px;flex-wrap:wrap;font-weight:600"><span>⏳ '+pen.length+' pendientes</span><span style="color:#7CE38B">✅ '+act.length+' activas</span><span style="color:#FF7A7A">⛔ '+blo.length+' bloqueadas</span></div>'+(blo.length?'<div style="margin-top:8px;font-size:12.5px;opacity:.85">Bloqueadas: '+blo.map(function(b){return '#'+b.id+(b.motivo?' ('+b.motivo+')':'');}).join(' · ')+'</div>':'');}catch(_){}};
 document.addEventListener('DOMContentLoaded',function(){setTimeout(window.__renderEstados,1200);});
 </script>
+<script>
+(function(){
+ async function patchReales(){
+  try{
+   var tk=localStorage.getItem('boun_token'); if(!tk) return;
+   var r=await fetch('/api/relampago/decisiones',{headers:{Authorization:'Bearer '+tk}}); if(!r.ok) return;
+   var j=await r.json(); var d=(j&&j.datos)||{}; var map={};
+   ((d.propias&&d.propias.crear)||[]).forEach(function(o){(o.pubs||[]).forEach(function(p){ if(p.precio_real!=null){ map[String(p.id).replace(/\D/g,'')]={precio:p.precio_real,pct:p.pct_real,estado:p.estado}; } });});
+   if(!Object.keys(map).length) return;
+   document.querySelectorAll('#grid2 .op').forEach(function(row){
+     var idraw=(row.innerText.match(/\b\d{9,}\b/)||[])[0]||''; var id=idraw.replace(/\D/g,'');
+     var info=map[id]; if(!info) return;
+     var opp=row.querySelector('.opp'); if(!opp) return;
+     var b=opp.querySelector('b'); if(b){ b.textContent='$ '+Number(info.precio).toLocaleString('es-CO'); }
+     var sm=opp.querySelector('small'); if(sm){ sm.innerHTML=(info.pct?info.pct+'% ':'')+'real ML'+(info.estado==='activa'?' ✅':''); sm.style.color='#FFD166'; }
+   });
+  }catch(e){}
+ }
+ document.addEventListener('DOMContentLoaded',function(){ setTimeout(patchReales,1500); });
+})();
+</script>
 </body>
 </html>
