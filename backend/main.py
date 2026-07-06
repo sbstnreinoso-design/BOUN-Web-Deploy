@@ -4952,6 +4952,14 @@ def _mj_summary(date_from: str = None, date_to: str = None) -> dict:
     g_libre = sum(float(v.get("neto_mj") or 0) for v in ventas
                   if v.get("liberado"))
     tot_abonos = sum(float(a.get("monto") or 0) for a in abonos)
+    # Saldo inicial reconciliado: lo que se le debía a María en un corte
+    # verificado a mano (incluye pagos previos a la web que no están cargados).
+    # Se SUMA al saldo global; de ahí en adelante las ventas/abonos nuevos se
+    # mueven solos. Configurable por /api/mj/saldo-inicial.
+    try:
+        saldo_ini = float(db.get_setting("mj_saldo_inicial", "") or 0)
+    except Exception:
+        saldo_ini = 0.0
 
     # Costos/neto del PERIODO mostrado (todo si no hay filtro).
     p_bruto = sum(float(v.get("precio_venta") or 0) for v in vfilt)
@@ -4981,9 +4989,10 @@ def _mj_summary(date_from: str = None, date_to: str = None) -> dict:
             "neto_liberado": round(p_libre, 2),
             "neto_pendiente": round(p_neto - p_libre, 2),
             "abonos": round(tot_abonos, 2),
+            "saldo_inicial": round(saldo_ini, 2),
             "neto_global": round(g_neto, 2),
-            "saldo": round(g_neto - tot_abonos, 2),
-            "saldo_liberado": round(g_libre - tot_abonos, 2),
+            "saldo": round(g_neto + saldo_ini - tot_abonos, 2),
+            "saldo_liberado": round(g_libre + saldo_ini - tot_abonos, 2),
             "ventas": len(vfilt), "ventas_global": len(ventas)},
         "por_plataforma": por_plat, "ventas": vfilt, "abonos": abonos}
 
@@ -5076,6 +5085,34 @@ def mj_abono_add(data: MJAbonoIn, user: dict = Depends(_current_user)):
 def mj_abono_del(aid: int, user: dict = Depends(_current_user)):
     """Elimina un abono (corrige un registro)."""
     return {"ok": db._sb_delete("mj_abonos", "id=eq.%d" % aid)}
+
+
+class MJSaldoIniIn(BaseModel):
+    monto: float
+    nota: Optional[str] = ""
+
+
+@app.get("/api/mj/saldo-inicial")
+def mj_saldo_inicial_get(user: dict = Depends(_current_user)):
+    """Lee el saldo inicial reconciliado de María (0 si no está seteado)."""
+    try:
+        v = float(db.get_setting("mj_saldo_inicial", "") or 0)
+    except Exception:
+        v = 0.0
+    return {"ok": True, "monto": round(v, 2),
+            "nota": db.get_setting("mj_saldo_inicial_nota", "")}
+
+
+@app.post("/api/mj/saldo-inicial")
+def mj_saldo_inicial_set(data: MJSaldoIniIn, user: dict = Depends(_admin)):
+    """Fija el saldo inicial reconciliado de María (un corte verificado a mano,
+    p. ej. lo que se le debía antes de que existiera la web). Se SUMA al saldo;
+    de ahí en adelante las ventas y abonos nuevos se mueven solos. Solo admin."""
+    db.set_setting("mj_saldo_inicial", str(round(float(data.monto), 2)))
+    if data.nota is not None:
+        db.set_setting("mj_saldo_inicial_nota", (data.nota or "").strip())
+    _MJ_CACHE["ts"] = 0
+    return {"ok": True, "monto": round(float(data.monto), 2)}
 
 
 def _money(v) -> str:
