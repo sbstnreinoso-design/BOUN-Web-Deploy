@@ -476,7 +476,7 @@ document.addEventListener('DOMContentLoaded',function(){setTimeout(window.__rend
    ((d.propias&&d.propias.crear)||[]).forEach(function(o){(o.pubs||[]).forEach(function(p){ if(p.precio_real!=null){ map[String(p.id).replace(/\D/g,'')]={precio:p.precio_real,pct:p.pct_real,estado:p.estado}; } });});
    if(!Object.keys(map).length) return;
    document.querySelectorAll('#grid2 .op').forEach(function(row){
-     var idraw=(row.innerText.match(/\b\d{9,}\b/)||[])[0]||''; var id=idraw.replace(/\D/g,'');
+     var idraw=(row.innerText.match(/\d{9,}/)||[])[0]||''; var id=idraw.replace(/\D/g,'');
      var info=map[id]; if(!info) return;
      var opp=row.querySelector('.opp'); if(!opp) return;
      var b=opp.querySelector('b'); if(b){ b.textContent='$ '+Number(info.precio).toLocaleString('es-CO'); }
