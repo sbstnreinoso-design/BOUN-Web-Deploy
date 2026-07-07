@@ -271,7 +271,7 @@ const OFFERS=[];
 (function(){
  const last=POOL.map(()=>-99), uses=POOL.map(()=>0);
  for(let d=0;d<30;d++){
-  const dt=new Date(2026,6,6+d); const dow=dt.getDay();
+  const __base=new Date(); __base.setHours(0,0,0,0); const dt=new Date(__base.getFullYear(),__base.getMonth(),__base.getDate()+d); const dow=dt.getDay();
   const picked=[];
   if(dow===0 && d-last[STAR]>=2){picked.push(STAR);}
   const cand=POOL.map((it,i)=>({i,score:AFF[LCAT[it.c]][dow]*10+Math.min(it.s60,30)/3-uses[i]*8}))
@@ -285,6 +285,8 @@ const OFFERS=[];
  window.__uses=uses;
 })();
 if(__R.offers&&__R.offers.length){OFFERS.length=0;__R.offers.forEach(o=>OFFERS.push(o));window.__uses=__R.uses||window.__uses;}
+// Ventana rodante: ocultar automáticamente los días ya vencidos según la fecha real de hoy
+(function(){var t=new Date();t.setHours(0,0,0,0);var ty=t.getFullYear();for(var i=OFFERS.length-1;i>=0;i--){var p=String(OFFERS[i].fecha||'').toLowerCase().trim().split(/\s+/);var day=parseInt(p[1],10);var mo=MESES.indexOf((p[2]||'').slice(0,3));if(!day||mo<0)continue;var yr=(mo<t.getMonth()-6)?ty+1:ty;var dt=new Date(yr,mo,day);if(dt<t)OFFERS.splice(i,1);}})();
 const WHY={sleep:'sueño convierte de noche (se acuestan, no duermen, compran)',music:'previa de conciertos y rumba del fin de semana',swim:'planeación/uso de piscina del fin de semana',moto:'el motero compra al final de la jornada',ind:'compra laboral entre semana',tech:'compra impulso de tarde-noche',kat:'dueños de gato compran a toda hora (demanda fuerte)'};
 const DOWNOTE=['domingo: valle general pero pico propio de la estrella (más vendida 60d) y noche pre-semana','lunes: arranque de semana (41,5 u/día), insomnio de domingo convertido en compra','martes: día pico general (50,5 u/día)','miércoles: media semana estable (43,5 u/día)','jueves: día pico general (50,5 u/día)','viernes: previa del fin de semana (42,5 u/día)','sábado mañana: intención máxima de uso inmediato (piscina) aunque sea valle general'];
 const state={}, state2={};
@@ -473,14 +475,15 @@ document.addEventListener('DOMContentLoaded',function(){setTimeout(window.__rend
    var tk=localStorage.getItem('boun_token'); if(!tk) return;
    var r=await fetch('/api/relampago/decisiones',{headers:{Authorization:'Bearer '+tk}}); if(!r.ok) return;
    var j=await r.json(); var d=(j&&j.datos)||{}; var map={};
-   ((d.propias&&d.propias.crear)||[]).forEach(function(o){(o.pubs||[]).forEach(function(p){ if(p.precio_real!=null){ map[String(p.id).replace(/\D/g,'')]={precio:p.precio_real,pct:p.pct_real,estado:p.estado}; } });});
+   ((d.propias&&d.propias.crear)||[]).forEach(function(o){(o.pubs||[]).forEach(function(p){ var k=String(p.id).replace(/\D/g,''); var m=map[k]||{}; if(p.precio_real!=null){m.precio=p.precio_real;m.pct=p.pct_real;} if(p.estado){m.estado=p.estado;m.motivo=p.motivo;} map[k]=m; });});
    if(!Object.keys(map).length) return;
    document.querySelectorAll('#grid2 .op').forEach(function(row){
      var idraw=(row.innerText.match(/\d{9,}/)||[])[0]||''; var id=idraw.replace(/\D/g,'');
      var info=map[id]; if(!info) return;
      var opp=row.querySelector('.opp'); if(!opp) return;
-     var b=opp.querySelector('b'); if(b){ b.textContent='$ '+Number(info.precio).toLocaleString('es-CO'); }
-     var sm=opp.querySelector('small'); if(sm){ sm.innerHTML=(info.pct?info.pct+'% ':'')+'real ML'+(info.estado==='activa'?' ✅':''); sm.style.color='#FFD166'; }
+     var b=opp.querySelector('b'); var sm=opp.querySelector('small');
+     if(info.precio!=null){ if(b){ b.textContent='$ '+Number(info.precio).toLocaleString('es-CO'); } if(sm){ sm.innerHTML=(info.pct?info.pct+'% ':'')+'real ML'+(info.estado==='activa'?' ✅':''); sm.style.color='#FFD166'; } }
+     if(info.estado==='bloqueada'){ row.style.opacity='.45'; if(b){ b.style.textDecoration='line-through'; b.style.color='var(--muted)'; } if(sm){ sm.innerHTML='⛔ no elegible'; sm.title=info.motivo||''; sm.style.color='#FF7A7A'; } }
    });
   }catch(e){}
  }
