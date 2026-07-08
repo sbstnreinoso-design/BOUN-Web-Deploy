@@ -438,7 +438,7 @@ function buildDecisiones(){
    rechazar:ITEMS.filter((_,i)=>state[i]===0).map(it=>it.id)
   },
   propias:{
-   crear:OFFERS.filter((_,i)=>state2[i]===1).map(o=>({fecha:o.fecha,franja:o.franja,pubs:o.prods.map(x=>({id:POOL[x].id,precio:nice(POOL[x].price)}))})),
+   crear:OFFERS.filter((_,i)=>state2[i]===1).map(o=>({fecha:o.fecha,franja:o.franja,pubs:o.prods.map(function(x){var id=POOL[x].id;var rm=(window.__realMap||{})[String(id).replace(/\D/g,'')]||{};var precio=(rm.precio!=null?rm.precio:nice(POOL[x].price));return {id:id,precio:precio,precio_real:(rm.precio!=null?rm.precio:null),pct_real:(rm.pct!=null?rm.pct:null),estado:(rm.estado||'aprobada'),motivo:(rm.motivo||null)};})})),
    no_crear:OFFERS.filter((_,i)=>state2[i]===0).map(o=>o.fecha)
   }
  };
@@ -480,6 +480,7 @@ document.addEventListener('DOMContentLoaded',function(){setTimeout(window.__rend
    var r=await fetch('/api/relampago/decisiones',{headers:{Authorization:'Bearer '+tk}}); if(!r.ok) return;
    var j=await r.json(); var d=(j&&j.datos)||{}; var map={};
    ((d.propias&&d.propias.crear)||[]).forEach(function(o){(o.pubs||[]).forEach(function(p){ var k=String(p.id).replace(/\D/g,''); var m=map[k]||{}; if(p.precio_real!=null){m.precio=p.precio_real;m.pct=p.pct_real;} if(p.estado){m.estado=p.estado;m.motivo=p.motivo;} map[k]=m; });});
+   window.__realMap=map;
    if(!Object.keys(map).length) return;
    document.querySelectorAll('#grid2 .op').forEach(function(row){
      var idraw=(row.innerText.match(/\d{9,}/)||[])[0]||''; var id=idraw.replace(/\D/g,'');
@@ -521,7 +522,9 @@ document.addEventListener('DOMContentLoaded',function(){setTimeout(window.__rend
    });
    var enCurso=[];
    apSug.forEach(function(x){ if(x.estado==='bloqueada') return; var id=String(x.id).replace(/\D/g,''); var info=byId[id]||{}; enCurso.push({id:id,t:info.t||('#'+id),img:info.img,dia:fmtFecha(x.dia),franja:x.franja,precio:(x.precio_aplicado!=null?x.precio_aplicado:(x.precio_rel||x.precio)),estado:x.estado||(x.aplicada?'activa':'aprobada'),vendidas:(x.vendidas!=null?x.vendidas:null),pct:x.pct_real}); });
-   ((d.propias&&d.propias.crear)||[]).forEach(function(o){(o.pubs||[]).forEach(function(p){ if(p.estado==='activa'||p.aplicada){ var id=String(p.id).replace(/\D/g,''); var info=byId[id]||{}; enCurso.push({id:id,t:info.t||('#'+id),img:info.img,dia:fmtFecha(o.fecha),franja:o.franja,precio:(p.precio_real!=null?p.precio_real:p.precio),estado:p.estado||'activa',vendidas:(p.vendidas!=null?p.vendidas:null),pct:p.pct_real}); } }); });
+   var apDays={};
+   ((d.propias&&d.propias.crear)||[]).forEach(function(o){ apDays[String(o.fecha).toLowerCase().trim()]=1; (o.pubs||[]).forEach(function(p){ if(p.estado==='bloqueada') return; var id=String(p.id).replace(/\D/g,''); var info=byId[id]||{}; enCurso.push({id:id,t:info.t||('#'+id),img:info.img,dia:fmtFecha(o.fecha),franja:o.franja,precio:(p.precio_real!=null?p.precio_real:p.precio),estado:((p.estado==='activa'||p.aplicada)?'activa':'aprobada'),vendidas:(p.vendidas!=null?p.vendidas:null),pct:p.pct_real}); }); });
+   try{ document.querySelectorAll('#grid2 > *').forEach(function(card){ var dd=card.querySelector('.d'); if(dd && apDays[String(dd.textContent).toLowerCase().trim()]) card.style.display='none'; }); }catch(e){}
    var host=document.getElementById('gridAprob'); var empty=document.getElementById('aprobEmpty'); if(!host) return;
    if(!enCurso.length){ host.innerHTML=''; if(empty) empty.style.display='block'; return; }
    if(empty) empty.style.display='none';
