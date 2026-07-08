@@ -460,6 +460,7 @@ async function enviar(){
 }
 
 Object.assign(window,{setD,setO,rmProd,copiar,enviar,mxQuick,mxRender});
+window.__POOL=POOL; window.__ITEMS=ITEMS; window.__LCAT=LCAT;
 mxQuick(15);
 upd();
 })();
@@ -503,8 +504,13 @@ document.addEventListener('DOMContentLoaded',function(){setTimeout(window.__rend
    var apSug=(d.sugeridas&&d.sugeridas.aprobar)||[];
    var rjSug=(d.sugeridas&&d.sugeridas.rechazar)||[];
    var byId={};
-   try{ ITEMS.forEach(function(it){byId[String(it.id).replace(/\D/g,'')]={t:it.t,img:it.img};}); }catch(e){}
-   try{ POOL.forEach(function(p){var k=String(p.id).replace(/\D/g,''); if(!byId[k]) byId[k]={t:p.t,img:p.img};}); }catch(e){}
+   try{ (window.__ITEMS||[]).forEach(function(it){byId[String(it.id).replace(/\D/g,'')]={t:it.t,img:it.img};}); }catch(e){}
+   try{ (window.__POOL||[]).forEach(function(p){var k=String(p.id).replace(/\D/g,''); if(!byId[k]) byId[k]={t:p.t,img:p.img};}); }catch(e){}
+   try{ document.querySelectorAll('#grid .item, #grid2 .op').forEach(function(card){ var m=(card.innerText.match(/#(\d{6,})/)||[]); var id=m[1]; if(!id) return; var img=card.querySelector('img'); var tt=card.querySelector('.tt')||card.querySelector('.opt'); byId[id]=byId[id]||{}; if(tt&&(!byId[id].t||/^#/.test(byId[id].t))) byId[id].t=(tt.childNodes[0]?tt.childNodes[0].textContent:tt.textContent).trim(); if(img&&!byId[id].img){var s=img.getAttribute('src'); if(s&&!/^data:/.test(s)) byId[id].img=s;} }); }catch(e){}
+   function parseNum(v){ if(v==null) return null; if(typeof v==='number') return v; var n=String(v).replace(/[^\d]/g,''); return n?parseInt(n,10):null; }
+   var WD=['Domingo','Lunes','Martes','Miércoles','Jueves','Viernes','Sábado'];
+   var MESES=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','dic'];
+   function fmtFecha(s){ if(!s) return ''; if(/\d/.test(s)) return s; var wd=WD.findIndex(function(w){return w.toLowerCase()===String(s).toLowerCase().trim();}); if(wd<0) return s; var t=new Date(); t.setHours(0,0,0,0); var add=(wd-t.getDay()+7)%7; var d=new Date(t.getFullYear(),t.getMonth(),t.getDate()+add); return WD[d.getDay()]+' '+d.getDate()+' '+MESES[d.getMonth()]; }
    var decided={};
    apSug.forEach(function(x){decided[String(x.id).replace(/\D/g,'')]='ap';});
    rjSug.forEach(function(x){decided[String(x).replace(/\D/g,'')]='rj';});
@@ -513,8 +519,8 @@ document.addEventListener('DOMContentLoaded',function(){setTimeout(window.__rend
      if(decided[id]) card.style.display='none';
    });
    var enCurso=[];
-   apSug.forEach(function(x){ if(x.estado==='bloqueada') return; var id=String(x.id).replace(/\D/g,''); var info=byId[id]||{}; enCurso.push({id:id,t:info.t||('#'+id),img:info.img,dia:x.dia,franja:x.franja,precio:(x.precio_aplicado!=null?x.precio_aplicado:(x.precio_rel||x.precio)),estado:x.estado||(x.aplicada?'activa':'aprobada'),vendidas:(x.vendidas!=null?x.vendidas:null),pct:x.pct_real}); });
-   ((d.propias&&d.propias.crear)||[]).forEach(function(o){(o.pubs||[]).forEach(function(p){ if(p.estado==='activa'||p.aplicada){ var id=String(p.id).replace(/\D/g,''); var info=byId[id]||{}; enCurso.push({id:id,t:info.t||('#'+id),img:info.img,dia:o.fecha,franja:o.franja,precio:(p.precio_real||p.precio),estado:p.estado||'activa',vendidas:(p.vendidas!=null?p.vendidas:null),pct:p.pct_real}); } }); });
+   apSug.forEach(function(x){ if(x.estado==='bloqueada') return; var id=String(x.id).replace(/\D/g,''); var info=byId[id]||{}; enCurso.push({id:id,t:info.t||('#'+id),img:info.img,dia:fmtFecha(x.dia),franja:x.franja,precio:parseNum(x.precio_aplicado!=null?x.precio_aplicado:(x.precio_rel||x.precio)),estado:x.estado||(x.aplicada?'activa':'aprobada'),vendidas:(x.vendidas!=null?x.vendidas:null),pct:x.pct_real}); });
+   ((d.propias&&d.propias.crear)||[]).forEach(function(o){(o.pubs||[]).forEach(function(p){ if(p.estado==='activa'||p.aplicada){ var id=String(p.id).replace(/\D/g,''); var info=byId[id]||{}; enCurso.push({id:id,t:info.t||('#'+id),img:info.img,dia:fmtFecha(o.fecha),franja:o.franja,precio:parseNum(p.precio_real||p.precio),estado:p.estado||'activa',vendidas:(p.vendidas!=null?p.vendidas:null),pct:p.pct_real}); } }); });
    var host=document.getElementById('gridAprob'); var empty=document.getElementById('aprobEmpty'); if(!host) return;
    if(!enCurso.length){ host.innerHTML=''; if(empty) empty.style.display='block'; return; }
    if(empty) empty.style.display='none';
