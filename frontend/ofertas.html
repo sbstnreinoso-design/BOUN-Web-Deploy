@@ -521,9 +521,9 @@ document.addEventListener('DOMContentLoaded',function(){setTimeout(window.__rend
      if(decided[id]) card.style.display='none';
    });
    var enCurso=[];
-   apSug.forEach(function(x){ if(x.estado==='bloqueada') return; var id=String(x.id).replace(/\D/g,''); var info=byId[id]||{}; enCurso.push({id:id,t:info.t||('#'+id),img:info.img,dia:fmtFecha(x.dia),franja:x.franja,precio:(x.precio_aplicado!=null?x.precio_aplicado:(x.precio_rel||x.precio)),estado:x.estado||(x.aplicada?'activa':'aprobada'),vendidas:(x.vendidas!=null?x.vendidas:null),pct:x.pct_real}); });
+   apSug.forEach(function(x){ if(x.estado==='bloqueada') return; var id=String(x.id).replace(/\D/g,''); var info=byId[id]||{}; enCurso.push({id:id,t:info.t||('#'+id),img:info.img,dia:fmtFecha(x.dia),franja:x.franja,precio:(x.precio_aplicado!=null?x.precio_aplicado:(x.precio_rel||x.precio)),estado:x.estado||(x.aplicada?'activa':'aprobada'),vendidas:(x.vendidas!=null?x.vendidas:null),pct:x.pct_real,origen:'ml'}); });
    var apDays={};
-   ((d.propias&&d.propias.crear)||[]).forEach(function(o){ apDays[String(o.fecha).toLowerCase().trim()]=1; (o.pubs||[]).forEach(function(p){ if(p.estado==='bloqueada') return; var id=String(p.id).replace(/\D/g,''); var info=byId[id]||{}; enCurso.push({id:id,t:info.t||('#'+id),img:info.img,dia:fmtFecha(o.fecha),franja:o.franja,precio:(p.precio_real!=null?p.precio_real:p.precio),estado:((p.estado==='activa'||p.aplicada)?'activa':'aprobada'),vendidas:(p.vendidas!=null?p.vendidas:null),pct:p.pct_real}); }); });
+   ((d.propias&&d.propias.crear)||[]).forEach(function(o){ apDays[String(o.fecha).toLowerCase().trim()]=1; (o.pubs||[]).forEach(function(p){ if(p.estado==='bloqueada') return; var id=String(p.id).replace(/\D/g,''); var info=byId[id]||{}; enCurso.push({id:id,t:info.t||('#'+id),img:info.img,dia:fmtFecha(o.fecha),franja:o.franja,precio:(p.precio_real!=null?p.precio_real:p.precio),estado:((p.estado==='activa'||p.aplicada)?'activa':'aprobada'),vendidas:(p.vendidas!=null?p.vendidas:null),pct:p.pct_real,origen:'propia'}); }); });
    try{ document.querySelectorAll('#grid2 > *').forEach(function(card){ var dd=card.querySelector('.d'); if(dd && apDays[String(dd.textContent).toLowerCase().trim()]) card.style.display='none'; }); }catch(e){}
    var host=document.getElementById('gridAprob'); var empty=document.getElementById('aprobEmpty'); if(!host) return;
    if(!enCurso.length){ host.innerHTML=''; if(empty) empty.style.display='block'; return; }
@@ -531,9 +531,10 @@ document.addEventListener('DOMContentLoaded',function(){setTimeout(window.__rend
    host.innerHTML=enCurso.map(function(e){
      var estClr=e.estado==='activa'?'#7CE38B':(e.estado==='bloqueada'?'#FF7A7A':'#FFD166');
      var estTxt=e.estado==='activa'?'EN CURSO ✅':(e.estado==='bloqueada'?'BLOQUEADA':'APROBADA');
+     var orgTxt=e.origen==='ml'?'⚡ SUGERIDA ML':'🛠️ NUESTRA'; var orgClr=e.origen==='ml'?'#2DC6FF':'#9AE66E';
      var vv=e.vendidas!=null?('<b style="font-size:22px">'+e.vendidas+'</b><small>uds vendidas en oferta</small>'):'<b style="font-size:16px;color:var(--muted)">—</b><small>ventas al cerrar el día</small>';
      var pr=fmtPrecio(e.precio);
-     return '<div class="item approved"><div class="top"><div class="ph"><img src="'+(e.img||'')+'" onerror="this.style.display=\'none\'" alt=""></div><div class="tinfo"><span class="cat" style="background:'+estClr+'22;color:'+estClr+'">'+estTxt+'</span><div class="tt">'+e.t+'</div><div class="pid">#'+e.id+'</div></div></div><div class="prices"><div class="pr hero"><small>⚡ Precio aplicado</small><b>'+pr+'</b>'+(e.pct?'<span class="delta bad">'+e.pct+'%</span>':'')+'</div><div class="pr"><small>Día · franja</small><b style="font-size:12.5px">'+(e.dia||'')+'</b><span style="font-size:10px;color:var(--muted)">'+(e.franja||'')+'</span></div><div class="pr"><small>Ventas</small>'+vv+'</div></div></div>';
+     return '<div class="item approved"><div class="top"><div class="ph"><img src="'+(e.img||'')+'" onerror="this.style.display=\'none\'" alt=""></div><div class="tinfo"><span class="cat" style="background:'+estClr+'22;color:'+estClr+'">'+estTxt+'</span><span class="cat" style="background:'+orgClr+'22;color:'+orgClr+';margin-left:6px">'+orgTxt+'</span><div class="tt">'+e.t+'</div><div class="pid">#'+e.id+'</div></div></div><div class="prices"><div class="pr hero"><small>⚡ Precio aplicado</small><b>'+pr+'</b>'+(e.pct?'<span class="delta bad">'+e.pct+'%</span>':'')+'</div><div class="pr"><small>Día · franja</small><b style="font-size:12.5px">'+(e.dia||'')+'</b><span style="font-size:10px;color:var(--muted)">'+(e.franja||'')+'</span></div><div class="pr"><small>Ventas</small>'+vv+'</div></div></div>';
    }).join('');
   }catch(e){}
  }
