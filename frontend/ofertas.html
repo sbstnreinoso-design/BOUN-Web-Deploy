@@ -188,6 +188,9 @@ summary::before{content:'▸ '} details[open] summary::before{content:'▾ '}
 <p class="legend" style="margin-top:2px">Oferta relámpago TODOS los días durante 30 días con TODAS las publicaciones de MercadoLibre de cada producto que vendemos (BOUN + KAT), leídas del inventario web BOUN y filtradas a las que tienen stock (en la publicación o en bodega). Rotación automática: 12 publicaciones por oferta (tope ML 20), cada una descansa ≥10 días y sale ~2 veces en el mes, asignada a su mejor día (sueño = noches Dom–Jue, swim = viernes/sábado, moto = martes/viernes, music = jueves/viernes, KAT = parejo toda la semana, la estrella ⭐ —la más vendida 60d— ancla TODOS los domingos). Precio propuesto: −7% sobre el precio actual de la publicación — nunca el 35–46% que exige la campaña sugerida. El día de crear cada oferta se revalida promo vigente (el 9/jul entra BOUN JULIO) y stock; si ML exige un mínimo mayor, no se aplica y se avisa. Franja: 12:00–24:00 a diario, sábados 00:00–12:00.</p>
 <div class="kpis" id="rotKpis" style="margin-top:4px"></div>
 <div class="grid" id="grid2"></div>
+<h2 class="secTitle"><span class="num" style="background:#7CE38B;color:#111">✓</span> Ofertas aprobadas · en curso <span class="secNote">las que aprobaste ya salen de pendientes y aparecen aquí con las unidades vendidas mientras están/estuvieron en oferta</span></h2>
+<div class="grid" id="gridAprob"></div>
+<div id="aprobEmpty" class="legend" style="margin-top:2px;display:none">Aún no hay ofertas aprobadas en curso. Cuando apruebes una (sección 1 o 2) aparecerá aquí con sus ventas.</div>
 <h2 class="secTitle"><span class="num">3</span> Métricas de las ofertas relámpago <span class="secNote">se actualiza en tiempo real en cada corrida diaria · acumulado con filtro por fechas · alimenta la programación de nuevas ofertas</span></h2>
 <p class="legend" style="margin-top:2px">Ventas ML por día (fuente: web BOUN). Por ahora es la <b>línea base sin ofertas relámpago</b>; desde la primera oferta aplicada, cada día con oferta queda marcado <span style="color:var(--warn)">⚡ amarillo</span> y registra qué vendieron sus publicaciones. El top de publicaciones alimenta la rotación: las de mejor rendimiento en oferta suben de prioridad y las que no convierten rotan menos. <b>Ventana rodante:</b> cada oferta que corre sale de la sección 2 y entra un día nuevo al final del plan — el artefacto siempre muestra 30 días hacia adelante y el histórico se acumula aquí.</p>
 <div class="mxwrap">
@@ -488,6 +491,43 @@ document.addEventListener('DOMContentLoaded',function(){setTimeout(window.__rend
   }catch(e){}
  }
  document.addEventListener('DOMContentLoaded',function(){ setTimeout(patchReales,1500); });
+})();
+</script>
+<script>
+(function(){
+ async function renderAprobadas(){
+  try{
+   var tk=localStorage.getItem('boun_token'); if(!tk) return;
+   var r=await fetch('/api/relampago/decisiones',{headers:{Authorization:'Bearer '+tk}}); if(!r.ok) return;
+   var d=(await r.json()).datos||{};
+   var apSug=(d.sugeridas&&d.sugeridas.aprobar)||[];
+   var rjSug=(d.sugeridas&&d.sugeridas.rechazar)||[];
+   var byId={};
+   try{ ITEMS.forEach(function(it){byId[String(it.id).replace(/\D/g,'')]={t:it.t,img:it.img};}); }catch(e){}
+   try{ POOL.forEach(function(p){var k=String(p.id).replace(/\D/g,''); if(!byId[k]) byId[k]={t:p.t,img:p.img};}); }catch(e){}
+   var decided={};
+   apSug.forEach(function(x){decided[String(x.id).replace(/\D/g,'')]='ap';});
+   rjSug.forEach(function(x){decided[String(x).replace(/\D/g,'')]='rj';});
+   document.querySelectorAll('#grid .item').forEach(function(card){
+     var m=(card.innerText.match(/#(\d{6,})/)||[]); var id=m[1]?m[1].replace(/\D/g,''):''; if(!id) return;
+     if(decided[id]) card.style.display='none';
+   });
+   var enCurso=[];
+   apSug.forEach(function(x){ if(x.estado==='bloqueada') return; var id=String(x.id).replace(/\D/g,''); var info=byId[id]||{}; enCurso.push({id:id,t:info.t||('#'+id),img:info.img,dia:x.dia,franja:x.franja,precio:(x.precio_aplicado!=null?x.precio_aplicado:(x.precio_rel||x.precio)),estado:x.estado||(x.aplicada?'activa':'aprobada'),vendidas:(x.vendidas!=null?x.vendidas:null),pct:x.pct_real}); });
+   ((d.propias&&d.propias.crear)||[]).forEach(function(o){(o.pubs||[]).forEach(function(p){ if(p.estado==='activa'||p.aplicada){ var id=String(p.id).replace(/\D/g,''); var info=byId[id]||{}; enCurso.push({id:id,t:info.t||('#'+id),img:info.img,dia:o.fecha,franja:o.franja,precio:(p.precio_real||p.precio),estado:p.estado||'activa',vendidas:(p.vendidas!=null?p.vendidas:null),pct:p.pct_real}); } }); });
+   var host=document.getElementById('gridAprob'); var empty=document.getElementById('aprobEmpty'); if(!host) return;
+   if(!enCurso.length){ host.innerHTML=''; if(empty) empty.style.display='block'; return; }
+   if(empty) empty.style.display='none';
+   host.innerHTML=enCurso.map(function(e){
+     var estClr=e.estado==='activa'?'#7CE38B':(e.estado==='bloqueada'?'#FF7A7A':'#FFD166');
+     var estTxt=e.estado==='activa'?'EN CURSO ✅':(e.estado==='bloqueada'?'BLOQUEADA':'APROBADA');
+     var vv=e.vendidas!=null?('<b style="font-size:22px">'+e.vendidas+'</b><small>uds vendidas en oferta</small>'):'<b style="font-size:16px;color:var(--muted)">—</b><small>ventas al cerrar el día</small>';
+     var pr=e.precio!=null?('$ '+Number(e.precio).toLocaleString('es-CO')):'—';
+     return '<div class="item approved"><div class="top"><div class="ph"><img src="'+(e.img||'')+'" onerror="this.style.display=\'none\'" alt=""></div><div class="tinfo"><span class="cat" style="background:'+estClr+'22;color:'+estClr+'">'+estTxt+'</span><div class="tt">'+e.t+'</div><div class="pid">#'+e.id+'</div></div></div><div class="prices"><div class="pr hero"><small>⚡ Precio aplicado</small><b>'+pr+'</b>'+(e.pct?'<span class="delta bad">'+e.pct+'%</span>':'')+'</div><div class="pr"><small>Día · franja</small><b style="font-size:12.5px">'+(e.dia||'')+'</b><span style="font-size:10px;color:var(--muted)">'+(e.franja||'')+'</span></div><div class="pr"><small>Ventas</small>'+vv+'</div></div></div>';
+   }).join('');
+  }catch(e){}
+ }
+ document.addEventListener('DOMContentLoaded',function(){ setTimeout(renderAprobadas,1600); });
 })();
 </script>
 </body>
