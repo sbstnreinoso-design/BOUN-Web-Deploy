@@ -5144,6 +5144,47 @@ def mj_get(force: bool = False, date_from: str = "", date_to: str = "",
     return out
 
 
+@app.get("/api/mj/debug-orden")
+def mj_debug_orden(oid: str = "", user: dict = Depends(_admin)):
+    """TEMPORAL · diagnóstico: devuelve la orden ML cruda y el pago de
+    MercadoPago para una orden, para ver de dónde salen el "Descuento a tu
+    contraparte" y las retenciones reales.  Solo lectura."""
+    if not oid:
+        return {"ok": False, "error": "falta oid"}
+    try:
+        from ml_scraper import _ml_session_auth, ML_API
+        s, _uid = _ml_session_auth()
+        if not s:
+            return {"ok": False, "error": "ML sin conexión"}
+        try:
+            s.headers.pop("Api-Version", None)
+        except Exception:
+            pass
+        out = {"ok": True, "oid": oid}
+        r = s.get("%s/orders/%s" % (ML_API, oid), timeout=20)
+        out["orden_status"] = r.status_code
+        od = r.json() if r.status_code == 200 else {}
+        out["orden"] = od
+        pagos = []
+        for p in (od.get("payments") or []):
+            pid = p.get("id")
+            if not pid:
+                continue
+            ent = {"id": pid, "orden_payment": p}
+            try:
+                rp = s.get("https://api.mercadopago.com/v1/payments/%s" % pid,
+                           timeout=20)
+                ent["mp_status"] = rp.status_code
+                ent["mp"] = rp.json() if rp.status_code == 200 else rp.text[:400]
+            except Exception as e:
+                ent["mp_error"] = str(e)[:200]
+            pagos.append(ent)
+        out["pagos"] = pagos
+        return out
+    except Exception as e:
+        return {"ok": False, "error": str(e)[:300]}
+
+
 @app.get("/api/mj/count")
 def mj_count(user: dict = Depends(_current_user)):
     """Saldo pendiente de pago a María José (para el badge del menú)."""
