@@ -981,6 +981,8 @@ function drawMJ(){
   let notes="";
   if(r.filtro&&r.filtro.activo) notes+=`<div class="note">Mostrando ventas ${r.filtro.date_from?`desde <b>${mjDate(r.filtro.date_from)}</b>`:""} ${r.filtro.date_to?`hasta <b>${mjDate(r.filtro.date_to)}</b>`:""} · ${k.ventas||0} de ${k.ventas_global||0} ventas. El <b>saldo a pagar</b> y los <b>abonos</b> siguen siendo del total (toda la historia).</div>`;
   if(r.cache_age_min>0) notes+=`<div class="note">Datos de hace ${r.cache_age_min} min · se refrescan solos cada 10 min (o usa ↻ Actualizar).</div>`;
+  const nCup=(r.ventas||[]).filter(v=>(v.descuentos||0)>0).length;
+  if(nCup) notes+=`<div class="note">🎟 <b>${nCup}</b> de <b>${(r.ventas||[]).length}</b> ventas se hicieron con cupón, por <b>−${cop(k.descuentos||0)}</b>. El cupón lo financia BOUN y solo se cobra si el comprador lo aplica; aplica a toda la tienda (también KAT).</div>`;
   if(!(r.ventas||[]).length){
     notes+=`<div class="note">Aún no hay ventas atribuidas a María José. Marca sus productos en <b>Inventario</b> (botón «Producto de María José» en cada tarjeta) y vuelve aquí — sus ventas aparecerán solas.</div>`;
   }
@@ -1004,11 +1006,17 @@ function drawMJ(){
       ?`<span style="color:var(--green);font-weight:700">● Liberado</span>${vv.release_date?`<div class="cap" style="font-size:9.5px;color:var(--green)">${mjDate(vv.release_date)}</div>`:""}`
       :`<span style="color:var(--amber);font-weight:700">○ Libera</span><div class="cap" style="font-size:9.5px;color:var(--amber)">${mjDate(vv.release_date)}</div>`;
     const ads=(vv.roas||vv.acos)?`<div class="cap" style="font-size:9.5px">ROAS ${vv.roas?vv.roas+"x":"—"} · ACOS ${vv.acos?vv.acos+"%":"—"}</div>`:"";
+    // 🎟 Marca las ventas en las que el comprador SÍ aplicó un cupón. El cargo
+    // `coupon_fee` solo existe en el pago cuando el cupón se usó de verdad.
+    const pctCup=vv.precio_venta?(100*(vv.descuentos||0)/vv.precio_venta):0;
+    const cupChip=vv.descuentos
+      ?`<span title="El comprador aplicó un cupón. BOUN financia este descuento." style="display:inline-block;margin-left:5px;padding:1px 6px;border-radius:999px;font-size:9px;font-weight:700;background:rgba(224,138,138,.16);color:#E08A8A;border:1px solid rgba(224,138,138,.35);white-space:nowrap">🎟 Cupón −${cop(vv.descuentos)}</span>`
+      :`<span title="Sin cupón: el comprador pagó precio pleno." style="display:inline-block;margin-left:5px;padding:1px 6px;border-radius:999px;font-size:9px;font-weight:700;background:rgba(155,154,150,.12);color:var(--muted);border:1px solid var(--border);white-space:nowrap">sin cupón</span>`;
     return `<tr>
       <td style="display:flex;align-items:center;gap:9px">${foto}<div><div style="font-weight:600;font-size:12px;line-height:1.25">${esc((vv.nombre||"").slice(0,46))}</div><div class="cap" style="font-size:10px">${esc(vv.codigo||"")} · ${mjDate(vv.fecha_venta)}</div>${vv.order_id?`<div class="cap" style="font-size:9.5px;opacity:.75">#${esc(String(vv.order_id))}</div>`:""}</div></td>
-      <td>${mjPlatChip(vv.plataforma)}</td>
+      <td>${mjPlatChip(vv.plataforma)}${cupChip}</td>
       <td style="text-align:center">${vv.unidades}</td>
-      <td style="text-align:right;font-weight:700">${cop(vv.precio_venta)}</td>
+      <td style="text-align:right;font-weight:700">${cop(vv.precio_venta)}${vv.descuentos?`<div class="cap" style="font-size:9px;color:#E08A8A">cupón −${cop(vv.descuentos)} (${pctCup.toFixed(1)}%)</div>`:""}</td>
       <td style="text-align:right;color:#E08A8A;font-size:11px">−${cop((vv.descuentos||0)+(vv.comision||0)+(vv.retencion||0)+(vv.costo_envio||0)+(vv.costo_publicidad||0))}<div class="cap" style="font-size:9px">${vv.descuentos?`desc ${cop(vv.descuentos)} · `:""}com ${cop(vv.comision||0)} · ret ${cop(vv.retencion||0)}${vv.costo_envio?` · env ${cop(vv.costo_envio)}`:""}${vv.costo_publicidad?` · ads ${cop(vv.costo_publicidad)}`:""}</div></td>
       <td style="text-align:right;font-weight:800;color:var(--green)">${cop(vv.neto_mj)}</td>
       <td style="text-align:right;font-size:11px">${lib}${ads}</td>
