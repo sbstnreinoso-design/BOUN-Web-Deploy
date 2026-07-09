@@ -4569,14 +4569,34 @@ def _mj_ml_ad_cost(s, item_ids, since_d, until_d) -> dict:
 
 
 def _mj_ml_release(s, oid, od, co):
-    """Fecha en que ML libera el dinero de una orden y si YA está liberado.
+    """Fecha de liberación, estado y CARGOS REALES de una orden de ML.
 
     OJO: ni /orders ni /orders/{id} traen money_release_date.  El dato vive en
     el pago.  El endpoint de MercadoPago (/v1/payments/{id}) devuelve la fecha
     Y el estado real `money_release_status` ('released' = ya disponible); el de
     ML /collections/{id} da la fecha pero deja el estado en null.  Se usa MP
     primero (fecha + estado) y /collections como respaldo de fecha.
-    Devuelve (fecha|None, liberado_bool)."""
+
+    De paso, ese mismo pago trae `charges_details`, que es la ÚNICA fuente de
+    verdad de lo que ML realmente le descuenta al vendedor (verificado contra
+    el panel "Venta en Mercado Libre" el 8-jul-2026, orden 2000017325719020):
+
+        coupon_fee                     type=coupon    → "Descuento a tu
+                                                        contraparte" (cupón
+                                                        financiado por BOUN)
+        tax_withholding-fuente         type=tax       → ReteFuente
+        tax_withholding-iva            type=tax       → ReteIVA
+        tax_withholding-inscription_iva type=tax      → ⚠️ NO se descuenta del
+                                                        neto: es el IVA que el
+                                                        vendedor declara. Si se
+                                                        suma, el neto se hunde.
+        meli_fee                       type=fee       → "Cargo por venta"
+        shp_fulfillment                type=shipping  → "Cargo por envío"
+
+    y `amounts.collector.net_received` es literalmente el "Total a recibir".
+
+    Devuelve (fecha|None, liberado_bool, cargos_dict).  `cargos["ok"]` indica
+    si se pudieron leer; si es False el llamador debe usar sus estimaciones."""
     import datetime as _dt
     from ml_scraper import ML_API
     pids = [p.get("id") for p in (od.get("payments") or []) if p.get("id")]
@@ -4589,6 +4609,8 @@ def _mj_ml_release(s, oid, od, co):
         except Exception:
             pass
     best, released = None, False
+    cg = {"ok": False, "descuento": 0.0, "retencion": 0.0,
+          "comision": 0.0, "envio": 0.0, "neto": 0.0}
     for pid in pids:
         mr, st = "", ""
         try:
@@ -4598,6 +4620,7 @@ def _mj_ml_release(s, oid, od, co):
                 b = r.json()
                 mr = b.get("money_release_date") or ""
                 st = b.get("money_release_status") or ""
+                _mj_ml_charges(b, cg)
         except Exception:
             pass
         if not mr:
@@ -4622,7 +4645,44 @@ def _mj_ml_release(s, oid, od, co):
                     best = d
             except Exception:
                 pass
-    return best, released
+    return best, released, cg
+
+
+def _mj_ml_charges(pago: dict, cg: dict) -> None:
+    """Acumula en `cg` los cargos reales de un pago de MercadoPago.
+    Ver la tabla de nombres en el docstring de _mj_ml_release."""
+    det = pago.get("charges_details") or []
+    if not det:
+        return
+    for c in det:
+        name = str(c.get("name") or "")
+        typ = str(c.get("type") or "")
+        am = c.get("amounts") or {}
+        try:
+            monto = float(am.get("original") or 0) - float(am.get("refunded") or 0)
+        except Exception:
+            continue
+        if monto <= 0:
+            continue
+        if typ == "coupon":
+            cg["descuento"] += monto
+        elif typ == "tax":
+            # inscription_iva NO lo descuenta ML del neto (es el IVA a declarar).
+            if "inscription_iva" in name:
+                continue
+            cg["retencion"] += monto
+        elif typ == "fee":
+            cg["comision"] += monto
+        elif typ == "shipping":
+            cg["envio"] += monto
+        else:
+            continue
+        cg["ok"] = True
+    try:
+        cg["neto"] += float(((pago.get("amounts") or {})
+                             .get("collector") or {}).get("net_received") or 0)
+    except Exception:
+        pass
 
 
 def _mj_ml_shipping(s, shipment_id) -> float:
@@ -4753,9 +4813,20 @@ def _mj_sync(window_days=None) -> dict:
                                 co).date()
                         except Exception:
                             fecha = today
-                        rel, rel_done = _mj_ml_release(s, oid, od, co)
+                        rel, rel_done, cg = _mj_ml_release(s, oid, od, co)
                         ship_id = (od.get("shipping") or {}).get("id")
-                        env = _mj_ml_shipping(s, ship_id)
+                        # Los cargos de MP son de la ORDEN completa. Se reparten
+                        # entre los ítems de MJ en proporción a su bruto sobre
+                        # el bruto total de la orden (que puede traer ítems que
+                        # NO son de María José).
+                        gross_ord = sum(
+                            float(x.get("unit_price") or 0)
+                            * int(x.get("quantity") or 0)
+                            for x in (od.get("order_items") or [])) or 0.0
+                        if cg["ok"] and cg["envio"]:
+                            env = cg["envio"]
+                        else:
+                            env = _mj_ml_shipping(s, ship_id)
                         tot_u = sum(int(oi.get("quantity") or 0)
                                     for oi in oi_mj) or 1
                         for oi in oi_mj:
@@ -4765,11 +4836,25 @@ def _mj_sync(window_days=None) -> dict:
                             unit = float(oi.get("unit_price") or 0)
                             gross = unit * q
                             fee = float(oi.get("sale_fee") or 0) * q
+                            share = (gross / gross_ord) if gross_ord else (
+                                q / tot_u)
+                            if cg["ok"]:
+                                # Retención y descuento REALES que cobra ML.
+                                ret = cg["retencion"] * share
+                                desc = cg["descuento"] * share
+                                if cg["comision"]:
+                                    fee = cg["comision"] * share
+                                env_i = env * share
+                            else:
+                                # Respaldo: estimación por porcentaje (lo viejo).
+                                ret = gross * RETENCION_FUENTE
+                                desc = 0.0
+                                env_i = env * (q / tot_u)
                             units_by_item[iid] = units_by_item.get(iid, 0) + q
                             tmp.append({
                                 "iid": iid, "oid": oid, "q": q, "gross": gross,
-                                "fee": fee, "ret": gross * RETENCION_FUENTE,
-                                "env": env * (q / tot_u), "fecha": fecha,
+                                "fee": fee, "ret": ret, "desc": desc,
+                                "env": env_i, "fecha": fecha,
                                 "rel": rel, "rel_done": rel_done,
                                 "info": ml_set.get(iid, {}),
                                 "nombre": (it.get("title")
@@ -4785,7 +4870,9 @@ def _mj_sync(window_days=None) -> dict:
                     tot_ad = ad_cost.get(iid, 0.0)
                     if tot_ad and units_by_item.get(iid):
                         pub = tot_ad * (t["q"] / units_by_item[iid])
-                    neto = t["gross"] - t["fee"] - t["ret"] - t["env"] - pub
+                    desc = t.get("desc", 0.0)
+                    neto = (t["gross"] - desc - t["fee"] - t["ret"]
+                            - t["env"] - pub)
                     rel = t["rel"]
                     libre = bool(t.get("rel_done") or (rel and rel <= today))
                     rows.append({
@@ -4796,7 +4883,8 @@ def _mj_sync(window_days=None) -> dict:
                         "nombre": t["nombre"], "thumb": t["info"].get("thumb", ""),
                         "unidades": t["q"],
                         "fecha_venta": t["fecha"].isoformat(),
-                        "precio_venta": round(t["gross"], 2), "descuentos": 0,
+                        "precio_venta": round(t["gross"], 2),
+                        "descuentos": round(desc, 2),
                         "comision": round(t["fee"], 2),
                         "retencion": round(t["ret"], 2),
                         "costo_envio": round(t["env"], 2),
@@ -5091,6 +5179,7 @@ def _mj_summary(date_from: str = None, date_to: str = None) -> dict:
 
     # Costos/neto del PERIODO mostrado (todo si no hay filtro).
     p_bruto = sum(float(v.get("precio_venta") or 0) for v in vfilt)
+    p_desc = sum(float(v.get("descuentos") or 0) for v in vfilt)
     p_com = sum(float(v.get("comision") or 0) for v in vfilt)
     p_ret = sum(float(v.get("retencion") or 0) for v in vfilt)
     p_env = sum(float(v.get("costo_envio") or 0) for v in vfilt)
@@ -5111,7 +5200,8 @@ def _mj_summary(date_from: str = None, date_to: str = None) -> dict:
         "filtro": {"date_from": df or "", "date_to": dt or "",
                    "activo": bool(df or dt)},
         "kpis": {
-            "bruto": round(p_bruto, 2), "comision": round(p_com, 2),
+            "bruto": round(p_bruto, 2), "descuentos": round(p_desc, 2),
+            "comision": round(p_com, 2),
             "retencion": round(p_ret, 2), "envio": round(p_env, 2),
             "publicidad": round(p_pub, 2), "neto": round(p_neto, 2),
             "neto_liberado": round(p_libre, 2),
@@ -5146,9 +5236,10 @@ def mj_get(force: bool = False, date_from: str = "", date_to: str = "",
 
 @app.get("/api/mj/debug-orden")
 def mj_debug_orden(oid: str = "", user: dict = Depends(_admin)):
-    """TEMPORAL · diagnóstico: devuelve la orden ML cruda y el pago de
-    MercadoPago para una orden, para ver de dónde salen el "Descuento a tu
-    contraparte" y las retenciones reales.  Solo lectura."""
+    """Diagnóstico (solo admin, solo lectura): orden ML cruda + pago de
+    MercadoPago.  Útil para auditar de dónde salen el "Descuento a tu
+    contraparte" (charges_details → coupon_fee) y las retenciones reales
+    (tax_withholding-fuente + tax_withholding-iva)."""
     if not oid:
         return {"ok": False, "error": "falta oid"}
     try:

@@ -970,8 +970,9 @@ function drawMJ(){
       <div class="kpi" style="flex:1;min-width:140px"><div class="cap">Abonos pagados</div><div class="val amber">${cop(k.abonos||0)}</div><div class="cap">${(r.abonos||[]).length} abono(s)</div></div>
     </div>
     <div style="display:flex;gap:10px;flex-wrap:wrap;width:100%;margin-top:2px">
+      <div class="kpi" style="flex:1;min-width:120px"><div class="cap">Descuentos / cupones</div><div class="val" style="color:#E08A8A">−${cop(k.descuentos||0)}</div></div>
       <div class="kpi" style="flex:1;min-width:120px"><div class="cap">Comisión plataformas</div><div class="val" style="color:#E08A8A">−${cop(k.comision||0)}</div></div>
-      <div class="kpi" style="flex:1;min-width:120px"><div class="cap">Retención fuente</div><div class="val" style="color:#E08A8A">−${cop(k.retencion||0)}</div></div>
+      <div class="kpi" style="flex:1;min-width:120px"><div class="cap">Retenciones (fuente + IVA)</div><div class="val" style="color:#E08A8A">−${cop(k.retencion||0)}</div></div>
       <div class="kpi" style="flex:1;min-width:120px"><div class="cap">Envío / Full</div><div class="val" style="color:#E08A8A">−${cop(k.envio||0)}</div></div>
       <div class="kpi" style="flex:1;min-width:120px"><div class="cap">Publicidad</div><div class="val" style="color:#E08A8A">−${cop(k.publicidad||0)}</div></div>
     </div>`;
@@ -1008,7 +1009,7 @@ function drawMJ(){
       <td>${mjPlatChip(vv.plataforma)}</td>
       <td style="text-align:center">${vv.unidades}</td>
       <td style="text-align:right;font-weight:700">${cop(vv.precio_venta)}</td>
-      <td style="text-align:right;color:#E08A8A;font-size:11px">−${cop((vv.comision||0)+(vv.retencion||0)+(vv.costo_envio||0)+(vv.costo_publicidad||0))}<div class="cap" style="font-size:9px">com ${cop(vv.comision||0)} · ret ${cop(vv.retencion||0)}${vv.costo_envio?` · env ${cop(vv.costo_envio)}`:""}${vv.costo_publicidad?` · ads ${cop(vv.costo_publicidad)}`:""}</div></td>
+      <td style="text-align:right;color:#E08A8A;font-size:11px">−${cop((vv.descuentos||0)+(vv.comision||0)+(vv.retencion||0)+(vv.costo_envio||0)+(vv.costo_publicidad||0))}<div class="cap" style="font-size:9px">${vv.descuentos?`desc ${cop(vv.descuentos)} · `:""}com ${cop(vv.comision||0)} · ret ${cop(vv.retencion||0)}${vv.costo_envio?` · env ${cop(vv.costo_envio)}`:""}${vv.costo_publicidad?` · ads ${cop(vv.costo_publicidad)}`:""}</div></td>
       <td style="text-align:right;font-weight:800;color:var(--green)">${cop(vv.neto_mj)}</td>
       <td style="text-align:right;font-size:11px">${lib}${ads}</td>
     </tr>`;
