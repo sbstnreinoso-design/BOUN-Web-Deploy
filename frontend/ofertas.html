@@ -195,7 +195,14 @@ summary::before{content:'▸ '} details[open] summary::before{content:'▾ '}
 <h2 class="secTitle"><span class="num" style="background:#7CE38B;color:#111">✓</span> Ofertas aprobadas · en curso <span class="secNote">las que aprobaste ya salen de pendientes y aparecen aquí con las unidades vendidas mientras están/estuvieron en oferta</span></h2>
 <div class="grid" id="gridAprob"></div>
 <div id="aprobEmpty" class="legend" style="margin-top:2px;display:none">Aún no hay ofertas aprobadas en curso. Cuando apruebes una (sección 1 o 2) aparecerá aquí con sus ventas.</div>
-<h2 class="secTitle"><span class="num">3</span> Métricas de las ofertas relámpago <span class="secNote">se actualiza en tiempo real en cada corrida diaria · acumulado con filtro por fechas · alimenta la programación de nuevas ofertas</span></h2>
+
+<h2 class="secTitle"><span class="num">3</span> Promociones de MercadoLibre <span class="secNote">campañas que ofrece ML (marca / temporada / descuento) · NO relámpago ni creadas por ti · agrupadas por campaña · apruebas variante por variante al precio mínimo que permite ML</span></h2>
+<p class="legend" style="margin-top:2px">Estas son las promociones que <b>MercadoLibre ofrece</b> para las publicaciones de BOUN (p. ej. «Haz crecer tus ventas», «Regreso a Clases», «Acelera tus ventas de Full», «AON Home», «¡Gánale a la competencia!»…), <b>sin incluir</b> las ofertas relámpago ni las creadas por nosotros (esas se aprueban arriba). Se refrescan a diario con TODAS las publicaciones elegibles, <b>variante por variante</b>, con el <b>precio mínimo real que ML permite</b> para participar. Aprueba ✓ / rechaza ✗ cada variante; en la corrida siguiente Claude aplica las aprobadas y pasan a <b>activas</b> (✅) dentro de su campaña.</p>
+<div id="promoStats" class="legend" style="margin-top:2px;font-weight:600;display:none"></div>
+<div id="grid4"></div>
+<div id="emptyPromo" class="legend" style="margin-top:2px;display:none">Cargando promociones de MercadoLibre… si no aparece nada, la corrida diaria aún no las ha publicado.</div>
+
+<h2 class="secTitle"><span class="num">4</span> Métricas de las ofertas relámpago <span class="secNote">se actualiza en tiempo real en cada corrida diaria · acumulado con filtro por fechas · alimenta la programación de nuevas ofertas</span></h2>
 <p class="legend" style="margin-top:2px">Ventas ML por día (fuente: web BOUN). Por ahora es la <b>línea base sin ofertas relámpago</b>; desde la primera oferta aplicada, cada día con oferta queda marcado <span style="color:var(--warn)">⚡ amarillo</span> y registra qué vendieron sus publicaciones. El top de publicaciones alimenta la rotación: las de mejor rendimiento en oferta suben de prioridad y las que no convierten rotan menos. <b>Ventana rodante:</b> cada oferta que corre sale de la sección 2 y entra un día nuevo al final del plan — el artefacto siempre muestra 30 días hacia adelante y el histórico se acumula aquí.</p>
 <div class="mxwrap">
   <div class="mxfilters">
@@ -444,7 +451,8 @@ function buildDecisiones(){
   propias:{
    crear:OFFERS.filter((_,i)=>state2[i]===1).map(o=>({fecha:o.fecha,franja:o.franja,pubs:o.prods.map(function(x){var id=POOL[x].id;var rm=(window.__realMap||{})[String(id).replace(/\D/g,'')]||{};var precio=(rm.precio!=null?rm.precio:nice(POOL[x].price));return {id:id,precio:precio,precio_real:(rm.precio!=null?rm.precio:null),pct_real:(rm.pct!=null?rm.pct:null),estado:(rm.estado||'aprobada'),motivo:(rm.motivo||null)};})})),
    no_crear:OFFERS.filter((_,i)=>state2[i]===0).map(o=>o.fecha)
-  }
+  },
+  promos_ml:(window.__buildPromos&&window.__buildPromos())||{aprobar:[],rechazar:[]}
  };
 }
 async function enviar(){
@@ -586,6 +594,117 @@ document.addEventListener('DOMContentLoaded',function(){setTimeout(window.__rend
    if(bar && vis('#grid .item')===0 && vis('#grid2 > *')===0) bar.style.display='none';
  }
  document.addEventListener('DOMContentLoaded',function(){ setTimeout(chequear,2200); setTimeout(chequear,4000); });
+})();
+</script>
+<script>
+/* ── Sección 3 · Promociones de MercadoLibre (no relámpago, no propias) ── */
+(function(){
+ const PCAT={sleep:['SLEEP','#8B7BD8'],swim:['SWIM','#2DC6FF'],moto:['MOTO','#FF8A1F'],music:['MUSIC','#FF2D7B'],ind:['INDUSTRIAL','#FFD60A'],kat:['KAT 🐱','#9AE66E'],tech:['TECH / OTROS','#B9C0CC']};
+ const fmt=n=>'$ '+Number(n||0).toLocaleString('es-CO');
+ window.__promosState={};      // key "ci::id" -> 1|0
+ window.__promosData=null;
+ function stKey(ci,id){return ci+'::'+String(id).replace(/\D/g,'');}
+
+ function render(data){
+  const grid=document.getElementById('grid4');
+  const empty=document.getElementById('emptyPromo');
+  const camps=(data&&data.campanas)||[];
+  grid.innerHTML='';
+  if(!camps.length){ empty.style.display='block'; empty.innerHTML='Aún no hay promociones de MercadoLibre publicadas por la corrida. Aparecerán aquí en la próxima corrida diaria.'; document.getElementById('promoStats').style.display='none'; return; }
+  empty.style.display='none';
+  camps.forEach((cp,ci)=>{
+   const pubs=cp.pubs||[];
+   const card=document.createElement('div'); card.className='item'; card.id='camp'+ci;
+   const rows=pubs.map(p=>{
+     const id=String(p.id).replace(/\D/g,''); const inv=(window.__INV||{})[id]||{};
+     const ptitle=p.t||inv.t||('#'+id); const pimg=p.img||inv.img||'';
+     const c=PCAT[p.cat||inv.cat||catFromTitle(ptitle)]||PCAT.tech;
+     const plista=p.lista||(inv.price?fmt(inv.price):'');
+     const est=p.estado||'pendiente';
+     const priceReal=(p.precio_real!=null)?fmt(p.precio_real):(p.rango||'—');
+     const lab=(p.precio_real!=null)?((p.pct?p.pct+'% ':'')+'real ML'):(p.rango?'rango real ML':'—');
+     let right;
+     if(est==='activa'){ right='<span style="color:#7CE38B;font-weight:700;font-size:12px">✅ en la campaña</span>'; }
+     else if(est==='bloqueada'){ right='<span style="color:#FF7A7A;font-weight:700;font-size:12px" title="'+(p.motivo||'')+'">⛔ no elegible</span>'; }
+     else {
+       const def=(p.def==null?1:p.def); window.__promosState[stKey(ci,id)]=def;
+       right='<div class="pbtns" style="display:flex;gap:6px">'+
+         '<button class="pbap" data-ci="'+ci+'" data-id="'+id+'" style="border:0;border-radius:8px;padding:6px 9px;font-weight:700;cursor:pointer;background:'+(def?'#7CE38B':'var(--card2)')+';color:'+(def?'#111':'var(--muted)')+'">✓</button>'+
+         '<button class="pbrj" data-ci="'+ci+'" data-id="'+id+'" style="border:0;border-radius:8px;padding:6px 9px;font-weight:700;cursor:pointer;background:'+(def?'var(--card2)':'#FF5A5A')+';color:'+(def?'var(--muted)':'#fff')+'">✗</button></div>';
+     }
+     const opacity=(est==='bloqueada')?';opacity:.5':'';
+     return '<div class="op" id="prow-'+ci+'-'+id+'" style="align-items:center'+opacity+'">'+
+       '<img src="'+pimg+'" loading="lazy" onerror="this.style.display=\'none\'" alt="">'+
+       '<div class="opt">'+ptitle+'<small><span style="color:'+c[1]+'">'+c[0]+'</span> · '+p.id+(plista?' · lista '+plista:'')+'</small></div>'+
+       '<div class="opp"><b'+(est==='bloqueada'?' style="text-decoration:line-through;color:var(--muted)"':'')+'>'+priceReal+'</b><small style="color:#FFD166">'+lab+'</small></div>'+
+       right+'</div>';
+   }).join('');
+   card.innerHTML='<div class="datebig"><span style="font-size:20px">🏷️</span><div><div class="d">'+cp.nombre+'</div>'+
+     '<small style="color:var(--muted)">'+(cp.vigencia||'')+'</small></div>'+
+     '<span class="hour" style="background:var(--card2);padding:4px 10px;border-radius:8px;font-size:12px;font-weight:600">'+pubs.length+' variantes</span></div>'+
+     '<div class="offProds">'+rows+'</div>';
+   grid.appendChild(card);
+  });
+  // wire buttons
+  grid.querySelectorAll('.pbap').forEach(b=>b.onclick=()=>setP(+b.dataset.ci,b.dataset.id,1));
+  grid.querySelectorAll('.pbrj').forEach(b=>b.onclick=()=>setP(+b.dataset.ci,b.dataset.id,0));
+  updStats();
+ }
+
+ function setP(ci,id,v){
+  window.__promosState[stKey(ci,id)]=v;
+  const row=document.getElementById('prow-'+ci+'-'+String(id).replace(/\D/g,''));
+  if(row){ const ap=row.querySelector('.pbap'), rj=row.querySelector('.pbrj');
+   if(ap){ ap.style.background=v?'#7CE38B':'var(--card2)'; ap.style.color=v?'#111':'var(--muted)'; }
+   if(rj){ rj.style.background=v?'var(--card2)':'#FF5A5A'; rj.style.color=v?'var(--muted)':'#fff'; } }
+  updStats();
+ }
+
+ function updStats(){
+  const d=window.__promosData; if(!d)return;
+  let ap=0,rj=0,act=0,blo=0;
+  (d.campanas||[]).forEach((cp,ci)=>(cp.pubs||[]).forEach(p=>{
+    const est=p.estado||'pendiente';
+    if(est==='activa')act++; else if(est==='bloqueada')blo++;
+    else { (window.__promosState[stKey(ci,p.id)]===1)?ap++:rj++; }
+  }));
+  const el=document.getElementById('promoStats'); el.style.display='block';
+  el.innerHTML='<span style="color:#7CE38B">✓ '+ap+' por aprobar</span> · <span style="color:#FF7A7A">✗ '+rj+' rechazadas</span> · ✅ '+act+' activas · ⛔ '+blo+' no elegibles';
+ }
+
+ // expone la construcción de decisiones para buildDecisiones() del script principal
+ window.__buildPromos=function(){
+  const d=window.__promosData; const out={aprobar:[],rechazar:[]};
+  if(!d)return out;
+  (d.campanas||[]).forEach((cp,ci)=>(cp.pubs||[]).forEach(p=>{
+    const est=p.estado||'pendiente'; if(est==='activa'||est==='bloqueada')return;
+    const v=window.__promosState[stKey(ci,p.id)];
+    if(v===1) out.aprobar.push({id:p.id,variante:p.t,campana:cp.nombre,campana_id:cp.id,offer_ml:cp.id,precio_real:p.precio_real,pct_real:p.pct});
+    else out.rechazar.push({id:p.id,campana_id:cp.id});
+  }));
+  return out;
+ };
+
+ function catFromTitle(t){t=(t||'').toLowerCase();if(/nataci|piscina|impermeab/.test(t))return'swim';if(/casco|moto|balaclava/.test(t))return'moto';if(/arenero|gato|rascador|comedero|bebedero|mascota|collar|guacal/.test(t))return'kat';if(/tapon|oido|oído|dormir|earplug|antirru|antiruido|concier/.test(t))return'sleep';return'tech';}
+ async function loadInv(tk){
+  try{ const r=await fetch('/api/inventory',{headers:{Authorization:'Bearer '+tk}}); if(!r.ok)return {};
+   const arr=await r.json(); const map={};
+   (arr||[]).forEach(p=>(p.links||[]).forEach(l=>{ if(l.channel==='mercadolibre'&&l.ml_item_id){ map[String(l.ml_item_id).replace(/\D/g,'')]={t:l.ml_title,img:l.ml_thumb,cat:catFromTitle(l.ml_title),price:l.ml_price}; }}));
+   return map;
+  }catch(e){ return {}; }
+ }
+ async function load(){
+  try{
+   const tk=localStorage.getItem('boun_token'); if(!tk){ document.getElementById('emptyPromo').style.display='block'; return; }
+   window.__INV=await loadInv(tk);
+   const r=await fetch('/api/relampago/promos_ml',{headers:{Authorization:'Bearer '+tk}});
+   if(!r.ok){ document.getElementById('emptyPromo').style.display='block'; return; }
+   const j=await r.json(); window.__promosData=(j&&j.datos)||null;
+   render(window.__promosData);
+  }catch(e){ document.getElementById('emptyPromo').style.display='block'; }
+ }
+ window.__setP=setP; window.__reloadPromos=load;
+ document.addEventListener('DOMContentLoaded',function(){ setTimeout(load,1400); });
 })();
 </script>
 </body>
