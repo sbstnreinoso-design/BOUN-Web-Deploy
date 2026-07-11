@@ -450,7 +450,37 @@ function buildDecisiones(){
 async function enviar(){
  const b=document.getElementById('btnSend'); b.disabled=true; b.textContent='Enviando...';
  try{
-  const r=await fetch('/api/relampago/decisiones',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+TK()},body:JSON.stringify(buildDecisiones())});
+  const nueva=buildDecisiones();
+  // FUSION con lo ya guardado en el servidor: nunca perder ofertas/sugeridas ya aprobadas con su precio real
+  // (una tarjeta oculta o no re-marcada no debe borrar lo aprobado antes).
+  try{
+   const rg=await fetch('/api/relampago/decisiones',{headers:{Authorization:'Bearer '+TK()}});
+   if(rg.ok){ const prev=(((await rg.json())||{}).datos)||{};
+    const norm=function(v){return String(v==null?'':v).replace(/\D/g,'');};
+    nueva.propias=nueva.propias||{crear:[],no_crear:[]}; nueva.propias.crear=nueva.propias.crear||[];
+    const prevCrear=(prev.propias&&prev.propias.crear)||[];
+    const byFecha={}; nueva.propias.crear.forEach(function(o){byFecha[String(o.fecha).toLowerCase().trim()]=o;});
+    prevCrear.forEach(function(po){
+     const k=String(po.fecha).toLowerCase().trim();
+     const aprob=(po.pubs||[]).some(function(p){return p.estado==='aprobada'||p.estado==='activa'||p.aplicada||p.estado==='bloqueada';});
+     if(!byFecha[k]){ if(aprob) nueva.propias.crear.push(po); return; }
+     const no=byFecha[k]; const pmap={}; (no.pubs||[]).forEach(function(p){pmap[norm(p.id)]=p;});
+     (po.pubs||[]).forEach(function(pp){
+       const id=norm(pp.id); const cur=pmap[id];
+       if(!cur){ no.pubs.push(pp); return; }
+       if(cur.precio_real==null && pp.precio_real!=null){ cur.precio=pp.precio_real; cur.precio_real=pp.precio_real; cur.pct_real=pp.pct_real; }
+       if(pp.estado==='activa'||pp.aplicada){ cur.estado=pp.estado; if(pp.vendidas!=null)cur.vendidas=pp.vendidas; }
+       if(pp.estado==='bloqueada' && cur.precio_real==null){ cur.estado='bloqueada'; cur.motivo=pp.motivo; }
+     });
+    });
+    nueva.sugeridas=nueva.sugeridas||{aprobar:[],rechazar:[]};
+    const prevAp=(prev.sugeridas&&prev.sugeridas.aprobar)||[];
+    const apIds={}; (nueva.sugeridas.aprobar||[]).forEach(function(x){apIds[norm(x.id)]=1;});
+    const rjIds={}; (nueva.sugeridas.rechazar||[]).forEach(function(x){rjIds[norm(x)]=1;});
+    prevAp.forEach(function(x){ const id=norm(x.id); if(apIds[id]||rjIds[id]) return; if(x.estado==='activa'||x.aplicada||x.precio_aplicado!=null){ nueva.sugeridas.aprobar.push(x); } });
+   }
+  }catch(_){}
+  const r=await fetch('/api/relampago/decisiones',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+TK()},body:JSON.stringify(nueva)});
   if(r.status===401){document.getElementById('loginOv').classList.add('show');b.disabled=false;b.textContent='\u26a1 Enviar decisiones a Claude';return;}
   if(!r.ok) throw new Error('HTTP '+r.status);
   b.textContent='\u2713 Decisiones enviadas';try{document.getElementById('grid').style.display='none';document.getElementById('grid2').style.display='none';window.__estadoBanner&&window.__estadoBanner();}catch(_){}
