@@ -613,44 +613,38 @@ document.addEventListener('DOMContentLoaded',function(){setTimeout(window.__rend
   grid.innerHTML='';
   if(!camps.length){ empty.style.display='block'; empty.innerHTML='Aún no hay promociones de MercadoLibre publicadas por la corrida. Aparecerán aquí en la próxima corrida diaria.'; document.getElementById('promoStats').style.display='none'; return; }
   empty.style.display='none';
+  const dm=window.__promoDec||{};
+  let pendTotal=0;
   camps.forEach((cp,ci)=>{
-   const pubs=cp.pubs||[];
+   // solo mostrar PENDIENTES sin decidir: se ocultan activas, bloqueadas y las ya aprobadas/rechazadas (enviadas)
+   const pubs=(cp.pubs||[]).filter(p=>{ const id=String(p.id).replace(/\D/g,''); const est=p.estado||'pendiente'; return est!=='activa'&&est!=='bloqueada'&&!dm[id]; });
+   if(!pubs.length) return;
+   pendTotal+=pubs.length;
    const card=document.createElement('div'); card.className='item'; card.id='camp'+ci;
    const rows=pubs.map(p=>{
      const id=String(p.id).replace(/\D/g,''); const inv=(window.__INV||{})[id]||{};
      const ptitle=p.t||inv.t||('#'+id); const pimg=p.img||inv.img||'';
      const c=PCAT[p.cat||inv.cat||catFromTitle(ptitle)]||PCAT.tech;
      const plista=p.lista||(inv.price?fmt(inv.price):'');
-     const est=p.estado||'pendiente';
      const priceReal=(p.precio_real!=null)?fmt(p.precio_real):(p.rango||'—');
      const lab=(p.precio_real!=null)?((p.pct?p.pct+'% ':'')+'real ML'):(p.rango?'rango real ML':'—');
-     let right;
-     if(est==='activa'){ right='<span style="color:#7CE38B;font-weight:700;font-size:12px">✅ en la campaña</span>'; }
-     else if(est==='bloqueada'){ right='<span style="color:#FF7A7A;font-weight:700;font-size:12px" title="'+(p.motivo||'')+'">⛔ no elegible</span>'; }
-     else {
-       const dec=(window.__promoDec||{})[id];
-       if(dec==='aprobada'){ window.__promosState[stKey(ci,id)]=1; right='<span style="color:#7CE38B;font-weight:700;font-size:12px">✅ aprobada · se aplica en la corrida</span>'; }
-       else if(dec==='rechazada'){ window.__promosState[stKey(ci,id)]=0; right='<span style="color:var(--muted);font-weight:700;font-size:12px">✗ rechazada</span>'; }
-       else {
-         const def=(p.def==null?1:p.def); window.__promosState[stKey(ci,id)]=def;
-         right='<div class="pbtns" style="display:flex;gap:6px">'+
-           '<button class="pbap" data-ci="'+ci+'" data-id="'+id+'" style="border:0;border-radius:8px;padding:6px 9px;font-weight:700;cursor:pointer;background:'+(def?'#7CE38B':'var(--card2)')+';color:'+(def?'#111':'var(--muted)')+'">✓</button>'+
-           '<button class="pbrj" data-ci="'+ci+'" data-id="'+id+'" style="border:0;border-radius:8px;padding:6px 9px;font-weight:700;cursor:pointer;background:'+(def?'var(--card2)':'#FF5A5A')+';color:'+(def?'var(--muted)':'#fff')+'">✗</button></div>';
-       }
-     }
-     const opacity=(est==='bloqueada'||(window.__promoDec||{})[id]==='rechazada')?';opacity:.5':'';
-     return '<div class="op" id="prow-'+ci+'-'+id+'" style="align-items:center'+opacity+'">'+
+     const def=(p.def==null?1:p.def); window.__promosState[stKey(ci,id)]=def;
+     const right='<div class="pbtns" style="display:flex;gap:6px">'+
+         '<button class="pbap" data-ci="'+ci+'" data-id="'+id+'" style="border:0;border-radius:8px;padding:6px 9px;font-weight:700;cursor:pointer;background:'+(def?'#7CE38B':'var(--card2)')+';color:'+(def?'#111':'var(--muted)')+'">✓</button>'+
+         '<button class="pbrj" data-ci="'+ci+'" data-id="'+id+'" style="border:0;border-radius:8px;padding:6px 9px;font-weight:700;cursor:pointer;background:'+(def?'var(--card2)':'#FF5A5A')+';color:'+(def?'var(--muted)':'#fff')+'">✗</button></div>';
+     return '<div class="op" id="prow-'+ci+'-'+id+'" style="align-items:center">'+
        '<img src="'+pimg+'" loading="lazy" onerror="this.style.display=\'none\'" alt="">'+
        '<div class="opt">'+ptitle+'<small><span style="color:'+c[1]+'">'+c[0]+'</span> · '+p.id+(plista?' · lista '+plista:'')+'</small></div>'+
-       '<div class="opp"><b'+(est==='bloqueada'?' style="text-decoration:line-through;color:var(--muted)"':'')+'>'+priceReal+'</b><small style="color:#FFD166">'+lab+'</small></div>'+
+       '<div class="opp"><b>'+priceReal+'</b><small style="color:#FFD166">'+lab+'</small></div>'+
        right+'</div>';
    }).join('');
    card.innerHTML='<div class="datebig"><span style="font-size:20px">🏷️</span><div><div class="d">'+cp.nombre+'</div>'+
      '<small style="color:var(--muted)">'+(cp.vigencia||'')+'</small></div>'+
-     '<span class="hour" style="background:var(--card2);padding:4px 10px;border-radius:8px;font-size:12px;font-weight:600">'+pubs.length+' variantes</span></div>'+
+     '<span class="hour" style="background:var(--card2);padding:4px 10px;border-radius:8px;font-size:12px;font-weight:600">'+pubs.length+' por aprobar</span></div>'+
      '<div class="offProds">'+rows+'</div>';
    grid.appendChild(card);
   });
+  if(!pendTotal){ empty.style.display='block'; empty.innerHTML='✅ <b>Todo revisado.</b> Las variantes que aprobaste se aplicarán en la próxima corrida y pasarán a activas en su campaña. (Las ya activas y las no elegibles no se muestran aquí.)'; }
   // wire buttons
   grid.querySelectorAll('.pbap').forEach(b=>b.onclick=()=>setP(+b.dataset.ci,b.dataset.id,1));
   grid.querySelectorAll('.pbrj').forEach(b=>b.onclick=()=>setP(+b.dataset.ci,b.dataset.id,0));
@@ -668,25 +662,29 @@ document.addEventListener('DOMContentLoaded',function(){setTimeout(window.__rend
 
  function updStats(){
   const d=window.__promosData; if(!d)return;
-  let ap=0,rj=0,act=0,blo=0;
+  const dm=window.__promoDec||{};
+  let pend=0,apEnv=0,rjEnv=0,act=0,blo=0;
   (d.campanas||[]).forEach((cp,ci)=>(cp.pubs||[]).forEach(p=>{
-    const est=p.estado||'pendiente';
+    const id=String(p.id).replace(/\D/g,''); const est=p.estado||'pendiente';
     if(est==='activa')act++; else if(est==='bloqueada')blo++;
-    else { (window.__promosState[stKey(ci,p.id)]===1)?ap++:rj++; }
+    else if(dm[id]==='aprobada')apEnv++; else if(dm[id]==='rechazada')rjEnv++;
+    else pend++;
   }));
   const el=document.getElementById('promoStats'); el.style.display='block';
-  el.innerHTML='<span style="color:#7CE38B">✓ '+ap+' por aprobar</span> · <span style="color:#FF7A7A">✗ '+rj+' rechazadas</span> · ✅ '+act+' activas · ⛔ '+blo+' no elegibles';
+  el.innerHTML='<span style="color:#FFD166">⏳ '+pend+' por revisar</span> · <span style="color:#7CE38B">✅ '+apEnv+' aprobadas (en cola)</span> · <span style="color:#FF7A7A">✗ '+rjEnv+' rechazadas</span> · 🏷️ '+act+' ya en campaña · ⛔ '+blo+' no elegibles';
  }
 
  // expone la construcción de decisiones para buildDecisiones() del script principal
  window.__buildPromos=function(){
   const d=window.__promosData; const out={aprobar:[],rechazar:[]};
   if(!d)return out;
+  const dm=window.__promoDec||{};
   (d.campanas||[]).forEach((cp,ci)=>(cp.pubs||[]).forEach(p=>{
     const est=p.estado||'pendiente'; if(est==='activa'||est==='bloqueada')return;
-    const v=window.__promosState[stKey(ci,p.id)];
+    const id=String(p.id).replace(/\D/g,''); const dec=dm[id];
+    let v; if(dec==='aprobada')v=1; else if(dec==='rechazada')v=0; else v=window.__promosState[stKey(ci,id)];
     if(v===1) out.aprobar.push({id:p.id,variante:p.t,campana:cp.nombre,campana_id:cp.id,offer_ml:cp.id,precio_real:p.precio_real,pct_real:p.pct});
-    else out.rechazar.push({id:p.id,campana_id:cp.id});
+    else if(v===0) out.rechazar.push({id:p.id,campana_id:cp.id});
   }));
   return out;
  };
