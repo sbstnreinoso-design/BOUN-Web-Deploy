@@ -693,6 +693,8 @@ var act=items.filter(function(i){return i.estado==='activa';}),blo=items.filter(
  window.__promosState={};      // key "ci::id" -> 1|0
  window.__promosData=null;
  function stKey(ci,id){return ci+'::'+String(id).replace(/\D/g,'');}
+ /* Decisión POR CAMPAÑA: clave campana_id::pubid; '*::pubid' = decisión vieja sin campaña (aplica a todas) */
+ function dmGet(dm,campId,id){id=String(id).replace(/\D/g,'');return dm[String(campId)+'::'+id]||dm['*::'+id]||null;}
 
  function render(data){
   const grid=document.getElementById('grid4');
@@ -705,7 +707,7 @@ var act=items.filter(function(i){return i.estado==='activa';}),blo=items.filter(
   let pendTotal=0;
   camps.forEach((cp,ci)=>{
    // solo mostrar PENDIENTES sin decidir: se ocultan activas, bloqueadas y las ya aprobadas/rechazadas (enviadas)
-   const pubs=(cp.pubs||[]).filter(p=>{ const id=String(p.id).replace(/\D/g,''); const est=p.estado||'pendiente'; return est!=='activa'&&est!=='bloqueada'&&!dm[id]; });
+   const pubs=(cp.pubs||[]).filter(p=>{ const est=p.estado||'pendiente'; return est!=='activa'&&est!=='bloqueada'&&!dmGet(dm,cp.id,p.id); });
    if(!pubs.length) return;
    pendTotal+=pubs.length;
    const card=document.createElement('div'); card.className='item'; card.id='camp'+ci;
@@ -754,9 +756,9 @@ var act=items.filter(function(i){return i.estado==='activa';}),blo=items.filter(
   const dm=window.__promoDec||{};
   let pend=0,apEnv=0,rjEnv=0,act=0,blo=0;
   (d.campanas||[]).forEach((cp,ci)=>(cp.pubs||[]).forEach(p=>{
-    const id=String(p.id).replace(/\D/g,''); const est=p.estado||'pendiente';
+    const est=p.estado||'pendiente'; const dec=dmGet(dm,cp.id,p.id);
     if(est==='activa')act++; else if(est==='bloqueada')blo++;
-    else if(dm[id]==='aprobada')apEnv++; else if(dm[id]==='rechazada')rjEnv++;
+    else if(dec==='aprobada')apEnv++; else if(dec==='rechazada')rjEnv++;
     else pend++;
   }));
   const el=document.getElementById('promoStats'); el.style.display='block';
@@ -771,7 +773,7 @@ var act=items.filter(function(i){return i.estado==='activa';}),blo=items.filter(
   const dm=window.__promoDec||{};
   (d.campanas||[]).forEach((cp,ci)=>(cp.pubs||[]).forEach(p=>{
     const est=p.estado||'pendiente'; if(est==='activa'||est==='bloqueada')return;
-    const id=String(p.id).replace(/\D/g,''); const dec=dm[id];
+    const id=String(p.id).replace(/\D/g,''); const dec=dmGet(dm,cp.id,p.id);
     let v; if(dec==='aprobada')v=1; else if(dec==='rechazada')v=0; else v=window.__promosState[stKey(ci,id)];
     if(v===1) out.aprobar.push({id:p.id,variante:p.t,campana:cp.nombre,campana_id:cp.id,offer_ml:cp.id,precio_real:p.precio_real,pct_real:p.pct});
     else if(v===0) out.rechazar.push({id:p.id,campana_id:cp.id});
@@ -792,7 +794,10 @@ var act=items.filter(function(i){return i.estado==='activa';}),blo=items.filter(
    const tk=localStorage.getItem('boun_token'); if(!tk){ const ep=document.getElementById('emptyPromo'); ep.style.display='block'; ep.innerHTML='Inicia sesión para ver las promociones de MercadoLibre.'; return; }
    window.__INV=await loadInv(tk);
    // decisiones ya enviadas → para reflejar aprobadas/rechazadas al recargar
-   try{ const dj=await (await fetch('/api/relampago/decisiones',{headers:{Authorization:'Bearer '+tk}})).json(); const dd=((dj&&dj.datos)||{}).promos_ml||{}; const dm={}; (dd.aprobar||[]).forEach(x=>dm[String(x.id).replace(/\D/g,'')]='aprobada'); (dd.rechazar||[]).forEach(x=>dm[String((x&&x.id)||x).replace(/\D/g,'')]='rechazada'); window.__promoDec=dm; }catch(_){ window.__promoDec={}; }
+   try{ const dj=await (await fetch('/api/relampago/decisiones',{headers:{Authorization:'Bearer '+tk}})).json(); const dd=((dj&&dj.datos)||{}).promos_ml||{}; const dm={};
+    const put=(x,v)=>{ const id=String((x&&x.id)||x).replace(/\D/g,''); if(!id)return; const c=(x&&x.campana_id!=null)?String(x.campana_id):'*'; dm[c+'::'+id]=v; };
+    (dd.aprobar||[]).forEach(x=>put(x,'aprobada')); (dd.rechazar||[]).forEach(x=>put(x,'rechazada'));
+    window.__promoDec=dm; }catch(_){ window.__promoDec={}; }
    const r=await fetch('/api/relampago/promos_ml',{headers:{Authorization:'Bearer '+tk}});
    if(!r.ok){ document.getElementById('emptyPromo').style.display='block'; return; }
    const j=await r.json(); window.__promosData=(j&&j.datos)||null;
