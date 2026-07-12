@@ -449,7 +449,7 @@ function buildDecisiones(){
    rechazar:ITEMS.filter((_,i)=>state[i]===0).map(it=>it.id)
   },
   propias:{
-   crear:OFFERS.filter((_,i)=>state2[i]===1).map(o=>({fecha:o.fecha,franja:o.franja,pubs:o.prods.map(function(x){var id=POOL[x].id;var rm=(window.__realMap||{})[String(id).replace(/\D/g,'')]||{};var precio=(rm.precio!=null?rm.precio:nice(POOL[x].price));return {id:id,precio:precio,precio_real:(rm.precio!=null?rm.precio:null),pct_real:(rm.pct!=null?rm.pct:null),estado:(rm.estado||'aprobada'),motivo:(rm.motivo||null)};})})),
+   crear:OFFERS.filter((_,i)=>state2[i]===1).map(o=>({fecha:o.fecha,franja:o.franja,pubs:o.prods.map(function(x){var id=POOL[x].id;var rm=(window.__realMap||{})[String(id).replace(/\D/g,'')]||{};var precio=(rm.precio!=null?rm.precio:nice(POOL[x].price));return {id:id,precio:precio,precio_real:(rm.precio!=null?rm.precio:null),pct_real:(rm.pct!=null?rm.pct:null),estado:((rm.estado==='activa'||rm.estado==='bloqueada')?rm.estado:'aprobada'),motivo:(rm.motivo||null)};})})),
    no_crear:OFFERS.filter((_,i)=>state2[i]===0).map(o=>o.fecha)
   },
   promos_ml:(window.__buildPromos&&window.__buildPromos())||{aprobar:[],rechazar:[]}
