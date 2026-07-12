@@ -1163,7 +1163,9 @@ def _ml_daily_sales(days: int = 14, date_from: str = None,
         thumbs = _ml_thumbs(s, list(all_ids)) if all_ids else {}
         for x in dias:
             for t in x["top"]:
-                t["img"] = thumbs.get(t.pop("item_id"), "")
+                # Conservar item_id: la web de ofertas relámpago lo usa para
+                # cruzar ventas por día con campañas/variantes (Sección 4).
+                t["img"] = thumbs.get(t.get("item_id"), "")
         # ROAS/ACOS por día desde Product Ads (si hay publicidad activa)
         try:
             ads = _ml_ads_daily([x["fecha"] for x in dias])
