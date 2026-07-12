@@ -492,6 +492,7 @@ async function enviar(){
   if(r.status===401){document.getElementById('loginOv').classList.add('show');b.disabled=false;b.textContent='\u26a1 Enviar decisiones a Claude';return;}
   if(!r.ok) throw new Error('HTTP '+r.status);
   b.textContent='\u2713 Decisiones enviadas';try{document.getElementById('grid').style.display='none';document.getElementById('grid2').style.display='none';window.__estadoBanner&&window.__estadoBanner();}catch(_){}
+  try{ if(window.__reloadPromos) setTimeout(window.__reloadPromos,600); }catch(_){}
   const t=document.getElementById('toast');t.textContent='Enviado \u2014 Claude las aplicar\u00e1 en la pr\u00f3xima corrida';t.classList.add('show');
   setTimeout(()=>{t.classList.remove('show');b.disabled=false;b.textContent='\u26a1 Enviar decisiones a Claude';},3200);
  }catch(e){
@@ -627,12 +628,17 @@ document.addEventListener('DOMContentLoaded',function(){setTimeout(window.__rend
      if(est==='activa'){ right='<span style="color:#7CE38B;font-weight:700;font-size:12px">✅ en la campaña</span>'; }
      else if(est==='bloqueada'){ right='<span style="color:#FF7A7A;font-weight:700;font-size:12px" title="'+(p.motivo||'')+'">⛔ no elegible</span>'; }
      else {
-       const def=(p.def==null?1:p.def); window.__promosState[stKey(ci,id)]=def;
-       right='<div class="pbtns" style="display:flex;gap:6px">'+
-         '<button class="pbap" data-ci="'+ci+'" data-id="'+id+'" style="border:0;border-radius:8px;padding:6px 9px;font-weight:700;cursor:pointer;background:'+(def?'#7CE38B':'var(--card2)')+';color:'+(def?'#111':'var(--muted)')+'">✓</button>'+
-         '<button class="pbrj" data-ci="'+ci+'" data-id="'+id+'" style="border:0;border-radius:8px;padding:6px 9px;font-weight:700;cursor:pointer;background:'+(def?'var(--card2)':'#FF5A5A')+';color:'+(def?'var(--muted)':'#fff')+'">✗</button></div>';
+       const dec=(window.__promoDec||{})[id];
+       if(dec==='aprobada'){ window.__promosState[stKey(ci,id)]=1; right='<span style="color:#7CE38B;font-weight:700;font-size:12px">✅ aprobada · se aplica en la corrida</span>'; }
+       else if(dec==='rechazada'){ window.__promosState[stKey(ci,id)]=0; right='<span style="color:var(--muted);font-weight:700;font-size:12px">✗ rechazada</span>'; }
+       else {
+         const def=(p.def==null?1:p.def); window.__promosState[stKey(ci,id)]=def;
+         right='<div class="pbtns" style="display:flex;gap:6px">'+
+           '<button class="pbap" data-ci="'+ci+'" data-id="'+id+'" style="border:0;border-radius:8px;padding:6px 9px;font-weight:700;cursor:pointer;background:'+(def?'#7CE38B':'var(--card2)')+';color:'+(def?'#111':'var(--muted)')+'">✓</button>'+
+           '<button class="pbrj" data-ci="'+ci+'" data-id="'+id+'" style="border:0;border-radius:8px;padding:6px 9px;font-weight:700;cursor:pointer;background:'+(def?'var(--card2)':'#FF5A5A')+';color:'+(def?'var(--muted)':'#fff')+'">✗</button></div>';
+       }
      }
-     const opacity=(est==='bloqueada')?';opacity:.5':'';
+     const opacity=(est==='bloqueada'||(window.__promoDec||{})[id]==='rechazada')?';opacity:.5':'';
      return '<div class="op" id="prow-'+ci+'-'+id+'" style="align-items:center'+opacity+'">'+
        '<img src="'+pimg+'" loading="lazy" onerror="this.style.display=\'none\'" alt="">'+
        '<div class="opt">'+ptitle+'<small><span style="color:'+c[1]+'">'+c[0]+'</span> · '+p.id+(plista?' · lista '+plista:'')+'</small></div>'+
@@ -697,6 +703,8 @@ document.addEventListener('DOMContentLoaded',function(){setTimeout(window.__rend
   try{
    const tk=localStorage.getItem('boun_token'); if(!tk){ document.getElementById('emptyPromo').style.display='block'; return; }
    window.__INV=await loadInv(tk);
+   // decisiones ya enviadas → para reflejar aprobadas/rechazadas al recargar
+   try{ const dj=await (await fetch('/api/relampago/decisiones',{headers:{Authorization:'Bearer '+tk}})).json(); const dd=((dj&&dj.datos)||{}).promos_ml||{}; const dm={}; (dd.aprobar||[]).forEach(x=>dm[String(x.id).replace(/\D/g,'')]='aprobada'); (dd.rechazar||[]).forEach(x=>dm[String((x&&x.id)||x).replace(/\D/g,'')]='rechazada'); window.__promoDec=dm; }catch(_){ window.__promoDec={}; }
    const r=await fetch('/api/relampago/promos_ml',{headers:{Authorization:'Bearer '+tk}});
    if(!r.ok){ document.getElementById('emptyPromo').style.display='block'; return; }
    const j=await r.json(); window.__promosData=(j&&j.datos)||null;
