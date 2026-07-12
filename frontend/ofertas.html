@@ -35,6 +35,15 @@ h1 .zap{color:var(--warn)}
 .legend{max-width:1240px;margin:8px auto 0;padding:0 28px;font-size:12px;color:var(--muted);line-height:1.6}
 .okBox{max-width:1240px;margin:14px auto;padding:18px 22px;border-radius:14px;background:rgba(124,227,139,.10);border:1px solid rgba(124,227,139,.35);color:#C9F5D2;font-size:14.5px;line-height:1.6}
 .okBox b{color:#7CE38B}
+.alertBox{max-width:1240px;margin:14px auto;padding:18px 22px;border-radius:14px;background:rgba(255,214,10,.10);border:1px solid rgba(255,214,10,.4);color:#F5E9BE;font-size:14.5px;line-height:1.6}
+.alertBox b{color:var(--warn)}
+.dangerBox{max-width:1240px;margin:14px auto;padding:18px 22px;border-radius:14px;background:rgba(255,90,90,.12);border:1px solid rgba(255,90,90,.45);color:#FFD0D0;font-size:14.5px;line-height:1.6}
+.dangerBox b{color:#FF7A7A}
+.freshTag{display:inline-block;margin-left:10px;padding:3px 10px;border-radius:20px;font-size:11px;font-weight:700;vertical-align:middle}
+.freshTag.ok{background:rgba(76,217,139,.14);color:#7CE38B}
+.freshTag.old{background:rgba(255,90,90,.16);color:#FF7A7A}
+.rfbtn{border:1.5px solid var(--line);background:var(--card);color:var(--muted);border-radius:8px;padding:5px 12px;font-size:12px;font-weight:700;cursor:pointer;font-family:'Inter',sans-serif;margin-left:10px;vertical-align:middle}
+.rfbtn:hover{border-color:var(--warn);color:var(--warn)}
 .grid{max-width:1240px;margin:22px auto;padding:0 28px;display:grid;grid-template-columns:repeat(auto-fill,minmax(560px,1fr));gap:16px}
 .item{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:18px;display:flex;flex-direction:column;gap:14px;transition:border-color .15s, opacity .15s}
 .item.approved{border-color:rgba(76,217,139,.55)}
@@ -167,28 +176,29 @@ summary::before{content:'▸ '} details[open] summary::before{content:'▾ '}
 <div id="loginOv"><div class="lcard">
   <div style="text-align:center;font-size:40px">&#9889;</div>
   <h2>Relámpago BOUN</h2>
-  <input id="lu" placeholder="Usuario" autocomplete="username">
-  <input id="lp" type="password" placeholder="Clave" autocomplete="current-password">
+  <input id="lu" placeholder="Usuario" autocomplete="username" onkeydown="if(event.key==='Enter')doLogin()">
+  <input id="lp" type="password" placeholder="Clave" autocomplete="current-password" onkeydown="if(event.key==='Enter')doLogin()">
   <div class="lerr" id="lerr"></div>
   <button onclick="doLogin()">Entrar</button>
 </div></div>
 <header>
   <div class="brand"><h1>Ofertas <span class="zap">⚡ Relámpago</span></h1><h1 style="font-size:24px;color:var(--muted)">BOUN · MercadoLibre</h1></div>
   <p class="sub">Cada tarjeta compara el precio final relámpago contra la promoción vigente del mes y propone día y franja con base en las ventas reales. Aprueba ✓ o rechaza ✗ y al final copia el resumen para aplicar solo lo aprobado. <b style="color:var(--warn)">La sección 1 se actualiza A DIARIO con las ofertas sugeridas disponibles en tiempo real; la sección 2 es la campaña rotativa de 30 días.</b></p>
-  <p class="sub" style="margin-top:6px;font-size:12px">Última lectura de MercadoLibre: <b id="lastRead">domingo 5 de julio de 2026, 9:45 p.m.</b> · 16 publicaciones elegibles en la campaña sugerida</p>
+  <p class="sub" style="margin-top:6px;font-size:12px">Última lectura de MercadoLibre: <b id="lastRead">—</b> · <span id="subEleg">— publicaciones elegibles en la campaña sugerida</span><span id="freshTag" class="freshTag" style="display:none"></span><button class="rfbtn" onclick="location.reload()" title="Recargar datos">⟳ Actualizar</button></p>
 </header>
+<div id="warnBanner" style="display:none;padding:0 28px"></div>
 <div class="kpis">
-  <div class="kpi"><b>16</b><span>elegibles</span></div>
-  <div class="kpi g"><b id="kap">11</b><span>pre-aprobadas</span></div>
-  <div class="kpi r"><b id="krj">5</b><span>pre-rechazadas (dcto. muy alto)</span></div>
+  <div class="kpi"><b id="kEleg">—</b><span>elegibles hoy</span></div>
+  <div class="kpi g"><b id="kap">—</b><span>aprobadas</span></div>
+  <div class="kpi r"><b id="krj">—</b><span>rechazadas</span></div>
   <div class="kpi y"><b>Mar · Jue</b><span>días pico ML (50,5 u/día)</span></div>
 </div>
 <p class="legend">Regla aplicada: se pre-rechaza cuando el precio relámpago queda más de ~12% por debajo de la promoción del mes vigente (protege el piso de precio BOUN). «Sin stock Full» = el depósito está en 0; la oferta correría con stock de envío propio. Curva semanal ML BOUN: Mar 50,5 · Jue 50,5 · Mié 43,5 · Vie 42,5 · Lun 41,5 · Dom 30 · Sáb 29,5 u/día. Franjas ML: 00:00–12:00 o 12:00–24:00.</p>
 <h2 class="secTitle"><span class="num">1</span> Campaña sugerida por MercadoLibre <span class="secNote">descuento lo fija ML · solo decides si entras</span></h2>
 <div class="grid" id="grid"></div>
 <div id="emptySug" class="okBox" style="display:none">✅ <b>No hay sugeridas de MercadoLibre por aprobar.</b> Ya revisaste todas las de hoy; las aprobadas están abajo en <b>Ofertas aprobadas · en curso</b>.</div>
-<h2 class="secTitle"><span class="num">2</span> Campaña 30 días · ofertas creadas por nosotros <span class="secNote">Crear promoción → Oferta relámpago · 1 oferta diaria · 6 jul – 4 ago · TODAS las publicaciones ML con stock (validadas contra el inventario web BOUN)</span></h2>
-<p class="legend" style="margin-top:2px">Oferta relámpago TODOS los días durante 30 días con TODAS las publicaciones de MercadoLibre de cada producto que vendemos (BOUN + KAT), leídas del inventario web BOUN y filtradas a las que tienen stock (en la publicación o en bodega). Rotación automática: 12 publicaciones por oferta (tope ML 20), cada una descansa ≥10 días y sale ~2 veces en el mes, asignada a su mejor día (sueño = noches Dom–Jue, swim = viernes/sábado, moto = martes/viernes, music = jueves/viernes, KAT = parejo toda la semana, la estrella ⭐ —la más vendida 60d— ancla TODOS los domingos). Precio propuesto: −7% sobre el precio actual de la publicación — nunca el 35–46% que exige la campaña sugerida. El día de crear cada oferta se revalida promo vigente (el 9/jul entra BOUN JULIO) y stock; si ML exige un mínimo mayor, no se aplica y se avisa. Franja: 12:00–24:00 a diario, sábados 00:00–12:00.</p>
+<h2 class="secTitle"><span class="num">2</span> Campaña 30 días · ofertas creadas por nosotros <span class="secNote" id="secNote2">Crear promoción → Oferta relámpago · 1 oferta diaria · TODAS las publicaciones ML con stock (validadas contra el inventario web BOUN)</span></h2>
+<p class="legend" style="margin-top:2px">Oferta relámpago TODOS los días durante 30 días con TODAS las publicaciones de MercadoLibre de cada producto que vendemos (BOUN + KAT), leídas del inventario web BOUN y filtradas a las que tienen stock (en la publicación o en bodega). Rotación automática: 12 publicaciones por oferta (tope ML 20), cada una descansa ≥10 días y sale ~2 veces en el mes, asignada a su mejor día (sueño = noches Dom–Jue, swim = viernes/sábado, moto = martes/viernes, music = jueves/viernes, KAT = parejo toda la semana, la estrella ⭐ —la más vendida 60d— ancla TODOS los domingos). Precio propuesto: −7% sobre el precio actual de la publicación — nunca el 35–46% que exige la campaña sugerida. El día de crear cada oferta se revalida la promoción vigente del mes y el stock; si ML exige un mínimo mayor, no se aplica y se avisa. Franja: 12:00–24:00 a diario, sábados 00:00–12:00.</p>
 <div class="kpis" id="rotKpis" style="margin-top:4px"></div>
 <div class="grid" id="grid2"></div>
 <div id="emptyProp" class="okBox" style="display:none">✅ <b>Nada por aprobar.</b> La oferta relámpago del día siguiente ya fue aprobada. Puedes verla abajo en <b>Ofertas aprobadas · en curso</b>; Claude la aplicará en MercadoLibre antes de que abra la ventana.</div>
@@ -208,9 +218,9 @@ summary::before{content:'▸ '} details[open] summary::before{content:'▾ '}
   <div class="mxfilters">
     <label>Desde</label><input type="date" id="mxFrom" onchange="mxRender()">
     <label>Hasta</label><input type="date" id="mxTo" onchange="mxRender()">
-    <button class="qbtn" onclick="mxQuick(7)">Últimos 7 días</button>
-    <button class="qbtn on" onclick="mxQuick(15)">Últimos 15 días</button>
-    <button class="qbtn" onclick="mxQuick(0)">Todo</button>
+    <button class="qbtn" data-n="7" onclick="mxQuick(7,this)">Últimos 7 días</button>
+    <button class="qbtn on" data-n="15" onclick="mxQuick(15,this)">Últimos 15 días</button>
+    <button class="qbtn" data-n="0" onclick="mxQuick(0,this)">Todo</button>
     <span style="font-size:11px;color:var(--muted)" id="mxRange"></span>
   </div>
   <div class="kpis" style="padding:0;margin:0" id="mxKpis"></div>
@@ -236,7 +246,7 @@ async function doLogin(){
   const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:u,password:p})});
   const j=await r.json();
   const tok=j.token||j.access_token;
-  if(r.ok&&tok){localStorage.setItem('boun_token',tok);localStorage.setItem('boun_user',u);document.getElementById('loginOv').classList.remove('show');}
+  if(r.ok&&tok){localStorage.setItem('boun_token',tok);localStorage.setItem('boun_user',u);location.reload();return;}
   else{document.getElementById('lerr').textContent=j.detail||'Usuario o clave incorrectos';}
  }catch(e){document.getElementById('lerr').textContent='Sin conexión con la web BOUN';}
 }
@@ -248,12 +258,28 @@ async function checkAuth(){
 }
 checkAuth();
 (async()=>{
-let __R={};
-if(TK()){try{const r=await fetch('/api/relampago/plan',{headers:{Authorization:'Bearer '+TK()}});if(r.ok){const j=await r.json();__R=(j&&j.datos)||{};}}catch(e){}}
-window.__R=__R;
-if(__R.ultima_lectura){document.addEventListener('DOMContentLoaded',()=>{const e=document.getElementById('lastRead');if(e)e.textContent=__R.ultima_lectura;});}
+let __R={}, __LIVE=false;
+if(TK()){try{const r=await fetch('/api/relampago/plan',{headers:{Authorization:'Bearer '+TK()}});if(r.ok){const j=await r.json();if(j&&j.datos){__R=j.datos;__LIVE=true;}}}catch(e){}}
+window.__R=__R; window.__LIVE=__LIVE; window.__PLAN_TS=__R._actualizado||null;
+if(__R.ultima_lectura){const e=document.getElementById('lastRead');if(e)e.textContent=__R.ultima_lectura;}
+/* Banner de estado de los datos: demo (sin conexión/lectura) o frescura del plan */
+(function(){
+ const wb=document.getElementById('warnBanner'), ft=document.getElementById('freshTag');
+ if(!__LIVE){
+  if(wb){wb.style.display='block';wb.innerHTML='<div class="dangerBox">⚠️ <b>Datos de EJEMPLO.</b> No hay conexión con el plan publicado por la corrida diaria (falta iniciar sesión o el servidor no respondió). <b>NO apruebes nada desde esta vista</b> — recarga o entra de nuevo.</div>';}
+  return;
+ }
+ if(window.__PLAN_TS&&ft){
+  const hrs=Math.max(0,(Date.now()-new Date(window.__PLAN_TS).getTime())/36e5);
+  const txt=hrs<1?'hace menos de 1 h':'hace '+Math.round(hrs)+' h';
+  ft.style.display='inline-block';
+  if(hrs>26){ ft.className='freshTag old'; ft.textContent='plan sin actualizar '+txt;
+   if(wb){wb.style.display='block';wb.innerHTML='<div class="alertBox">⏰ <b>La corrida diaria no ha publicado datos nuevos</b> (última publicación '+txt+'). Lo que ves puede estar vencido — pide a Claude correr la actualización.</div>';}
+  } else { ft.className='freshTag ok'; ft.textContent='plan actualizado '+txt; }
+ }
+})();
 const CAT={sleep:['SLEEP','#8B7BD8'],moto:['MOTO','#FF8A1F'],music:['MUSIC','#FF2D7B'],swim:['SWIM','#2DC6FF'],ind:['INDUSTRIAL','#FFD60A'],tech:['TECH / OTROS','#9BA7B8']};
-const ITEMS=(__R.items&&__R.items.length)?__R.items:[
+const ITEMS_FB=[
 {id:'1565206225139155',t:'Convertidor OTG 10A tipo C a USB macho datos alta velocidad',img:'https://http2.mlstatic.com/D_801505-MCO96050797098_102025-I.webp',cat:'tech',lista:'$ 20.000',promo:'BOUN JUNIO · $ 19.000',rel:'$ 17.400',desc:'$ 2.600 (13%)',delta:-8.4,def:1,warn:['Sin stock Full'],day:'Viernes',hour:'12:00 – 24:00',why:'<b>Ventas propias:</b> su mejor día es viernes (10 u) seguido de jueves (9 u) en los últimos 15 días. <b>Hora:</b> compra impulso tech de tarde-noche; la franja 12–24 h captura el pico de tráfico nocturno de ML. <b>Precio:</b> queda solo 8,4% bajo la promo del mes — margen sano.'},
 {id:'979524848',t:'Tapones para dormir con cancelación de ruido negro',img:'https://http2.mlstatic.com/D_624877-MCO100591546493_122025-O.jpg',cat:'sleep',lista:'$ 39.999',promo:'AON Home · $ 29.999',rel:'$ 22.571',desc:'$ 17.428 (44%)',delta:-24.8,def:0,warn:['Descuento exigido 44%'],day:'Jueves',hour:'12:00 – 24:00',why:'<b>Si se aprueba:</b> jueves es día pico general (50,5 u/día) y el comprador de sueño decide de noche (se acuesta, no duerme, compra). <b>Ojo precio:</b> ML exige 44% de descuento → queda 24,8% por debajo de la promo del mes. Rompe el piso de precio BOUN — por eso viene pre-rechazada.'},
 {id:'973925378',t:'Tapones protección oído cancelación ruido Pro negro',img:'https://http2.mlstatic.com/D_680497-MCO100591247779_122025-O.jpg',cat:'sleep',lista:'$ 34.999',promo:'AON Home · $ 29.749',rel:'$ 22.868',desc:'$ 12.131 (35%)',delta:-23.1,def:0,warn:['Descuento exigido 35%'],day:'Jueves',hour:'12:00 – 24:00',why:'<b>Si se aprueba:</b> mismo racional nocturno de la categoría sueño y pico general del jueves. <b>Ojo precio:</b> 23,1% por debajo de la promo vigente — rompe el piso BOUN, pre-rechazada.'},
@@ -271,8 +297,10 @@ const ITEMS=(__R.items&&__R.items.length)?__R.items:[
 {id:'5384588234592696',t:'Familia tapa oídos dormir viaje concierto ($60.000–$70.000)',img:'https://http2.mlstatic.com/D_967865-MCO107024005695_022026-I.webp',cat:'sleep',lista:'$ 60.000 – 70.000',promo:'JUNIO · $ 50.400–60.200',rel:'$ 56.133',desc:'$ 13.867 (20%)',delta:-6.8,def:1,warn:['Sin stock Full'],day:'Jueves',hour:'12:00 – 24:00',why:'<b>Día:</b> jueves pico general (50,5 u/día), franja nocturna de la categoría sueño. <b>Precio:</b> 6,8% bajo promo — sano. <b>Stock:</b> depósito en 0 → correría con envío propio (verificar bodega).'},
 {id:'2012128091',t:'Tapones oídos dormir silicona antiruido con cordón y estuche',img:'https://http2.mlstatic.com/D_707643-MLA107746830386_032026-O.jpg',cat:'sleep',lista:'$ 80.000',promo:'BOUN JUNIO · $ 40.000',rel:'$ 37.620',desc:'$ 42.380 (53%)',delta:-6.0,def:1,warn:[],day:'Martes',hour:'12:00 – 24:00',why:'<b>Precio:</b> el 53% es sobre lista; la promo del mes ya está al 50% ($40.000) → el relámpago solo baja 6% más. <b>Día:</b> martes pico general, franja nocturna sleep. <b>Stock:</b> 94 u. en Full — aguanta volumen relámpago de sobra.'}
 ];
-const POOLRAW=__R.poolraw||'MCO1346807313|Gorro Para Casco Motocicleta B|24839|9|2|m|806180-MCO94521120282_102025~MCO1552594081|Balaclava Gorro Interior Para |25199|27|0|m|658945-MLA96867349009_102025~MCO3187968690|Balaclava Gorro Interior Para |24839|9|33|m|658945-MLA96867349009_102025~MCO1346794159|Balaclava Gorro Interior Para |25199|27|2|m|956747-MCO104692073867_012026~MCO1681488398|Balaclava Pasamontañas Rockbro|60299|2|8|m|834248-MCO89069425963_072025~MCO1445000023|Balaca Mujer Cuadrada Forma De|28499|8|4|t|928572-MCO77136840244_062024~MCO1894005121|Bolso Tote Bag Puma Plush Nylo|260399|3|1|t|874419-MCO110174444664_042026~MCO1894065631|Bolso De Mano Puma Tote Bag Pu|259999|4|0|t|860358-MCO110175391670_042026~MCO4026740246|Bolso De Mano Puma Tote Bag Pu|259999|4|0|t|998800-MLA111478993444_052026~MCO3835818806|Bolso Tote Bag Puma Plush Nylo|260399|9|4|t|808113-MCO111095353877_042026~MCO3835821044|Bolso De Mano Puma Tote Bag Pu|259999|7|1|t|764185-MCO110175534512_042026~MCO3997834174|Bolso De Mano Puma Tote Bag Pu|259999|7|0|t|987993-MLA111116759954_052026~MCO1266468457|Convertidor Otg 10a Tipo C A U|10000|146|1|t|606105-MCO96493203305_102025~MCO4076789502|Convertidor Otg 10a Tipo C A U|19000|146|1|t|606105-MCO96493203305_102025~MCO3510994432|Convertidor Otg 10a Tipo C A U|19000|146|180|t|689748-MLA99596992138_122025~MCO3897784906|Coche Mascotas Guacal Transpor|899999|1|0|k|972094-MLA110995077441_042026~MCO3840337150|Coche Mascotas Guacal Transpor|899999|1|0|k|921561-MCO110272912912_052026~MCO3840319396|Coche Mascotas Guacal Transpor|899999|2|0|k|621382-MCO111199103369_052026~MCO3892217496|Coche Mascotas Guacal Transpor|899999|2|0|k|854958-MLA110891580751_042026~MCO3922587992|Tapones Dormir Concierto Viaja|90000|171|22|s|668402-MLA110299888448_052026~MCO3897781246|Tapa Oidos Dormir Tapones Audi|90000|171|11|s|769256-MLA110077046948_042026~MCO1935364219|Tapones Dormir Concierto Viaja|90000|3|8|s|834262-MLA110404712106_052026~MCO3935847668|Tapones Dormir Concierto Viaja|90000|4|8|s|834262-MLA110404712106_052026~MCO3863341396|Tapa Oidos Dormir Tapones Audi|90000|171|0|s|920400-MCO110522328051_042026~MCO3862848830|Tapones Auditivos Antirruido P|90000|3|1|s|606171-MCO110523105317_042026~MCO3863342080|Tapones Dormir Concierto Viaja|90000|4|0|s|980986-MCO110523013569_042026~MCO3863340220|Tapones Dormir Concierto Viaja|90000|171|0|s|973477-MCO109641529652_042026~MCO4120903930|Tapa Oidos Dormir Tapones Audi|40000|94|4|s|707643-MLA107746830386_032026~MCO2012128091|Tapones Oídos Dormir Silicona |40000|94|2|s|707643-MLA107746830386_032026~MCO1360886614|Cordones Elásticos Silicona Pa|10990|9|0|t|796306-MCO78477657732_082024~MCO1552741393|Cordones Elásticos Silicona Pa|24999|9|12|t|911365-MLA99604072440_122025~MCO1552684617|Cinturón De Seguridad Ajustabl|49999|2|0|k|707986-MLA108913443474_032026~MCO1320023877| Cinturón De Seguridad Ajustab|24900|2|0|k|828292-MCO94357698381_102025~MCO1464551868|Guantes Deportivos Antidesliza|54990|5|0|t|844739-MCO89824681118_082025~MCO3835236544|Guantes Gimnasio Deportivos An|45000|5|0|t|844739-MCO89824681118_082025~MCO1464756694|Guantes Gym Antideslizantes Gi|35990|6|0|t|995351-MCO54953170197_042023~MCO1676094615|Guantes Gym Antideslizantes Gi|45000|6|15|t|739746-MLA96413158681_102025~MCO3835743712|Guantes Gym Antideslizantes Gi|45000|6|0|t|995351-MCO54953170197_042023~MCO1676134035|Guantes Gimnasio Deportivos Fi|45000|5|29|t|705477-MLA95971293877_102025~MCO1667087756|Gorro Pesquero Pescador Sombre|25990|2|0|t|691435-MCO70100476641_062023~MCO4070874528|Gorro Pesquero Pescador Sombre|45599|2|0|t|691435-MCO70100476641_062023~MCO3134411268|Gorro Pesquero Boun Sombrero S|79999|2|7|t|642327-MLA92594652617_092025~MCO4070187032|Gorro Pesquero Boun Sombrero S|45599|2|2|t|642327-MLA92594652617_092025~MCO1952596844|Gafas Sol Fotocromáticas Uv400|64090|0|21|t|951918-MCO106384107902_022026~MCO1952570996|Gafas Fotocromáticas Unisex Co|39000|1|28|t|971022-MCO110720380773_042026~MCO3343992272|Arenero Xl Autolimpiante Gatos|1499999|4|0|k|982682-MCO107104293141_022026~MCO1750712739|Arenero Automático Para Gatos |1499999|4|0|k|667551-MCO99517464983_112025~MCO3694914534|Arenero Automático Para Gatos |1499999|4|0|k|909465-MLA107316814188_032026~MCO4056574518|Arenero Automático Para Gatos |1499999|4|0|k|909465-MLA107316814188_032026~MCO3912838754|Fuente Eléctrica Bebedero De A|159999|16|0|k|931527-MCO111093941763_042026~MCO3912851592|Fuente Eléctrica Bebedero De A|159999|16|0|k|958140-MCO110173582284_042026~MCO3897782770|Rascador Árbol Para Gatos 5 Ni|956419|1|1|k|784045-MLA110078433918_042026~MCO3840333698|Rascador Árbol Para Gatos 5 Ni|956419|1|0|k|885240-MCO110287765999_042026~MCO1973052717|Comedero Automático Gatos Perr|499999|9|0|k|866975-MCO111935946688_062026~MCO1984394835|Arenero Automático Abierto Int|1399999|6|0|k|993049-MCO112408988304_062026~MCO1809253523|Arenero Para Gatos Automático |1799999|2|8|k|617975-MLA104658630920_012026~MCO3343831008|Arenero Automático Grande 72li|1799999|2|0|k|860244-MCO112078976809_052026~MCO1736844493|Arenero Gato Autolimpieza 72l |1799999|7|1|k|685946-MCO111382066548_052026~MCO1805910373|Arenero Automático Grande 72li|1999999|2|0|k|617975-MLA104658630920_012026~MCO4056574516|Arenero Para Gatos Automático |1799999|7|0|k|617975-MLA104658630920_012026~MCO2018591491|Comedero Automático Gatos Perr|999999|9|0|k|910885-MCO114117919539_072026~MCO1667085560|Muñequera Deportiva Ajustable |49999|17|0|t|874597-MCO83711610500_042025~MCO1581157533|Muñequeras Gimnasio Pesas Cros|49999|17|0|t|629798-MLA84561712115_052025~MCO2866205332|Muñequeras Gimnasio Deportivas|45499|14|14|t|834949-MLA95979275468_102025~MCO1667097828|Muñequeras Ajustables Suaves G|45499|14|0|t|705107-MCO88713815122_072025~MCO1575717773|Antifaz Máscara Para Dormir Tr|60799|0|48|s|807190-MLA110140916112_042026~MCO2847524746|Antifaz Máscara Para Dormir Tr|77599|0|50|s|807190-MLA110140916112_042026~MCO1787210336|Máscara De Dormir Transpirable|60799|0|0|s|962980-MCO79280621232_092024~MCO1326016027|Antifaz Máscara Para Dormir Tr|77599|0|0|s|695626-MCO79280758540_092024~MCO3396474678|Tapones Oidos Dormir Tapa Oido|49000|15|20|s|901326-MLA107320752951_022026~MCO3568597218|Tapones Dormir Concierto Viaja|49000|15|0|s|929142-MCO107320268807_022026~MCO3431441410|Tapones Oidos Dormir Tapa Oído|49000|11|23|s|625359-MLA106665514424_022026~MCO3524673388|Tapa Oídos Reducción Ruido Tap|80000|0|0|s|968910-MLA107010212023_022026~MCO3729949586|Protector Auditivo Tapa Oídos |29990|0|0|u|748698-MCO106375433380_022026~MCO3568597216|Tapones Dormir Concierto Viaja|49000|11|0|s|993739-MCO107320035677_022026~MCO1840597205|Tapones Oidos Dormir Tapa Oido|60300|4|21|s|916259-MLA111236752597_052026~MCO3722186506|Tapones Oidos Dormir Tapa Oido|60200|10|24|s|916259-MLA111236752597_052026~MCO3557779422|Tapones Oidos Dormir Tapa Oido|49999|0|2|s|916259-MLA111236752597_052026~MCO3557896580|Protector Auditivo Tapón Dormi|50000|4|0|s|896237-MCO107022691987_022026~MCO3722201594|Tapa Oidos Dormir Tapon Auditi|60200|10|0|s|992998-MCO107024096865_022026~MCO3939550164|Protector Auditivo Tapón Dormi|60300|4|0|s|896237-MCO107022691987_022026~MCO3557766592|Tapones Oidos Dormir Tapa Oido|45000|29|25|s|909365-MLA110306883240_052026~MCO3599723086|Tapones Oidos Dormir Tapa Oido|90000|0|0|s|909365-MLA110306883240_052026~MCO3722173626|Tapones Oidos Dormir Tapa Oido|70000|0|10|s|909365-MLA110306883240_052026~MCO3939550162|Protector Auditivo Tapón Dormi|90000|0|0|s|924453-MCO107019795271_022026~MCO3557935986|Tapa Oidos Dormir Tapon Auditi|50000|10|0|s|959240-MCO106387884690_022026~MCO3722201596|Tapa Oidos Dormir Tapon Auditi|70000|0|0|s|959240-MCO106387884690_022026~MCO3567829586|Tapones Oidos Dormir Tapa Oido|50000|43|7|s|843101-MLA110306949630_052026~MCO1987986491|Tapones Dormir Concierto Viaja|45000|9|3|s|817170-MCO112269413052_062026~MCO4120176432|Tapones Dormir Concierto Viaja|45000|9|2|s|948646-MLA112778461468_062026~MCO4120176262|Tapa Oídos Reutilizables Suave|45000|10|2|u|775381-MLA113971389057_062026~MCO4077158244|Tapa Oídos Reutilizables Suave|45000|10|0|u|750294-MCO112270247600_062026~MCO2829373010|Tapones Oidos Dormir Concierto|39999|447|515|s|820330-MLA110009744434_042026~MCO3511019786|Tapones Oidos Dormir Tapa Oido|39999|184|292|s|831446-MLA99450787168_112025~MCO3568597208|Tapones Dormir Concierto Viaja|39999|447|1|s|794102-MCO90772612281_082025~MCO1522487963|Tapones Dormir Concierto Viaja|49999|595|0|s|794102-MCO90772612281_082025~MCO3863316812|Tapa Oídos Reutilizables Suave|39999|184|0|u|858330-MCO90772613937_082025~MCO2780395082|Tapa Oídos Reutilizables Suave|49999|189|0|u|858330-MCO90772613937_082025~MCO3908895396|Tapones Oidos Dormir Tapa Oído|45396|50|68|s|746849-MLA110311107796_052026~MCO1812116915|Tapa Oidos Dormir Tapones Audi|90000|15|0|s|699261-MCO110013302361_042026~MCO1935364223|Tapones Oidos Dormir Tapa Oído|45000|50|26|s|881463-MLA110078706960_042026~MCO3900067740|Tapones Oidos Dormir Tapa Oído|45000|50|24|s|881463-MLA110078706960_042026~MCO3957358862|Tapones Oidos Dormir Tapa Oído|45000|50|24|s|746849-MLA110311107796_052026~MCO3897782134|Tapones Oidos Dormir Tapa Oido|45499|5|19|s|763365-MLA110991463677_042026~MCO3866827234|Tapa Oidos Dormir Tapones Audi|45000|4|10|s|993660-MLA109705810024_042026~MCO3854723538|Tapa Oidos Dormir Tapones Audi|45000|4|2|s|699261-MCO110013302361_042026~MCO3944202864|Tapa Oidos Dormir Tapones Audi|45000|50|1|s|697507-MCO110012498709_042026~MCO3863316818|Tapa Oídos Reutilizables Suave|45499|5|0|u|738787-MCO110435756707_042026~MCO3854749524|Tapones Dormir Concierto Viaja|45000|50|0|s|922429-MCO110010737427_042026~MCO3862848828|Tapones Auditivos Antirruido P|45000|50|0|s|977806-MCO110012318485_042026~MCO1902329717|Tapones Dormir Concierto Viaja|45396|50|0|s|664192-MCO110477518531_042026~MCO3546935844|Tapones Oidos Dormir Tapa Oido|45000|78|129|s|807275-MLA106664830015_022026~MCO3752787920|Tapa Oidos Earplugs Para Dormi|39600|11|1|s|622705-MLA111537174028_062026~MCO3854749510|Tapones Dormir Concierto Viaja|45000|78|1|s|766633-MCO106323836031_012026~MCO2020442935|Tapones Oidos Dormir Silicona |45000|184|0|s|991525-MLA107010316149_022026~MCO2020436885|Tapones Auditivos Earplugs Sil|40000|184|0|s|723138-MLA98386165213_112025~MCO2018637281|Tapa Oidos Earplugs Para Dormi|39600|184|0|s|622705-MLA111537174028_062026~MCO2020412003|Tapa Oidos Dormir Tapones Audi|45000|183|0|s|991525-MLA107010316149_022026~MCO2018598511|Tapa Oidos Dormir Tapones Audi|45000|183|0|s|991525-MLA107010316149_022026~MCO4137278104|Tapa Oidos Earplugs Para Dormi|39600|184|0|s|622705-MLA111537174028_062026~MCO2018637295|Tapones Auditivos Earplugs Sil|40000|184|0|s|723138-MLA98386165213_112025~MCO2020417439|Tapa Oidos Dormir Tapones Audi|45000|184|0|s|991525-MLA107010316149_022026~MCO4106113562|Tapones Dormir Concierto Viaja|45600|97|0|s|625137-MCO113816481993_062026~MCO3418771870|Tapones Oidos Dormir Concierto|49000|88|79|s|904206-MLA104626126090_012026~MCO3568597214|Tapones Dormir Concierto Viaja|49000|88|2|s|629998-MCO104622762246_012026~MCO2020445515|Tapones Oidos Dormir Concierto|30000|225|1|s|904206-MLA104626126090_012026~MCO2018637473|Tapones Oidos Dormir Silicona |30000|225|0|s|904206-MLA104626126090_012026~MCO2018040077|Tapa Oidos Para Dormir Tapones|39200|224|0|s|679837-MLA112600435433_062026~MCO4137250928|Tapa Oidos Para Dormir Tapones|39200|224|0|s|679837-MLA112600435433_062026~MCO3259147576|Tapones Oidos Dormir Concierto|45499|34|30|s|671310-MLA96506908069_102025~MCO1572115797|Tapones Suaves Oidos Cancelaci|45599|23|1|s|970212-MCO95985600428_102025~MCO3535267052|Tapones Oidos Dormir Concierto|45599|23|12|s|671310-MLA96506908069_102025~MCO3568597212|Tapones Dormir Concierto Viaja|45499|34|0|s|631018-MCO95652818793_102025~MCO1284933519|Tapones Oídos Natación Dormir |45000|26|1|w|868346-MCO111711726979_052026~MCO1464537244|Tapones Oídos Dormir Natación |45000|13|0|w|738681-MCO110753634782_052026~MCO1552749803|Tapones Oídos Natación Dormir |45000|26|14|w|850553-MLA111713732539_052026~MCO1553564905|Tapones Oídos Natación Dormir |45000|13|3|w|850553-MLA111713732539_052026~MCO1415175922|Tapones Oídos Reutilizables Ca|54990|11|0|u|938427-MCO89534027210_082025~MCO3568894828|Tapones Oídos Reutilizables Ca|60299|11|3|u|606153-MCO79553102552_102024~MCO1415167548|Tapones Oídos Dormir Concierto|54990|6|0|s|902382-MCO98010925742_112025~MCO3568597202|Tapones Oídos Dormir Concierto|60199|6|0|s|902382-MCO98010925742_112025~MCO2829192318|Tapones Oídos Reutilizables Ca|60299|11|17|u|831747-MLA82660131070_032025~MCO3953159670|Tapones Oídos Reutilizables Ca|60199|6|41|u|831747-MLA82660131070_032025~MCO2838151008|Tapones Oídos Reutilizables Ca|69999|6|0|u|831747-MLA82660131070_032025~MCO1567843913|Tapa Oídos Dormir Tapones Oido|28499|0|45|s|775728-MLA111409289253_052026~MCO1552697789|Tapa Oídos Dormir Tapones Oido|29889|11|65|s|775728-MLA111409289253_052026~MCO1525838485|Tapa Oídos Dormir Protectores |29889|11|0|s|869630-MCO88792715412_082025~MCO3303517410|Tapones Para Dormir Con Cancel|39999|0|0|s|972457-MLA97201250584_112025~MCO1525865457|Protector Auditivo Tapa Oídos |28499|0|0|t|774169-MCO88792466600_082025~MCO979524848|Tapones Para Dormir Con Cancel|29999|5|7|s|624877-MCO100591546493_122025~MCO1358856626|Tapones Suaves Oidos Cancelaci|29749|7|7|s|668309-MCO100100674642_122025~MCO3897783542|Tapa Oídos Dormir Tapones Oido|29999|5|29|s|775728-MLA111409289253_052026~MCO973925378|Tapones Protección Oído Cancel|29749|7|5|t|680497-MCO100591247779_122025~MCO3953160212|Tapa Oídos Dormir Tapones Oido|29749|7|0|s|775728-MLA111409289253_052026~MCO3953160198|Tapa Oídos Dormir Tapones Oido|29749|7|0|s|775728-MLA111409289253_052026~MCO3955964944|Tapa Oido Tapon Auditivo Prote|120000|1|16|u|937534-MLA111136077877_052026~MCO1689182035|Tapones Oidos Dormir Tapa Oido|29999|19|18|s|769114-MLA96422900262_102025~MCO1686814545|Tapa Oídos Reducción Ruido Tap|29999|19|0|s|784338-MCO94360022078_102025~MCO1952624060|Pelota Autogiratoria Inteligen|92990|2|0|k|849310-MCO84033615431_042025~MCO3450274466|Pelota Autogiratoria Inteligen|129999|2|0|k|696378-MLA96872697255_102025~MCO1967425602|Peine Para Barba Molde Guía Pl|23749|6|8|t|830976-MLU71098637738_082023~MCO1270525493|Peine Para Barba Molde Guía Pl|23749|6|1|t|755230-MCO54336902952_032023~MCO1309117888|Peine Barba Molde Guía Plantil|24999|0|0|t|639239-MCO54336946088_032023~MCO2033724884|Peine De Barba Guia Plantilla |24999|0|0|t|806446-MLA84477616599_052025~MCO4094600334|Gorro Expedición Pescador Buck|45599|12|0|t|701698-MLA113556729773_062026~MCO4086008936|Gorro Expedición Pescador Buck|45599|21|0|t|701698-MLA113556729773_062026~MCO4076789652|Gorro Expedición Pescador Buck|45599|21|0|t|998048-MCO111697007396_062026~MCO4070874534|Gorro Pesquero Pescador Sombre|45599|12|0|t|681088-MCO111696735594_062026~MCO4076789654|Gorro Expedición Pescador Buck|45599|22|0|t|921605-MCO111696917738_062026~MCO4070874536|Gorro Pesquero Pescador Sombre|45599|12|0|t|673330-MCO111696975596_062026~MCO4053237798|Gorro Pesquero Pescador Sombre|45599|12|0|t|658960-MLA111872716844_062026~MCO1308526510|Set X10 Tarjetero Protector Rf|12999|0|146|t|880871-MCO110311203144_052026~MCO1308602678|Set X10 Tarjetero Protector Rf|12999|21|33|t|725758-MCO111243750489_052026~MCO4001198354|Set X10 Tarjetero Protector Rf|12999|21|27|t|915763-MLA100053886087_122025~MCO1703686945|Billetera Inteligente Anti Rfi|69900|0|9|t|700541-MLA99983750401_112025~MCO3220968372|Billetera Inteligente Anti Rfi|69900|0|2|t|700541-MLA99983750401_112025~MCO1346896529|Billetera Inteligente Anti Rfi|69900|0|0|t|693790-MCO72185392515_102023~MCO1346948007|Billetera Inteligente Bloqueo |69900|0|0|t|693790-MCO72185392515_102023~MCO1529663253|Billetera Inteligente Bloqueo |69900|0|0|t|883244-MLA81899278341_012025~MCO3840325168|Termo Thermoflask 1.2l Mantén |119339|2|3|t|817026-MCO110199828002_052026~MCO1895660651|Termo Thermoflask 1.2l Mantén |119339|5|0|t|628878-MCO110354008701_042026~MCO1895660791|Thermoflask Termo 1.2 L Botell|119339|5|0|t|942819-MCO109483833318_042026';
-const POOL=POOLRAW.split('~').map(r=>{const f=r.split('|');return {id:f[0],t:f[1].trim(),price:+f[2],q:+f[3],s60:+f[4],c:f[5],img:'https://http2.mlstatic.com/D_'+f[6]+'-I.jpg'};});
+const ITEMS=__LIVE?(__R.items||[]):ITEMS_FB;
+const POOLRAW_FB='MCO1346807313|Gorro Para Casco Motocicleta B|24839|9|2|m|806180-MCO94521120282_102025~MCO1552594081|Balaclava Gorro Interior Para |25199|27|0|m|658945-MLA96867349009_102025~MCO3187968690|Balaclava Gorro Interior Para |24839|9|33|m|658945-MLA96867349009_102025~MCO1346794159|Balaclava Gorro Interior Para |25199|27|2|m|956747-MCO104692073867_012026~MCO1681488398|Balaclava Pasamontañas Rockbro|60299|2|8|m|834248-MCO89069425963_072025~MCO1445000023|Balaca Mujer Cuadrada Forma De|28499|8|4|t|928572-MCO77136840244_062024~MCO1894005121|Bolso Tote Bag Puma Plush Nylo|260399|3|1|t|874419-MCO110174444664_042026~MCO1894065631|Bolso De Mano Puma Tote Bag Pu|259999|4|0|t|860358-MCO110175391670_042026~MCO4026740246|Bolso De Mano Puma Tote Bag Pu|259999|4|0|t|998800-MLA111478993444_052026~MCO3835818806|Bolso Tote Bag Puma Plush Nylo|260399|9|4|t|808113-MCO111095353877_042026~MCO3835821044|Bolso De Mano Puma Tote Bag Pu|259999|7|1|t|764185-MCO110175534512_042026~MCO3997834174|Bolso De Mano Puma Tote Bag Pu|259999|7|0|t|987993-MLA111116759954_052026~MCO1266468457|Convertidor Otg 10a Tipo C A U|10000|146|1|t|606105-MCO96493203305_102025~MCO4076789502|Convertidor Otg 10a Tipo C A U|19000|146|1|t|606105-MCO96493203305_102025~MCO3510994432|Convertidor Otg 10a Tipo C A U|19000|146|180|t|689748-MLA99596992138_122025~MCO3897784906|Coche Mascotas Guacal Transpor|899999|1|0|k|972094-MLA110995077441_042026~MCO3840337150|Coche Mascotas Guacal Transpor|899999|1|0|k|921561-MCO110272912912_052026~MCO3840319396|Coche Mascotas Guacal Transpor|899999|2|0|k|621382-MCO111199103369_052026~MCO3892217496|Coche Mascotas Guacal Transpor|899999|2|0|k|854958-MLA110891580751_042026~MCO3922587992|Tapones Dormir Concierto Viaja|90000|171|22|s|668402-MLA110299888448_052026~MCO3897781246|Tapa Oidos Dormir Tapones Audi|90000|171|11|s|769256-MLA110077046948_042026~MCO1935364219|Tapones Dormir Concierto Viaja|90000|3|8|s|834262-MLA110404712106_052026~MCO3935847668|Tapones Dormir Concierto Viaja|90000|4|8|s|834262-MLA110404712106_052026~MCO3863341396|Tapa Oidos Dormir Tapones Audi|90000|171|0|s|920400-MCO110522328051_042026~MCO3862848830|Tapones Auditivos Antirruido P|90000|3|1|s|606171-MCO110523105317_042026~MCO3863342080|Tapones Dormir Concierto Viaja|90000|4|0|s|980986-MCO110523013569_042026~MCO3863340220|Tapones Dormir Concierto Viaja|90000|171|0|s|973477-MCO109641529652_042026~MCO4120903930|Tapa Oidos Dormir Tapones Audi|40000|94|4|s|707643-MLA107746830386_032026~MCO2012128091|Tapones Oídos Dormir Silicona |40000|94|2|s|707643-MLA107746830386_032026~MCO1360886614|Cordones Elásticos Silicona Pa|10990|9|0|t|796306-MCO78477657732_082024~MCO1552741393|Cordones Elásticos Silicona Pa|24999|9|12|t|911365-MLA99604072440_122025~MCO1552684617|Cinturón De Seguridad Ajustabl|49999|2|0|k|707986-MLA108913443474_032026~MCO1320023877| Cinturón De Seguridad Ajustab|24900|2|0|k|828292-MCO94357698381_102025~MCO1464551868|Guantes Deportivos Antidesliza|54990|5|0|t|844739-MCO89824681118_082025~MCO3835236544|Guantes Gimnasio Deportivos An|45000|5|0|t|844739-MCO89824681118_082025~MCO1464756694|Guantes Gym Antideslizantes Gi|35990|6|0|t|995351-MCO54953170197_042023~MCO1676094615|Guantes Gym Antideslizantes Gi|45000|6|15|t|739746-MLA96413158681_102025~MCO3835743712|Guantes Gym Antideslizantes Gi|45000|6|0|t|995351-MCO54953170197_042023~MCO1676134035|Guantes Gimnasio Deportivos Fi|45000|5|29|t|705477-MLA95971293877_102025~MCO1667087756|Gorro Pesquero Pescador Sombre|25990|2|0|t|691435-MCO70100476641_062023~MCO4070874528|Gorro Pesquero Pescador Sombre|45599|2|0|t|691435-MCO70100476641_062023~MCO3134411268|Gorro Pesquero Boun Sombrero S|79999|2|7|t|642327-MLA92594652617_092025~MCO4070187032|Gorro Pesquero Boun Sombrero S|45599|2|2|t|642327-MLA92594652617_092025~MCO1952596844|Gafas Sol Fotocromáticas Uv400|64090|0|21|t|951918-MCO106384107902_022026~MCO1952570996|Gafas Fotocromáticas Unisex Co|39000|1|28|t|971022-MCO110720380773_042026~MCO3343992272|Arenero Xl Autolimpiante Gatos|1499999|4|0|k|982682-MCO107104293141_022026~MCO1750712739|Arenero Automático Para Gatos |1499999|4|0|k|667551-MCO99517464983_112025~MCO3694914534|Arenero Automático Para Gatos |1499999|4|0|k|909465-MLA107316814188_032026~MCO4056574518|Arenero Automático Para Gatos |1499999|4|0|k|909465-MLA107316814188_032026~MCO3912838754|Fuente Eléctrica Bebedero De A|159999|16|0|k|931527-MCO111093941763_042026~MCO3912851592|Fuente Eléctrica Bebedero De A|159999|16|0|k|958140-MCO110173582284_042026~MCO3897782770|Rascador Árbol Para Gatos 5 Ni|956419|1|1|k|784045-MLA110078433918_042026~MCO3840333698|Rascador Árbol Para Gatos 5 Ni|956419|1|0|k|885240-MCO110287765999_042026~MCO1973052717|Comedero Automático Gatos Perr|499999|9|0|k|866975-MCO111935946688_062026~MCO1984394835|Arenero Automático Abierto Int|1399999|6|0|k|993049-MCO112408988304_062026~MCO1809253523|Arenero Para Gatos Automático |1799999|2|8|k|617975-MLA104658630920_012026~MCO3343831008|Arenero Automático Grande 72li|1799999|2|0|k|860244-MCO112078976809_052026~MCO1736844493|Arenero Gato Autolimpieza 72l |1799999|7|1|k|685946-MCO111382066548_052026~MCO1805910373|Arenero Automático Grande 72li|1999999|2|0|k|617975-MLA104658630920_012026~MCO4056574516|Arenero Para Gatos Automático |1799999|7|0|k|617975-MLA104658630920_012026~MCO2018591491|Comedero Automático Gatos Perr|999999|9|0|k|910885-MCO114117919539_072026~MCO1667085560|Muñequera Deportiva Ajustable |49999|17|0|t|874597-MCO83711610500_042025~MCO1581157533|Muñequeras Gimnasio Pesas Cros|49999|17|0|t|629798-MLA84561712115_052025~MCO2866205332|Muñequeras Gimnasio Deportivas|45499|14|14|t|834949-MLA95979275468_102025~MCO1667097828|Muñequeras Ajustables Suaves G|45499|14|0|t|705107-MCO88713815122_072025~MCO1575717773|Antifaz Máscara Para Dormir Tr|60799|0|48|s|807190-MLA110140916112_042026~MCO2847524746|Antifaz Máscara Para Dormir Tr|77599|0|50|s|807190-MLA110140916112_042026~MCO1787210336|Máscara De Dormir Transpirable|60799|0|0|s|962980-MCO79280621232_092024~MCO1326016027|Antifaz Máscara Para Dormir Tr|77599|0|0|s|695626-MCO79280758540_092024~MCO3396474678|Tapones Oidos Dormir Tapa Oido|49000|15|20|s|901326-MLA107320752951_022026~MCO3568597218|Tapones Dormir Concierto Viaja|49000|15|0|s|929142-MCO107320268807_022026~MCO3431441410|Tapones Oidos Dormir Tapa Oído|49000|11|23|s|625359-MLA106665514424_022026~MCO3524673388|Tapa Oídos Reducción Ruido Tap|80000|0|0|s|968910-MLA107010212023_022026~MCO3729949586|Protector Auditivo Tapa Oídos |29990|0|0|u|748698-MCO106375433380_022026~MCO3568597216|Tapones Dormir Concierto Viaja|49000|11|0|s|993739-MCO107320035677_022026~MCO1840597205|Tapones Oidos Dormir Tapa Oido|60300|4|21|s|916259-MLA111236752597_052026~MCO3722186506|Tapones Oidos Dormir Tapa Oido|60200|10|24|s|916259-MLA111236752597_052026~MCO3557779422|Tapones Oidos Dormir Tapa Oido|49999|0|2|s|916259-MLA111236752597_052026~MCO3557896580|Protector Auditivo Tapón Dormi|50000|4|0|s|896237-MCO107022691987_022026~MCO3722201594|Tapa Oidos Dormir Tapon Auditi|60200|10|0|s|992998-MCO107024096865_022026~MCO3939550164|Protector Auditivo Tapón Dormi|60300|4|0|s|896237-MCO107022691987_022026~MCO3557766592|Tapones Oidos Dormir Tapa Oido|45000|29|25|s|909365-MLA110306883240_052026~MCO3599723086|Tapones Oidos Dormir Tapa Oido|90000|0|0|s|909365-MLA110306883240_052026~MCO3722173626|Tapones Oidos Dormir Tapa Oido|70000|0|10|s|909365-MLA110306883240_052026~MCO3939550162|Protector Auditivo Tapón Dormi|90000|0|0|s|924453-MCO107019795271_022026~MCO3557935986|Tapa Oidos Dormir Tapon Auditi|50000|10|0|s|959240-MCO106387884690_022026~MCO3722201596|Tapa Oidos Dormir Tapon Auditi|70000|0|0|s|959240-MCO106387884690_022026~MCO3567829586|Tapones Oidos Dormir Tapa Oido|50000|43|7|s|843101-MLA110306949630_052026~MCO1987986491|Tapones Dormir Concierto Viaja|45000|9|3|s|817170-MCO112269413052_062026~MCO4120176432|Tapones Dormir Concierto Viaja|45000|9|2|s|948646-MLA112778461468_062026~MCO4120176262|Tapa Oídos Reutilizables Suave|45000|10|2|u|775381-MLA113971389057_062026~MCO4077158244|Tapa Oídos Reutilizables Suave|45000|10|0|u|750294-MCO112270247600_062026~MCO2829373010|Tapones Oidos Dormir Concierto|39999|447|515|s|820330-MLA110009744434_042026~MCO3511019786|Tapones Oidos Dormir Tapa Oido|39999|184|292|s|831446-MLA99450787168_112025~MCO3568597208|Tapones Dormir Concierto Viaja|39999|447|1|s|794102-MCO90772612281_082025~MCO1522487963|Tapones Dormir Concierto Viaja|49999|595|0|s|794102-MCO90772612281_082025~MCO3863316812|Tapa Oídos Reutilizables Suave|39999|184|0|u|858330-MCO90772613937_082025~MCO2780395082|Tapa Oídos Reutilizables Suave|49999|189|0|u|858330-MCO90772613937_082025~MCO3908895396|Tapones Oidos Dormir Tapa Oído|45396|50|68|s|746849-MLA110311107796_052026~MCO1812116915|Tapa Oidos Dormir Tapones Audi|90000|15|0|s|699261-MCO110013302361_042026~MCO1935364223|Tapones Oidos Dormir Tapa Oído|45000|50|26|s|881463-MLA110078706960_042026~MCO3900067740|Tapones Oidos Dormir Tapa Oído|45000|50|24|s|881463-MLA110078706960_042026~MCO3957358862|Tapones Oidos Dormir Tapa Oído|45000|50|24|s|746849-MLA110311107796_052026~MCO3897782134|Tapones Oidos Dormir Tapa Oido|45499|5|19|s|763365-MLA110991463677_042026~MCO3866827234|Tapa Oidos Dormir Tapones Audi|45000|4|10|s|993660-MLA109705810024_042026~MCO3854723538|Tapa Oidos Dormir Tapones Audi|45000|4|2|s|699261-MCO110013302361_042026~MCO3944202864|Tapa Oidos Dormir Tapones Audi|45000|50|1|s|697507-MCO110012498709_042026~MCO3863316818|Tapa Oídos Reutilizables Suave|45499|5|0|u|738787-MCO110435756707_042026~MCO3854749524|Tapones Dormir Concierto Viaja|45000|50|0|s|922429-MCO110010737427_042026~MCO3862848828|Tapones Auditivos Antirruido P|45000|50|0|s|977806-MCO110012318485_042026~MCO1902329717|Tapones Dormir Concierto Viaja|45396|50|0|s|664192-MCO110477518531_042026~MCO3546935844|Tapones Oidos Dormir Tapa Oido|45000|78|129|s|807275-MLA106664830015_022026~MCO3752787920|Tapa Oidos Earplugs Para Dormi|39600|11|1|s|622705-MLA111537174028_062026~MCO3854749510|Tapones Dormir Concierto Viaja|45000|78|1|s|766633-MCO106323836031_012026~MCO2020442935|Tapones Oidos Dormir Silicona |45000|184|0|s|991525-MLA107010316149_022026~MCO2020436885|Tapones Auditivos Earplugs Sil|40000|184|0|s|723138-MLA98386165213_112025~MCO2018637281|Tapa Oidos Earplugs Para Dormi|39600|184|0|s|622705-MLA111537174028_062026~MCO2020412003|Tapa Oidos Dormir Tapones Audi|45000|183|0|s|991525-MLA107010316149_022026~MCO2018598511|Tapa Oidos Dormir Tapones Audi|45000|183|0|s|991525-MLA107010316149_022026~MCO4137278104|Tapa Oidos Earplugs Para Dormi|39600|184|0|s|622705-MLA111537174028_062026~MCO2018637295|Tapones Auditivos Earplugs Sil|40000|184|0|s|723138-MLA98386165213_112025~MCO2020417439|Tapa Oidos Dormir Tapones Audi|45000|184|0|s|991525-MLA107010316149_022026~MCO4106113562|Tapones Dormir Concierto Viaja|45600|97|0|s|625137-MCO113816481993_062026~MCO3418771870|Tapones Oidos Dormir Concierto|49000|88|79|s|904206-MLA104626126090_012026~MCO3568597214|Tapones Dormir Concierto Viaja|49000|88|2|s|629998-MCO104622762246_012026~MCO2020445515|Tapones Oidos Dormir Concierto|30000|225|1|s|904206-MLA104626126090_012026~MCO2018637473|Tapones Oidos Dormir Silicona |30000|225|0|s|904206-MLA104626126090_012026~MCO2018040077|Tapa Oidos Para Dormir Tapones|39200|224|0|s|679837-MLA112600435433_062026~MCO4137250928|Tapa Oidos Para Dormir Tapones|39200|224|0|s|679837-MLA112600435433_062026~MCO3259147576|Tapones Oidos Dormir Concierto|45499|34|30|s|671310-MLA96506908069_102025~MCO1572115797|Tapones Suaves Oidos Cancelaci|45599|23|1|s|970212-MCO95985600428_102025~MCO3535267052|Tapones Oidos Dormir Concierto|45599|23|12|s|671310-MLA96506908069_102025~MCO3568597212|Tapones Dormir Concierto Viaja|45499|34|0|s|631018-MCO95652818793_102025~MCO1284933519|Tapones Oídos Natación Dormir |45000|26|1|w|868346-MCO111711726979_052026~MCO1464537244|Tapones Oídos Dormir Natación |45000|13|0|w|738681-MCO110753634782_052026~MCO1552749803|Tapones Oídos Natación Dormir |45000|26|14|w|850553-MLA111713732539_052026~MCO1553564905|Tapones Oídos Natación Dormir |45000|13|3|w|850553-MLA111713732539_052026~MCO1415175922|Tapones Oídos Reutilizables Ca|54990|11|0|u|938427-MCO89534027210_082025~MCO3568894828|Tapones Oídos Reutilizables Ca|60299|11|3|u|606153-MCO79553102552_102024~MCO1415167548|Tapones Oídos Dormir Concierto|54990|6|0|s|902382-MCO98010925742_112025~MCO3568597202|Tapones Oídos Dormir Concierto|60199|6|0|s|902382-MCO98010925742_112025~MCO2829192318|Tapones Oídos Reutilizables Ca|60299|11|17|u|831747-MLA82660131070_032025~MCO3953159670|Tapones Oídos Reutilizables Ca|60199|6|41|u|831747-MLA82660131070_032025~MCO2838151008|Tapones Oídos Reutilizables Ca|69999|6|0|u|831747-MLA82660131070_032025~MCO1567843913|Tapa Oídos Dormir Tapones Oido|28499|0|45|s|775728-MLA111409289253_052026~MCO1552697789|Tapa Oídos Dormir Tapones Oido|29889|11|65|s|775728-MLA111409289253_052026~MCO1525838485|Tapa Oídos Dormir Protectores |29889|11|0|s|869630-MCO88792715412_082025~MCO3303517410|Tapones Para Dormir Con Cancel|39999|0|0|s|972457-MLA97201250584_112025~MCO1525865457|Protector Auditivo Tapa Oídos |28499|0|0|t|774169-MCO88792466600_082025~MCO979524848|Tapones Para Dormir Con Cancel|29999|5|7|s|624877-MCO100591546493_122025~MCO1358856626|Tapones Suaves Oidos Cancelaci|29749|7|7|s|668309-MCO100100674642_122025~MCO3897783542|Tapa Oídos Dormir Tapones Oido|29999|5|29|s|775728-MLA111409289253_052026~MCO973925378|Tapones Protección Oído Cancel|29749|7|5|t|680497-MCO100591247779_122025~MCO3953160212|Tapa Oídos Dormir Tapones Oido|29749|7|0|s|775728-MLA111409289253_052026~MCO3953160198|Tapa Oídos Dormir Tapones Oido|29749|7|0|s|775728-MLA111409289253_052026~MCO3955964944|Tapa Oido Tapon Auditivo Prote|120000|1|16|u|937534-MLA111136077877_052026~MCO1689182035|Tapones Oidos Dormir Tapa Oido|29999|19|18|s|769114-MLA96422900262_102025~MCO1686814545|Tapa Oídos Reducción Ruido Tap|29999|19|0|s|784338-MCO94360022078_102025~MCO1952624060|Pelota Autogiratoria Inteligen|92990|2|0|k|849310-MCO84033615431_042025~MCO3450274466|Pelota Autogiratoria Inteligen|129999|2|0|k|696378-MLA96872697255_102025~MCO1967425602|Peine Para Barba Molde Guía Pl|23749|6|8|t|830976-MLU71098637738_082023~MCO1270525493|Peine Para Barba Molde Guía Pl|23749|6|1|t|755230-MCO54336902952_032023~MCO1309117888|Peine Barba Molde Guía Plantil|24999|0|0|t|639239-MCO54336946088_032023~MCO2033724884|Peine De Barba Guia Plantilla |24999|0|0|t|806446-MLA84477616599_052025~MCO4094600334|Gorro Expedición Pescador Buck|45599|12|0|t|701698-MLA113556729773_062026~MCO4086008936|Gorro Expedición Pescador Buck|45599|21|0|t|701698-MLA113556729773_062026~MCO4076789652|Gorro Expedición Pescador Buck|45599|21|0|t|998048-MCO111697007396_062026~MCO4070874534|Gorro Pesquero Pescador Sombre|45599|12|0|t|681088-MCO111696735594_062026~MCO4076789654|Gorro Expedición Pescador Buck|45599|22|0|t|921605-MCO111696917738_062026~MCO4070874536|Gorro Pesquero Pescador Sombre|45599|12|0|t|673330-MCO111696975596_062026~MCO4053237798|Gorro Pesquero Pescador Sombre|45599|12|0|t|658960-MLA111872716844_062026~MCO1308526510|Set X10 Tarjetero Protector Rf|12999|0|146|t|880871-MCO110311203144_052026~MCO1308602678|Set X10 Tarjetero Protector Rf|12999|21|33|t|725758-MCO111243750489_052026~MCO4001198354|Set X10 Tarjetero Protector Rf|12999|21|27|t|915763-MLA100053886087_122025~MCO1703686945|Billetera Inteligente Anti Rfi|69900|0|9|t|700541-MLA99983750401_112025~MCO3220968372|Billetera Inteligente Anti Rfi|69900|0|2|t|700541-MLA99983750401_112025~MCO1346896529|Billetera Inteligente Anti Rfi|69900|0|0|t|693790-MCO72185392515_102023~MCO1346948007|Billetera Inteligente Bloqueo |69900|0|0|t|693790-MCO72185392515_102023~MCO1529663253|Billetera Inteligente Bloqueo |69900|0|0|t|883244-MLA81899278341_012025~MCO3840325168|Termo Thermoflask 1.2l Mantén |119339|2|3|t|817026-MCO110199828002_052026~MCO1895660651|Termo Thermoflask 1.2l Mantén |119339|5|0|t|628878-MCO110354008701_042026~MCO1895660791|Thermoflask Termo 1.2 L Botell|119339|5|0|t|942819-MCO109483833318_042026';
+const POOLRAW=__LIVE?(__R.poolraw||''):POOLRAW_FB;
+const POOL=POOLRAW.split('~').filter(r=>r&&r.split('|').length>=7).map(r=>{const f=r.split('|');return {id:f[0],t:f[1].trim(),price:+f[2],q:+f[3],s60:+f[4],c:f[5],img:'https://http2.mlstatic.com/D_'+f[6]+'-I.jpg'};});
 const LCAT={s:'sleep',w:'swim',m:'moto',u:'music',i:'ind',k:'kat',t:'tech'};
 const nice=p=>Math.max(999,Math.round(p*0.93/100)*100-1);
 const fmt=n=>'$ '+n.toLocaleString('es-CO');
@@ -282,6 +310,11 @@ const MESES=['ene','feb','mar','abr','may','jun','jul','ago','sep','oct','nov','
 const PERDAY=12, GAP=10;
 let STAR=0; POOL.forEach((p,i)=>{if(p.s60>POOL[STAR].s60) STAR=i;});
 const OFFERS=[];
+if(__LIVE){
+ /* Con plan publicado SIEMPRE mandan sus offers (aunque vengan vacíos) — jamás inventar un plan sintético. */
+ (Array.isArray(__R.offers)?__R.offers:[]).forEach(o=>OFFERS.push(o));
+ window.__uses=(Array.isArray(__R.uses)&&__R.uses.length===POOL.length)?__R.uses:POOL.map(()=>0);
+}else{
 (function(){
  const last=POOL.map(()=>-99), uses=POOL.map(()=>0);
  for(let d=0;d<30;d++){
@@ -298,9 +331,10 @@ const OFFERS=[];
  }
  window.__uses=uses;
 })();
-if(__R.offers&&__R.offers.length){OFFERS.length=0;__R.offers.forEach(o=>OFFERS.push(o));window.__uses=__R.uses||window.__uses;}
-// Ventana rodante: ocultar automáticamente los días ya vencidos según la fecha real de hoy
-(function(){var t=new Date();t.setHours(0,0,0,0);var ty=t.getFullYear();for(var i=OFFERS.length-1;i>=0;i--){var p=String(OFFERS[i].fecha||'').toLowerCase().trim().split(/\s+/);var day=parseInt(p[1],10);var mo=MESES.indexOf((p[2]||'').slice(0,3));if(!day||mo<0)continue;var yr=(mo<t.getMonth()-6)?ty+1:ty;var dt=new Date(yr,mo,day);if(dt<t)OFFERS.splice(i,1);}})();
+}
+// Ventana rodante: ocultar los días vencidos según la fecha real de hoy (año resuelto por cercanía — aguanta el cruce dic→ene)
+(function(){var t=new Date();t.setHours(0,0,0,0);var ty=t.getFullYear();for(var i=OFFERS.length-1;i>=0;i--){var p=String(OFFERS[i].fecha||'').toLowerCase().trim().split(/\s+/);var day=parseInt(p[1],10);var mo=MESES.indexOf((p[2]||'').slice(0,3));if(!day||mo<0)continue;var best=null;[ty-1,ty,ty+1].forEach(function(yr){var c=new Date(yr,mo,day);if(best===null||Math.abs(c-t)<Math.abs(best-t))best=c;});if(best<t)OFFERS.splice(i,1);}})();
+window.__OFFERS=OFFERS;
 const WHY={sleep:'sueño convierte de noche (se acuestan, no duermen, compran)',music:'previa de conciertos y rumba del fin de semana',swim:'planeación/uso de piscina del fin de semana',moto:'el motero compra al final de la jornada',ind:'compra laboral entre semana',tech:'compra impulso de tarde-noche',kat:'dueños de gato compran a toda hora (demanda fuerte)'};
 const DOWNOTE=['domingo: valle general pero pico propio de la estrella (más vendida 60d) y noche pre-semana','lunes: arranque de semana (41,5 u/día), insomnio de domingo convertido en compra','martes: día pico general (50,5 u/día)','miércoles: media semana estable (43,5 u/día)','jueves: día pico general (50,5 u/día)','viernes: previa del fin de semana (42,5 u/día)','sábado mañana: intención máxima de uso inmediato (piscina) aunque sea valle general'];
 const state={}, state2={};
@@ -310,6 +344,7 @@ ITEMS.forEach((it,i)=>{
   const c=CAT[it.cat];
   const el=document.createElement('div');
   el.className='item '+(it.def?'approved':'rejected'); el.id='card'+i;
+  el.dataset.mlid=String(it.id).replace(/\D/g,'');
   el.innerHTML=`
   <div class="top">
     <div class="ph"><img src="${it.img}" onerror="this.style.display='none'" alt=""></div>
@@ -337,14 +372,21 @@ ITEMS.forEach((it,i)=>{
   </div>`;
   grid.appendChild(el);
 });
+document.getElementById('kEleg').textContent=ITEMS.length;
+document.getElementById('subEleg').textContent=ITEMS.length+' publicaciones elegibles en la campaña sugerida';
 const grid2=document.getElementById('grid2');
 CAT.kat=['KAT 🐱','#9AE66E'];
-document.getElementById('rotKpis').innerHTML=
- `<div class="kpi"><b>30</b><span>ofertas (1 diaria)</span></div>
-  <div class="kpi"><b>${POOL.length}</b><span>publicaciones ML en rotación (todas con stock)</span></div>
-  <div class="kpi y"><b>${Math.min(...window.__uses)}–${Math.max(...window.__uses)}</b><span>salidas por publicación en el mes</span></div>
-  <div class="kpi"><b>${PERDAY}</b><span>publicaciones por oferta (tope ML: 20)</span></div>
+(function(){
+ const nOf=OFFERS.length, nProd=OFFERS.reduce((a,o)=>a+((o.prods||[]).length),0);
+ if(nOf){const sn=document.getElementById('secNote2');if(sn)sn.textContent='Crear promoción → Oferta relámpago · 1 oferta diaria · '+OFFERS[0].fecha+(nOf>1?' – '+OFFERS[nOf-1].fecha:'')+' · TODAS las publicaciones ML con stock (validadas contra el inventario web BOUN)';}
+ const u=window.__uses||[]; const usesOk=!__LIVE&&u.length>0;
+ document.getElementById('rotKpis').innerHTML=
+ `<div class="kpi ${nOf?'':'r'}"><b>${nOf}</b><span>${nOf===1?'oferta por aprobar':'ofertas por aprobar'}</span></div>
+  <div class="kpi"><b>${POOL.length}</b><span>publicaciones con stock en el plan</span></div>
+  <div class="kpi"><b>${nOf?Math.round(nProd/nOf):0}</b><span>publicaciones por oferta (tope ML: 20)</span></div>
+  ${usesOk?`<div class="kpi y"><b>${Math.min(...u)}–${Math.max(...u)}</b><span>salidas por publicación en el mes</span></div>`:''}
   <div class="kpi"><b>≥${GAP} días</b><span>descanso entre salidas</span></div>`;
+})();
 OFFERS.forEach((of,i)=>{
   state2[i]=of.def;
   const cats=[...new Set(of.prods.map(x=>LCAT[POOL[x].c]))];
@@ -354,7 +396,7 @@ OFFERS.forEach((of,i)=>{
   el.innerHTML=`
   <div class="datebig"><span style="font-size:22px">⚡</span><div><div class="d">${of.fecha}</div></div><span class="hour" style="background:var(--card2);padding:4px 10px;border-radius:8px;font-size:13px;font-weight:600">${of.franja}</span><span style="font-size:11px;color:var(--muted)" id="cnt-off${i}">${of.prods.length} publicaciones</span></div>
   <div class="offProds">${of.prods.map(x=>{const it=POOL[x];const c=CAT[LCAT[it.c]];return `
-    <div class="op" id="op-${i}-${x}"><img src="${it.img}" loading="lazy" onerror="this.style.display='none'" alt="">
+    <div class="op" id="op-${i}-${x}" data-mlid="${String(it.id).replace(/\D/g,'')}"><img src="${it.img}" loading="lazy" onerror="this.style.display='none'" alt="">
       <div class="opt">${x===STAR?'⭐ ':''}${it.t}<small><span style="color:${c[1]}">${c[0]}</span> · ${it.id} · hoy: ${fmt(it.price)} · vend.60d: ${it.s60}${it.q===0?' · <span style="color:var(--warn)">⚠ stock solo bodega</span>':''}</small></div>
       <div class="opp"><b>${fmt(it.real!=null?it.real:nice(it.price))}</b><small>−7% propuesto</small></div>
       <button class="rm" title="Quitar de esta oferta" onclick="rmProd(${i},${x})">✗</button>
@@ -384,9 +426,11 @@ function setD(i,v){state[i]=v;const el=document.getElementById('card'+i);
  el.querySelector('.btn.rj').classList.toggle('on',v===0); upd();}
 function upd(){const a=Object.values(state).filter(v=>v===1).length;
  const b=Object.values(state2).filter(v=>v===1).length;
- document.getElementById('cAp').textContent=a+' + '+b+' ofertas propias';
- document.getElementById('cRj').textContent=(ITEMS.length-a)+' + '+(OFFERS.length-b);
- document.getElementById('kap').textContent=a+b;document.getElementById('krj').textContent=(ITEMS.length-a)+(OFFERS.length-b);}
+ const ps=window.__promosState||{}; let pa=0,pr=0; Object.keys(ps).forEach(k=>{if(ps[k]===1)pa++;else if(ps[k]===0)pr++;});
+ document.getElementById('cAp').textContent=a+' sug + '+b+' propias'+((pa||pr)?' + '+pa+' promos':'');
+ document.getElementById('cRj').textContent=(ITEMS.length-a)+' + '+(OFFERS.length-b)+((pa||pr)?' + '+pr:'');
+ document.getElementById('kap').textContent=a+b+pa;document.getElementById('krj').textContent=(ITEMS.length-a)+(OFFERS.length-b)+pr;}
+window.__updBar=upd;
 function copiar(){
  const ap=ITEMS.filter((_,i)=>state[i]===1).map(it=>`#${it.id} (${it.day} ${it.hour})`);
  const rj=ITEMS.filter((_,i)=>state[i]===0).map(it=>'#'+it.id);
@@ -395,12 +439,14 @@ function copiar(){
  const txt=`DECISIONES OFERTA RELÁMPAGO BOUN (${new Date().toLocaleDateString('es-CO')})\n[1] CAMPAÑA SUGERIDA ML\nAPROBAR (${ap.length}): ${ap.join(' · ')}\nRECHAZAR (${rj.length}): ${rj.join(' · ')}\n[2] CAMPAÑA 30 DÍAS — OFERTAS PROPIAS A CREAR (${oap.length} de ${OFFERS.length}):\n${oap.join('\n')||'—'}\nNO CREAR: ${orj.join(' · ')||'—'}`;
  navigator.clipboard.writeText(txt).then(()=>{const t=document.getElementById('toast');t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2600);});}
 const MXRAW=__R.mxraw||'2026-06-21|32|5136487|29|Tapones Oidos Dormir Concierto Via^5^904206-MLA104626126090_012026-I;Tapones Oidos Dormir Tapa Oidos Ay^5^831446-MLA99450787168_112025-I;Gafas Sol Fotocromáticas Polarizad^3^852077-MLA111344516859_052026-I;Tapones Oidos Dormir Concierto Via^2^820330-MLA110009744434_042026-I;Arenero Para Gatos Automático Gran^2^617975-MLA104658630920_012026-I~2026-06-22|32|1633686|32|Tapones Oidos Dormir Concierto Via^7^820330-MLA110009744434_042026-I;Tapones Oidos Dormir Anti Ruido Pr^4^687168-MCO109636896086_042026-I;Tapones Oidos Dormir Tapa Oidos Ay^4^807275-MLA106664830015_022026-I;Tapones Oidos Dormir Tapa Oidos Ay^3^831446-MLA99450787168_112025-I;Tapones Oidos Dormir Tapa Oidos Ay^2^916259-MLA111236752597_052026-I~2026-06-23|36|1567182|33|Tapones Oidos Dormir Tapa Oidos Ay^8^831446-MLA99450787168_112025-I;Tapa Oidos Para Dormir Tapones Aud^5^679837-MLA112600435433_062026-I;Tapones Oidos Dormir Concierto Via^4^820330-MLA110009744434_042026-I;Gafas Sol Fotocromáticas Polarizad^3^852077-MLA111344516859_052026-I;Tapones Oídos Reutilizables Cancel^3^831747-MLA82660131070_032025-I~2026-06-24|36|1672327|35|Tapones Oidos Dormir Concierto Via^7^820330-MLA110009744434_042026-I;Tapones Oidos Dormir Tapa Oidos Ay^6^831446-MLA99450787168_112025-I;Tapones Oidos Dormir Tapa Oidos Ay^5^807275-MLA106664830015_022026-I;Convertidor Otg 10a Tipo C A Usb M^2^689748-MLA99596992138_122025-I;Antifaz Máscara Para Dormir Transp^2^807190-MLA110140916112_042026-I~2026-06-25|50|3913481|46|Tapones Oidos Dormir Tapa Oidos Ay^12^807275-MLA106664830015_022026-I;Tapones Oidos Dormir Concierto Via^6^820330-MLA110009744434_042026-I;Tapones Oidos Dormir Tapa Oidos Ay^6^831446-MLA99450787168_112025-I;Convertidor Otg 10a Tipo C A Usb M^4^689748-MLA99596992138_122025-I;Gafas Sol Fotocromáticas Polarizad^3^852077-MLA111344516859_052026-I~2026-06-26|53|2158579|40|Tapones Oidos Dormir Tapa Oidos Ay^7^807275-MLA106664830015_022026-I;Collar Reflectivo Mascotas Gato Pe^6^976803-MLA95969948266_102025-I;Convertidor Otg 10a Tipo C A Usb M^5^689748-MLA99596992138_122025-I;Tapones Oidos Dormir Tapa Oidos Ay^4^831446-MLA99450787168_112025-I;Tapones Oidos Dormir Tapa Oidos Ay^3^909365-MLA110306883240_052026-I~2026-06-27|23|1003555|21|Tapones Oidos Dormir Tapa Oidos Ay^7^831446-MLA99450787168_112025-I;Tapones Oidos Dormir Tapa Oidos Ay^4^807275-MLA106664830015_022026-I;Tapones Oidos Dormir Concierto Via^2^820330-MLA110009744434_042026-I;Tapones Oídos Reutilizables Cancel^1^831747-MLA82660131070_032025-I;Termo Thermoflask 1.2l Mantén Bebi^1^817026-MCO110199828002_052026-I~2026-06-28|34|1423282|31|Tapones Oidos Dormir Concierto Via^9^820330-MLA110009744434_042026-I;Tapones Oidos Dormir Tapa Oidos Ay^5^807275-MLA106664830015_022026-I;Tapones Oidos Dormir Tapa Oidos Ay^4^831446-MLA99450787168_112025-I;Convertidor Otg 10a Tipo C A Usb M^2^689748-MLA99596992138_122025-I;Tapones Oidos Dormir Concierto Via^2^904206-MLA104626126090_012026-I~2026-06-29|51|2139170|47|Tapones Oidos Dormir Tapa Oidos Ay^10^807275-MLA106664830015_022026-I;Antifaz Máscara Para Dormir Transp^5^807190-MLA110140916112_042026-I;Tapones Oidos Dormir Tapa Oidos Ay^5^831446-MLA99450787168_112025-I;Convertidor Otg 10a Tipo C A Usb M^4^689748-MLA99596992138_122025-I;Tapones Oidos Dormir Concierto Via^4^820330-MLA110009744434_042026-I~2026-06-30|65|2591880|58|Tapones Oidos Dormir Concierto Via^14^820330-MLA110009744434_042026-I;Tapones Oidos Dormir Tapa Oidos Ay^9^807275-MLA106664830015_022026-I;Tapones Oidos Dormir Tapa Oidos Ay^6^831446-MLA99450787168_112025-I;Convertidor Otg 10a Tipo C A Usb M^6^689748-MLA99596992138_122025-I;Tapa Oidos Para Dormir Tapones Aud^5^679837-MLA112600435433_062026-I~2026-07-01|51|1970262|45|Tapones Oidos Dormir Tapa Oidos Ay^13^807275-MLA106664830015_022026-I;Tapones Oidos Dormir Concierto Via^8^820330-MLA110009744434_042026-I;Set X10 Tarjetero Protector Rfid A^5^915763-MLA100053886087_122025-I;Tapones Oidos Dormir Tapa Oidos Ay^4^831446-MLA99450787168_112025-I;Convertidor Otg 10a Tipo C A Usb M^4^689748-MLA99596992138_122025-I~2026-07-02|51|1991924|49|Tapones Oidos Dormir Tapa Oidos Ay^10^807275-MLA106664830015_022026-I;Tapones Oidos Dormir Concierto Via^9^820330-MLA110009744434_042026-I;Convertidor Otg 10a Tipo C A Usb M^5^689748-MLA99596992138_122025-I;Tapones Oidos Dormir Tapa Oidos Ay^4^831446-MLA99450787168_112025-I;Tapa Oídos Dormir Tapones Oidos Do^3^775728-MLA111409289253_052026-I~2026-07-03|32|2991887|31|Tapones Oidos Dormir Concierto Via^7^820330-MLA110009744434_042026-I;Tapones Oidos Dormir Tapa Oidos Ay^7^807275-MLA106664830015_022026-I;Convertidor Otg 10a Tipo C A Usb M^5^689748-MLA99596992138_122025-I;Tapones Oidos Dormir Tapa Oído Con^2^881463-MLA110078706960_042026-I;Tapones Oidos Dormir Tapa Oidos Ay^2^831446-MLA99450787168_112025-I~2026-07-04|36|1499317|31|Tapones Oidos Dormir Tapa Oidos Ay^8^807275-MLA106664830015_022026-I;Tapones Oidos Dormir Tapa Oidos Ay^4^831446-MLA99450787168_112025-I;Tapones Oidos Dormir Concierto Via^4^820330-MLA110009744434_042026-I;Tapa Oidos Dormir Tapones Auditivo^2^707643-MLA107746830386_032026-I;Tapones Oidos Dormir Concierto Via^2^904206-MLA104626126090_012026-I~2026-07-05|27|955042|24|Tapones Oidos Dormir Tapa Oidos Ay^9^807275-MLA106664830015_022026-I;Convertidor Otg 10a Tipo C A Usb M^4^689748-MLA99596992138_122025-I;Set X10 Tarjetero Protector Rfid A^4^915763-MLA100053886087_122025-I;Tapones Oidos Dormir Concierto Via^3^820330-MLA110009744434_042026-I;Gievuleo Earplug Tapones De Oídos ^1^632387-MLA99628274844_122025-I';
-const MX=MXRAW.split('~').map(r=>{const f=r.split('|');return {f:f[0],u:+f[1],ing:+f[2],ord:+f[3],rel:0,relPubs:[],top:(f[4]||'').split(';').filter(Boolean).map(t=>{const g=t.split('^');return {n:g[0].trim(),u:+g[1],img:'https://http2.mlstatic.com/D_'+g[2]+'.jpg'};})};});
+const MX=MXRAW.split('~').filter(r=>r&&r.includes('|')).map(r=>{const f=r.split('|');return {f:f[0],u:+f[1],ing:+f[2],ord:+f[3],rel:0,relPubs:[],top:(f[4]||'').split(';').filter(Boolean).map(t=>{const g=t.split('^');return {n:g[0].trim(),u:+g[1],img:'https://http2.mlstatic.com/D_'+g[2]+'.jpg'};})};});
 const WDs=['Dom','Lun','Mar','Mié','Jue','Vie','Sáb'];
-function mxQuick(n){const to=MX[MX.length-1].f; const from=n?MX[Math.max(0,MX.length-n)].f:MX[0].f;
+function mxQuick(n,btn){if(!MX.length)return; const to=MX[MX.length-1].f; const from=n?MX[Math.max(0,MX.length-n)].f:MX[0].f;
  document.getElementById('mxFrom').value=from; document.getElementById('mxTo').value=to;
- document.querySelectorAll('.qbtn').forEach(b=>b.classList.remove('on')); mxRender();}
+ document.querySelectorAll('.qbtn').forEach(b=>b.classList.remove('on'));
+ const el=btn||document.querySelector('.qbtn[data-n="'+n+'"]'); if(el)el.classList.add('on'); mxRender();}
 function mxRender(){
+ if(!MX.length){document.getElementById('mxKpis').innerHTML='';document.getElementById('mxChart').innerHTML='';document.getElementById('mxTop').innerHTML='';document.getElementById('mxInsights').textContent='Aún no hay métricas publicadas por la corrida diaria.';return;}
  const from=document.getElementById('mxFrom').value||MX[0].f, to=document.getElementById('mxTo').value||MX[MX.length-1].f;
  const R=MX.filter(d=>d.f>=from&&d.f<=to);
  document.getElementById('mxRange').textContent=R.length+' días en el rango';
@@ -492,7 +538,7 @@ async function enviar(){
   if(r.status===401){document.getElementById('loginOv').classList.add('show');b.disabled=false;b.textContent='\u26a1 Enviar decisiones a Claude';return;}
   if(!r.ok) throw new Error('HTTP '+r.status);
   b.textContent='\u2713 Decisiones enviadas';try{document.getElementById('grid').style.display='none';document.getElementById('grid2').style.display='none';window.__estadoBanner&&window.__estadoBanner();}catch(_){}
-  try{ if(window.__reloadPromos) setTimeout(window.__reloadPromos,600); }catch(_){}
+  try{ setTimeout(async function(){ try{ if(window.__reloadPromos) await window.__reloadPromos(); }catch(_){} window.__chequear&&window.__chequear(); },600); }catch(_){}
   const t=document.getElementById('toast');t.textContent='Enviado \u2014 Claude las aplicar\u00e1 en la pr\u00f3xima corrida';t.classList.add('show');
   setTimeout(()=>{t.classList.remove('show');b.disabled=false;b.textContent='\u26a1 Enviar decisiones a Claude';},3200);
  }catch(e){
@@ -506,6 +552,7 @@ Object.assign(window,{setD,setO,rmProd,copiar,enviar,mxQuick,mxRender});
 window.__POOL=POOL; window.__ITEMS=ITEMS; window.__LCAT=LCAT;
 mxQuick(15);
 upd();
+window.__mainReady=true; document.dispatchEvent(new Event('boun:main-ready'));
 })();
 </script>
 
@@ -513,7 +560,6 @@ upd();
 window.__estadoBanner=function(){var g=document.getElementById('grid');var host=document.getElementById('estadoHost');if(!host){host=document.createElement('div');host.id='estadoHost';host.style.cssText='margin:14px 0;padding:16px;border-radius:12px;background:var(--card2,#2f2e31);font-size:14px';g&&g.parentNode.insertBefore(host,g);}host.style.display='block';host.innerHTML='<b>⚡ Enviadas ✓</b><div style="opacity:.8;margin-top:4px">Claude las está aplicando. Cuando termine reaparecen aquí como <b>activas</b> o <b>bloqueadas</b>.</div>';window.__renderEstados&&window.__renderEstados();};
 window.__renderEstados=async function(){try{var tk=localStorage.getItem('boun_token');if(!tk)return;var r=await fetch('/api/relampago/decisiones',{headers:{Authorization:'Bearer '+tk}});if(!r.ok)return;var j=await r.json();var d=(j&&j.datos)||{};var items=[];try{(d.sugeridas&&d.sugeridas.aprobar||[]).forEach(function(x){items.push({id:x.id,estado:x.estado});});(d.propias&&d.propias.crear||[]).forEach(function(o){(o.pubs||[]).forEach(function(p){items.push({id:p.id,estado:p.estado,motivo:p.motivo});});});}catch(_){}
 var act=items.filter(function(i){return i.estado==='activa';}),blo=items.filter(function(i){return i.estado==='bloqueada';}),pen=items.filter(function(i){return i.estado==='pendiente'||i.estado==='enviada';});if(!act.length&&!blo.length&&!pen.length)return;var host=document.getElementById('estadoHost');if(!host){window.__estadoBanner();host=document.getElementById('estadoHost');}host.style.display='block';host.innerHTML='<div style="display:flex;gap:14px;flex-wrap:wrap;font-weight:600"><span>⏳ '+pen.length+' pendientes</span><span style="color:#7CE38B">✅ '+act.length+' activas</span><span style="color:#FF7A7A">⛔ '+blo.length+' bloqueadas</span></div>'+(blo.length?'<div style="margin-top:8px;font-size:12.5px;opacity:.85">Bloqueadas: '+blo.map(function(b){return '#'+b.id+(b.motivo?' ('+b.motivo+')':'');}).join(' · ')+'</div>':'');}catch(_){}};
-document.addEventListener('DOMContentLoaded',function(){setTimeout(window.__renderEstados,1200);});
 </script>
 <script>
 (function(){
@@ -526,7 +572,7 @@ document.addEventListener('DOMContentLoaded',function(){setTimeout(window.__rend
    window.__realMap=map;
    if(!Object.keys(map).length) return;
    document.querySelectorAll('#grid2 .op').forEach(function(row){
-     var idraw=(row.innerText.match(/\d{9,}/)||[])[0]||''; var id=idraw.replace(/\D/g,'');
+     var id=row.dataset.mlid||((row.innerText.match(/\d{9,}/)||[])[0]||'').replace(/\D/g,'');
      var info=map[id]; if(!info) return;
      var opp=row.querySelector('.opp'); if(!opp) return;
      var b=opp.querySelector('b'); var sm=opp.querySelector('small');
@@ -535,7 +581,7 @@ document.addEventListener('DOMContentLoaded',function(){setTimeout(window.__rend
    });
   }catch(e){}
  }
- document.addEventListener('DOMContentLoaded',function(){ setTimeout(patchReales,1500); });
+ window.__patchReales=patchReales;
 })();
 </script>
 <script>
@@ -560,7 +606,7 @@ document.addEventListener('DOMContentLoaded',function(){setTimeout(window.__rend
    apSug.forEach(function(x){decided[String(x.id).replace(/\D/g,'')]='ap';});
    rjSug.forEach(function(x){decided[String(x).replace(/\D/g,'')]='rj';});
    document.querySelectorAll('#grid .item').forEach(function(card){
-     var m=(card.innerText.match(/#(\d{6,})/)||[]); var id=m[1]?m[1].replace(/\D/g,''):''; if(!id) return;
+     var id=card.dataset.mlid||(((card.innerText.match(/#(\d{6,})/)||[])[1])||'').replace(/\D/g,''); if(!id) return;
      if(decided[id]) card.style.display='none';
    });
    var enCurso=[];
@@ -581,20 +627,37 @@ document.addEventListener('DOMContentLoaded',function(){setTimeout(window.__rend
    }).join('');
   }catch(e){}
  }
- document.addEventListener('DOMContentLoaded',function(){ setTimeout(renderAprobadas,1600); });
+ window.__renderAprobadas=renderAprobadas;
 })();
 </script>
 <script>
 (function(){
- function vis(sel){ return [].slice.call(document.querySelectorAll(sel)).filter(function(c){return c.style.display!=='none';}).length; }
+ function vis(sel){ return [].slice.call(document.querySelectorAll(sel)).filter(function(c){ if(c.style.display==='none') return false; var p=c.parentElement; while(p&&p.tagName!=='BODY'){ if(p.style&&p.style.display==='none') return false; p=p.parentElement; } return true; }).length; }
  function chequear(){
    var s=document.getElementById('emptySug'); var p=document.getElementById('emptyProp');
-   if(s) s.style.display = vis('#grid .item')===0 ? 'block' : 'none';
-   if(p) p.style.display = vis('#grid2 > *')===0 ? 'block' : 'none';
-   var bar=document.getElementById('bar')||document.querySelector('.bar');
-   if(bar && vis('#grid .item')===0 && vis('#grid2 > *')===0) bar.style.display='none';
+   var v1=vis('#grid .item'), v2=vis('#grid2 > .item');
+   var demo=!!window.__DEMO||window.__LIVE===false;
+   if(s){
+     if(v1===0){
+       s.style.display='block';
+       if(demo){ s.className='alertBox'; s.innerHTML='⚠️ <b>Sin datos en vivo.</b> Inicia sesión para ver las sugeridas de hoy.'; }
+       else if(!(window.__ITEMS||[]).length){ s.className='okBox'; s.innerHTML='✅ <b>Hoy MercadoLibre no ofrece sugeridas elegibles.</b> La corrida vuelve a leer mañana.'; }
+       else { s.className='okBox'; s.innerHTML='✅ <b>No hay sugeridas de MercadoLibre por aprobar.</b> Ya revisaste todas las de hoy; las aprobadas están abajo en <b>Ofertas aprobadas · en curso</b>.'; }
+     } else s.style.display='none';
+   }
+   if(p){
+     if(v2===0){
+       p.style.display='block';
+       if(demo){ p.className='alertBox'; p.innerHTML='⚠️ <b>Sin datos en vivo.</b> Inicia sesión para ver la oferta propia pendiente.'; }
+       else if(!(window.__OFFERS||[]).length){ p.className='alertBox'; p.innerHTML='⚡ <b>No hay oferta propia publicada para aprobar.</b> La corrida diaria aún no publicó la oferta del día siguiente. Si ya es más de media mañana, pídele a Claude que la prepare — <b>ningún día debe quedar sin oferta</b>.'; }
+       else { p.className='okBox'; p.innerHTML='✅ <b>Nada por aprobar.</b> La oferta relámpago del día siguiente ya fue aprobada. Puedes verla abajo en <b>Ofertas aprobadas · en curso</b>; Claude la aplicará en MercadoLibre antes de que abra la ventana.'; }
+     } else p.style.display='none';
+   }
+   var bar=document.querySelector('.bar');
+   var promoPend=window.__promoPend||0;
+   if(bar) bar.style.display=(demo||(v1===0&&v2===0&&promoPend===0))?'none':'flex';
  }
- document.addEventListener('DOMContentLoaded',function(){ setTimeout(chequear,2200); setTimeout(chequear,4000); });
+ window.__chequear=chequear;
 })();
 </script>
 <script>
@@ -644,6 +707,7 @@ document.addEventListener('DOMContentLoaded',function(){setTimeout(window.__rend
      '<div class="offProds">'+rows+'</div>';
    grid.appendChild(card);
   });
+  window.__promoPend=pendTotal;
   if(!pendTotal){ empty.style.display='block'; empty.innerHTML='✅ <b>Todo revisado.</b> Las variantes que aprobaste se aplicarán en la próxima corrida y pasarán a activas en su campaña. (Las ya activas y las no elegibles no se muestran aquí.)'; }
   // wire buttons
   grid.querySelectorAll('.pbap').forEach(b=>b.onclick=()=>setP(+b.dataset.ci,b.dataset.id,1));
@@ -672,6 +736,7 @@ document.addEventListener('DOMContentLoaded',function(){setTimeout(window.__rend
   }));
   const el=document.getElementById('promoStats'); el.style.display='block';
   el.innerHTML='<span style="color:#FFD166">⏳ '+pend+' por revisar</span> · <span style="color:#7CE38B">✅ '+apEnv+' aprobadas (en cola)</span> · <span style="color:#FF7A7A">✗ '+rjEnv+' rechazadas</span> · 🏷️ '+act+' ya en campaña · ⛔ '+blo+' no elegibles';
+  try{window.__updBar&&window.__updBar();}catch(_){}
  }
 
  // expone la construcción de decisiones para buildDecisiones() del script principal
@@ -699,7 +764,7 @@ document.addEventListener('DOMContentLoaded',function(){setTimeout(window.__rend
  }
  async function load(){
   try{
-   const tk=localStorage.getItem('boun_token'); if(!tk){ document.getElementById('emptyPromo').style.display='block'; return; }
+   const tk=localStorage.getItem('boun_token'); if(!tk){ const ep=document.getElementById('emptyPromo'); ep.style.display='block'; ep.innerHTML='Inicia sesión para ver las promociones de MercadoLibre.'; return; }
    window.__INV=await loadInv(tk);
    // decisiones ya enviadas → para reflejar aprobadas/rechazadas al recargar
    try{ const dj=await (await fetch('/api/relampago/decisiones',{headers:{Authorization:'Bearer '+tk}})).json(); const dd=((dj&&dj.datos)||{}).promos_ml||{}; const dm={}; (dd.aprobar||[]).forEach(x=>dm[String(x.id).replace(/\D/g,'')]='aprobada'); (dd.rechazar||[]).forEach(x=>dm[String((x&&x.id)||x).replace(/\D/g,'')]='rechazada'); window.__promoDec=dm; }catch(_){ window.__promoDec={}; }
@@ -710,7 +775,28 @@ document.addEventListener('DOMContentLoaded',function(){setTimeout(window.__rend
   }catch(e){ document.getElementById('emptyPromo').style.display='block'; }
  }
  window.__setP=setP; window.__reloadPromos=load;
- document.addEventListener('DOMContentLoaded',function(){ setTimeout(load,1400); });
+})();
+</script>
+<script>
+/* ── Orquestador: corre en orden cuando el script principal terminó (con o sin datos en vivo) ── */
+(function(){
+ async function seq(){
+  try{ if(window.__patchReales) await window.__patchReales(); }catch(_){}
+  try{ if(window.__renderAprobadas) await window.__renderAprobadas(); }catch(_){}
+  try{ window.__renderEstados&&window.__renderEstados(); }catch(_){}
+  try{ if(window.__reloadPromos) await window.__reloadPromos(); }catch(_){}
+  try{ window.__chequear&&window.__chequear(); }catch(_){}
+ }
+ if(window.__mainReady) seq(); else document.addEventListener('boun:main-ready',seq);
+ /* Auto-refresh: si la corrida publica un plan nuevo mientras la página está abierta, recargar sola (máx. cada 5 min) */
+ setInterval(async function(){
+  try{
+   var tk=localStorage.getItem('boun_token'); if(!tk) return;
+   var r=await fetch('/api/relampago/plan',{headers:{Authorization:'Bearer '+tk}}); if(!r.ok) return;
+   var j=await r.json(); var ts=j&&j.datos&&j.datos._actualizado;
+   if(ts&&window.__PLAN_TS&&ts!==window.__PLAN_TS) location.reload();
+  }catch(_){}
+ },5*60*1000);
 })();
 </script>
 </body>
