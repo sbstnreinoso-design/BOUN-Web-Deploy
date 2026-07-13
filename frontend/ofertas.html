@@ -365,10 +365,11 @@ const DOWNOTE=['domingo: valle general pero pico propio de la estrella (más ven
 const state={}, state2={};
 const grid=document.getElementById('grid');
 ITEMS.forEach((it,i)=>{
-  state[i]=it.def;
+  /* SIN pre-marca (pedido de Sebastián 13-jul): toda tarjeta llega neutra y él decide una por una. it.def queda solo como dato informativo. */
+  state[i]=null;
   const c=CAT[it.cat];
   const el=document.createElement('div');
-  el.className='item '+(it.def?'approved':'rejected'); el.id='card'+i;
+  el.className='item'; el.id='card'+i;
   el.dataset.mlid=String(it.id).replace(/\D/g,'');
   el.innerHTML=`
   <div class="top">
@@ -392,8 +393,8 @@ ITEMS.forEach((it,i)=>{
     <details style="flex-basis:100%"><summary>¿Por qué este día y esta hora?</summary><div class="why">${it.why}</div></details>
   </div>
   <div class="actions">
-    <button class="btn ap ${it.def?'on':''}" onclick="setD(${i},1)">✓ Aprobar</button>
-    <button class="btn rj ${it.def?'':'on'}" onclick="setD(${i},0)">✗ Rechazar</button>
+    <button class="btn ap" onclick="setD(${i},1)">✓ Aprobar</button>
+    <button class="btn rj" onclick="setD(${i},0)">✗ Rechazar</button>
   </div>`;
   grid.appendChild(el);
 });
@@ -413,11 +414,12 @@ CAT.kat=['KAT 🐱','#9AE66E'];
   <div class="kpi"><b>≥${GAP} días</b><span>descanso entre salidas</span></div>`;
 })();
 OFFERS.forEach((of,i)=>{
-  state2[i]=of.def;
+  /* SIN pre-marca (pedido de Sebastián 13-jul): la oferta llega neutra; él pulsa Crear/No crearla. */
+  state2[i]=null;
   const cats=[...new Set(of.prods.map(x=>LCAT[POOL[x].c]))];
   const why=`<b>${DOWNOTE[of.dow].charAt(0).toUpperCase()+DOWNOTE[of.dow].slice(1)}.</b> Mezcla del día: ${cats.map(c=>`<b>${CAT[c][0]}</b> — ${WHY[c]}`).join('; ')}. Publicaciones elegidas por rotación: cada una lleva ≥${GAP} días sin salir, se prioriza la de más ventas 60d y la que menos veces ha salido en el mes. Precio propuesto = 7% bajo el precio actual de la publicación; se revalida contra la promo vigente y el stock el día de crear la oferta.`;
   const el=document.createElement('div');
-  el.className='item '+(of.def?'approved':'rejected'); el.id='off'+i;
+  el.className='item'; el.id='off'+i;
   el.innerHTML=`
   <div class="datebig"><span style="font-size:22px">⚡</span><div><div class="d">${of.fecha}</div></div><span class="hour" style="background:var(--card2);padding:4px 10px;border-radius:8px;font-size:13px;font-weight:600">${of.franja}</span><span style="font-size:11px;color:var(--muted)" id="cnt-off${i}">${of.prods.length} publicaciones</span></div>
   <div class="offProds">${of.prods.map(x=>{const it=POOL[x];const c=CAT[LCAT[it.c]];return `
@@ -429,8 +431,8 @@ OFFERS.forEach((of,i)=>{
   </div>
   <details><summary>¿Por qué estos productos, este día y esta hora?</summary><div class="why">${why}</div></details>
   <div class="actions">
-    <button class="btn ap ${of.def?'on':''}" onclick="setO(${i},1)">✓ Crear esta oferta</button>
-    <button class="btn rj ${of.def?'':'on'}" onclick="setO(${i},0)">✗ No crearla</button>
+    <button class="btn ap" onclick="setO(${i},1)">✓ Crear esta oferta</button>
+    <button class="btn rj" onclick="setO(${i},0)">✗ No crearla</button>
   </div>`;
   grid2.appendChild(el);
 });
@@ -450,11 +452,13 @@ function setD(i,v){state[i]=v;const el=document.getElementById('card'+i);
  el.querySelector('.btn.ap').classList.toggle('on',v===1);
  el.querySelector('.btn.rj').classList.toggle('on',v===0); upd();}
 function upd(){const a=Object.values(state).filter(v=>v===1).length;
+ const ar=Object.values(state).filter(v=>v===0).length;
  const b=Object.values(state2).filter(v=>v===1).length;
+ const br=Object.values(state2).filter(v=>v===0).length;
  const ps=window.__promosState||{}; let pa=0,pr=0; Object.keys(ps).forEach(k=>{if(ps[k]===1)pa++;else if(ps[k]===0)pr++;});
  document.getElementById('cAp').textContent=a+' sug + '+b+' propias'+((pa||pr)?' + '+pa+' promos':'');
- document.getElementById('cRj').textContent=(ITEMS.length-a)+' + '+(OFFERS.length-b)+((pa||pr)?' + '+pr:'');
- document.getElementById('kap').textContent=a+b+pa;document.getElementById('krj').textContent=(ITEMS.length-a)+(OFFERS.length-b)+pr;}
+ document.getElementById('cRj').textContent=ar+' + '+br+((pa||pr)?' + '+pr:'');
+ document.getElementById('kap').textContent=a+b+pa;document.getElementById('krj').textContent=ar+br+pr;}
 window.__updBar=upd;
 function copiar(){
  const ap=ITEMS.filter((_,i)=>state[i]===1).map(it=>`#${it.id} (${it.day} ${it.hour})`);
@@ -718,10 +722,11 @@ var act=items.filter(function(i){return i.estado==='activa';}),blo=items.filter(
      const plista=p.lista||(inv.price?fmt(inv.price):'');
      const priceReal=(p.precio_real!=null)?fmt(p.precio_real):(p.rango||'—');
      const lab=(p.precio_real!=null)?((p.pct?p.pct+'% ':'')+'real ML'):(p.rango?'rango real ML':'—');
-     const def=(p.def==null?1:p.def); window.__promosState[stKey(ci,id)]=def;
+     /* SIN pre-marca (pedido de Sebastián 13-jul): nace neutra (null); él marca ✓ o ✗ una por una. */
+     const def=null; window.__promosState[stKey(ci,id)]=def;
      const right='<div class="pbtns" style="display:flex;gap:6px">'+
-         '<button class="pbap" data-ci="'+ci+'" data-id="'+id+'" style="border:0;border-radius:8px;padding:6px 9px;font-weight:700;cursor:pointer;background:'+(def?'#7CE38B':'var(--card2)')+';color:'+(def?'#111':'var(--muted)')+'">✓</button>'+
-         '<button class="pbrj" data-ci="'+ci+'" data-id="'+id+'" style="border:0;border-radius:8px;padding:6px 9px;font-weight:700;cursor:pointer;background:'+(def?'var(--card2)':'#FF5A5A')+';color:'+(def?'var(--muted)':'#fff')+'">✗</button></div>';
+         '<button class="pbap" data-ci="'+ci+'" data-id="'+id+'" style="border:0;border-radius:8px;padding:6px 9px;font-weight:700;cursor:pointer;background:'+(def===1?'#7CE38B':'var(--card2)')+';color:'+(def===1?'#111':'var(--muted)')+'">✓</button>'+
+         '<button class="pbrj" data-ci="'+ci+'" data-id="'+id+'" style="border:0;border-radius:8px;padding:6px 9px;font-weight:700;cursor:pointer;background:'+(def===0?'#FF5A5A':'var(--card2)')+';color:'+(def===0?'#fff':'var(--muted)')+'">✗</button></div>';
      return '<div class="op" id="prow-'+ci+'-'+id+'" style="align-items:center">'+
        '<img src="'+pimg+'" loading="lazy" onerror="this.style.display=\'none\'" alt="">'+
        '<div class="opt">'+ptitle+'<small><span style="color:'+c[1]+'">'+c[0]+'</span> · '+p.id+(plista?' · lista '+plista:'')+'</small></div>'+
