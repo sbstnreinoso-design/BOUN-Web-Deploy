@@ -1,0 +1,3 @@
+Marcador para disparar auto-deploy en Render cuando el cambio es solo de frontend
+(rootDir=backend: Render ignora pushes que no tocan backend/).
+Última actualización: 2026-07-13 14:45 — fix tarjetas sin pre-marca en ofertas.html
