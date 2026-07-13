@@ -218,6 +218,10 @@ summary::before{content:'▸ '} details[open] summary::before{content:'▾ '}
 <h2 class="secTitle"><span class="num">1</span> Campaña sugerida por MercadoLibre <span class="secNote">descuento lo fija ML · solo decides si entras</span></h2>
 <div class="grid" id="grid"></div>
 <div id="emptySug" class="okBox" style="display:none">✅ <b>No hay sugeridas de MercadoLibre por aprobar.</b> Ya revisaste todas las de hoy; las aprobadas están abajo en <b>Ofertas aprobadas · en curso</b>.</div>
+<details id="s1info" style="display:none;margin:10px 0 4px">
+  <summary style="cursor:pointer;color:var(--muted);font-weight:600;padding:8px 4px">🔎 <span id="s1infoCnt"></span> sin acción posible — ya programadas o no elegibles (solo informativas, sin botones)</summary>
+  <div class="grid" id="gridInfo" style="margin-top:10px"></div>
+</details>
 <h2 class="secTitle"><span class="num">2</span> Campaña 30 días · ofertas creadas por nosotros <span class="secNote" id="secNote2">Crear promoción → Oferta relámpago · 1 oferta diaria · TODAS las publicaciones ML con stock (validadas contra el inventario web BOUN)</span></h2>
 <p class="legend" style="margin-top:2px">Oferta relámpago TODOS los días durante 30 días con TODAS las publicaciones de MercadoLibre de cada producto que vendemos (BOUN + KAT), leídas del inventario web BOUN y filtradas a las que tienen stock (en la publicación o en bodega). Rotación automática: 12 publicaciones por oferta (tope ML 20), cada una descansa ≥10 días y sale ~2 veces en el mes, asignada a su mejor día (sueño = noches Dom–Jue, swim = viernes/sábado, moto = martes/viernes, music = jueves/viernes, KAT = parejo toda la semana, la estrella ⭐ —la más vendida 60d— ancla TODOS los domingos). Precio propuesto: −7% sobre el precio actual de la publicación — nunca el 35–46% que exige la campaña sugerida. El día de crear cada oferta se revalida la promoción vigente del mes y el stock; si ML exige un mínimo mayor, no se aplica y se avisa. Franja: 12:00–24:00 a diario, sábados 00:00–12:00.</p>
 <div class="kpis" id="rotKpis" style="margin-top:4px"></div>
@@ -364,9 +368,13 @@ const WHY={sleep:'sueño convierte de noche (se acuestan, no duermen, compran)',
 const DOWNOTE=['domingo: valle general pero pico propio de la estrella (más vendida 60d) y noche pre-semana','lunes: arranque de semana (41,5 u/día), insomnio de domingo convertido en compra','martes: día pico general (50,5 u/día)','miércoles: media semana estable (43,5 u/día)','jueves: día pico general (50,5 u/día)','viernes: previa del fin de semana (42,5 u/día)','sábado mañana: intención máxima de uso inmediato (piscina) aunque sea valle general'];
 const state={}, state2={};
 const grid=document.getElementById('grid');
+const gridInfo=document.getElementById('gridInfo');
+let nInfo=0;
 ITEMS.forEach((it,i)=>{
   /* SIN pre-marca (pedido de Sebastián 13-jul): toda tarjeta llega neutra y él decide una por una. it.def queda solo como dato informativo. */
   state[i]=null;
+  /* Sin acción posible (13-jul): ya programadas por ML o no elegibles NO se muestran como aprobables — van al bloque informativo plegado, sin botones. */
+  const sinAccion=(it.warn||[]).some(w=>/YA PROGRAMADA|Sin stock Full|no elegible|⛔/.test(w));
   const c=CAT[it.cat];
   const el=document.createElement('div');
   el.className='item'; el.id='card'+i;
@@ -392,14 +400,19 @@ ITEMS.forEach((it,i)=>{
     <span class="day">${it.day}</span><span class="hour">${it.hour}</span>
     <details style="flex-basis:100%"><summary>¿Por qué este día y esta hora?</summary><div class="why">${it.why}</div></details>
   </div>
-  <div class="actions">
+  ${sinAccion
+    ?`<div class="actions" style="opacity:.75"><span style="flex:1;text-align:center;padding:10px 6px;border-radius:10px;background:var(--card2);color:var(--muted);font-weight:600;font-size:12.5px">${(it.warn||[]).some(w=>/YA PROGRAMADA/.test(w))?'🔒 Ya programada — nada que aprobar (pídeme sacarla si no la quieres)':'⛔ No elegible — ML la rechazaría; solo informativa'}</span></div>`
+    :`<div class="actions">
     <button class="btn ap" onclick="setD(${i},1)">✓ Aprobar</button>
     <button class="btn rj" onclick="setD(${i},0)">✗ Rechazar</button>
-  </div>`;
-  grid.appendChild(el);
+  </div>`}`;
+  if(sinAccion&&gridInfo){el.style.opacity='.8';gridInfo.appendChild(el);nInfo++;}
+  else grid.appendChild(el);
 });
-document.getElementById('kEleg').textContent=ITEMS.length;
-document.getElementById('subEleg').textContent=ITEMS.length+' publicaciones elegibles en la campaña sugerida';
+if(nInfo){const d=document.getElementById('s1info');if(d){d.style.display='block';document.getElementById('s1infoCnt').textContent=nInfo+(nInfo===1?' tarjeta':' tarjetas');}}
+const nAcc=ITEMS.length-nInfo;
+document.getElementById('kEleg').textContent=nAcc;
+document.getElementById('subEleg').textContent=nAcc+' por decidir · '+nInfo+' sin acción (ya programadas / no elegibles)';
 const grid2=document.getElementById('grid2');
 CAT.kat=['KAT 🐱','#9AE66E'];
 (function(){
@@ -634,7 +647,7 @@ var act=items.filter(function(i){return i.estado==='activa';}),blo=items.filter(
    var decided={};
    apSug.forEach(function(x){decided[String(x.id).replace(/\D/g,'')]='ap';});
    rjSug.forEach(function(x){decided[String(x).replace(/\D/g,'')]='rj';});
-   document.querySelectorAll('#grid .item').forEach(function(card){
+   document.querySelectorAll('#grid .item, #gridInfo .item').forEach(function(card){
      var id=card.dataset.mlid||(((card.innerText.match(/#(\d{6,})/)||[])[1])||'').replace(/\D/g,''); if(!id) return;
      if(decided[id]) card.style.display='none';
    });
