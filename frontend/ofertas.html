@@ -656,6 +656,9 @@ var act=items.filter(function(i){return i.estado==='activa';}),blo=items.filter(
    var apDays={};
    ((d.propias&&d.propias.crear)||[]).forEach(function(o){ var anyAp=(o.pubs||[]).some(function(q){return q.estado==='activa'||q.estado==='aprobada'||q.aplicada;}); if(anyAp) apDays[String(o.fecha).toLowerCase().trim()]=1; (o.pubs||[]).forEach(function(p){ if(!(p.estado==='activa'||p.estado==='aprobada'||p.aplicada)) return; var id=String(p.id).replace(/\D/g,''); var info=byId[id]||{}; enCurso.push({id:id,t:info.t||('#'+id),img:info.img,dia:fmtFecha(o.fecha),franja:o.franja,precio:(p.precio_real!=null?p.precio_real:p.precio),estado:((p.estado==='activa'||p.aplicada)?'activa':'aprobada'),vendidas:(p.vendidas!=null?p.vendidas:null),pct:p.pct_real,origen:'propia'}); }); });
    try{ document.querySelectorAll('#grid2 > *').forEach(function(card){ var dd=card.querySelector('.d'); if(dd && apDays[String(dd.textContent).toLowerCase().trim()]) card.style.display='none'; }); }catch(e){}
+   /* Solo vigentes o próximas (pedido de Sebastián 13-jul): los días ya pasados salen de esta sección (quedan en las métricas de la Sección 4). */
+   function esPasada(s){ if(!s) return false; var m=String(s).toLowerCase().match(/(\d{1,2})\s*(?:de\s*)?(ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)/); if(!m) return false; var day=parseInt(m[1],10), mo=MESES.indexOf(m[2]); if(!day||mo<0) return false; var t=new Date(); t.setHours(0,0,0,0); var best=null; [t.getFullYear()-1,t.getFullYear(),t.getFullYear()+1].forEach(function(yr){var c=new Date(yr,mo,day); if(best===null||Math.abs(c-t)<Math.abs(best-t)) best=c;}); return best<t; }
+   enCurso=enCurso.filter(function(e){ return !esPasada(e.dia); });
    var host=document.getElementById('gridAprob'); var empty=document.getElementById('aprobEmpty'); if(!host) return;
    if(!enCurso.length){ host.innerHTML=''; if(empty) empty.style.display='block'; return; }
    if(empty) empty.style.display='none';
