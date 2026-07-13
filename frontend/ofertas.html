@@ -571,9 +571,12 @@ async function enviar(){
     });
     nueva.sugeridas=nueva.sugeridas||{aprobar:[],rechazar:[]};
     const prevAp=(prev.sugeridas&&prev.sugeridas.aprobar)||[];
+    const prevRj=(prev.sugeridas&&prev.sugeridas.rechazar)||[];
     const apIds={}; (nueva.sugeridas.aprobar||[]).forEach(function(x){apIds[norm(x.id)]=1;});
     const rjIds={}; (nueva.sugeridas.rechazar||[]).forEach(function(x){rjIds[norm(x)]=1;});
-    prevAp.forEach(function(x){ const id=norm(x.id); if(apIds[id]||rjIds[id]) return; if(x.estado==='activa'||x.aplicada||x.precio_aplicado!=null){ nueva.sugeridas.aprobar.push(x); } });
+    /* FIX 13-jul: conservar TODA decisión previa no re-decidida ahora (antes solo sobrevivían las ya aplicadas → las aprobaciones pendientes se borraban y las tarjetas reaparecían). */
+    prevAp.forEach(function(x){ const id=norm(x.id); if(apIds[id]||rjIds[id]) return; nueva.sugeridas.aprobar.push(x); apIds[id]=1; });
+    prevRj.forEach(function(x){ const id=norm(x); if(apIds[id]||rjIds[id]) return; nueva.sugeridas.rechazar.push(x); rjIds[id]=1; });
    }
   }catch(_){}
   const r=await fetch('/api/relampago/decisiones',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+TK()},body:JSON.stringify(nueva)});
