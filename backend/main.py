@@ -4511,8 +4511,87 @@ def _mj_targets() -> dict:
         c = str(by_id[pid].get("code") or "").strip().upper()
         if c in codes and not codes[c]["thumb"] and info["thumb"]:
             codes[c]["thumb"] = info["thumb"]
+
+    # ── COMBOS con componentes de María José ────────────────────────────
+    # Un combo (p. ej. ASTROKRONCHFLOW) suele ser un producto de BOUN, pero
+    # sus componentes pueden ser de María.  Aquí se indexan las publicaciones
+    # de esos combos para que _mj_sync DESPIECE la venta: a María se le
+    # atribuye la parte de SUS componentes, prorrateando el bruto y los
+    # costos por el peso de cada componente (precio individual publicado ×
+    # cantidad; respaldo: costo landed).  La parte de componentes BOUN no
+    # se atribuye.  El cupo (mj_qty) de cada componente aplica igual.
+    ml_combo, fa_combo, code_combo = {}, {}, {}
+    try:
+        cdefs = _combos_def() or {}
+    except Exception:
+        cdefs = {}
+    if cdefs and prods:
+        try:
+            allp = db._sb_get("inventory_products?select=id,code,name,"
+                              "cost_product,cost_shipping") or []
+        except Exception:
+            allp = []
+        p_by_code = {str(p.get("code") or "").strip().upper(): p
+                     for p in allp}
+        # Precio individual por producto = MENOR precio ML publicado (>0):
+        # la publicación suelta es más barata que las de combo/multipack.
+        minpr, thumb_by_pid = {}, {}
+        for l in links:
+            pid = l.get("product_id")
+            try:
+                pr = float(l.get("ml_price") or 0)
+            except (TypeError, ValueError):
+                pr = 0.0
+            if pr > 0 and (pid not in minpr or pr < minpr[pid]):
+                minpr[pid] = pr
+            if l.get("ml_thumb") and pid not in thumb_by_pid:
+                thumb_by_pid[pid] = l["ml_thumb"]
+        for ccode, comps in cdefs.items():
+            cu = str(ccode).strip().upper()
+            cp_rows, any_mj = [], False
+            for cdef in (comps or []):
+                pr_row = p_by_code.get(
+                    str(cdef.get("codigo") or "").strip().upper())
+                if not pr_row:
+                    cp_rows = []
+                    break
+                pid = pr_row["id"]
+                mj = pid in by_id
+                any_mj = any_mj or mj
+                price = minpr.get(pid) or (
+                    float(pr_row.get("cost_product") or 0)
+                    + float(pr_row.get("cost_shipping") or 0))
+                cant = int(cdef.get("cant") or 1)
+                cp_rows.append({
+                    "product_id": pid, "code": pr_row.get("code", ""),
+                    "name": pr_row.get("name", ""),
+                    "thumb": thumb_by_pid.get(pid, ""), "cant": cant,
+                    "mj": mj, "w": max(float(price or 0), 0.0) * cant})
+            if not cp_rows or not any_mj:
+                continue
+            tw = sum(x["w"] for x in cp_rows)
+            tc = sum(x["cant"] for x in cp_rows) or 1
+            for x in cp_rows:
+                x["wshare"] = (x["w"] / tw) if tw > 0 else (x["cant"] / tc)
+            cinfo = {"code": ccode, "comps": cp_rows}
+            code_combo[cu] = cinfo
+            combo_prod = p_by_code.get(cu)
+            if not combo_prod:
+                continue
+            for l in links:
+                if l.get("product_id") != combo_prod["id"]:
+                    continue
+                ext = str(l.get("ml_item_id") or "")
+                if not ext:
+                    continue
+                ch = l.get("channel") or "mercadolibre"
+                if ch == "mercadolibre":
+                    ml_combo[ext] = cinfo
+                elif ch == "falabella":
+                    fa_combo[ext] = cinfo
     return {"ml": ml, "fa": fa, "codes": codes, "meta": meta,
-            "has": bool(prods)}
+            "ml_combo": ml_combo, "fa_combo": fa_combo,
+            "code_combo": code_combo, "has": bool(prods)}
 
 
 def _mj_ml_ad_cost(s, item_ids, since_d, until_d) -> dict:
@@ -4767,7 +4846,8 @@ def _mj_sync(window_days=None) -> dict:
 
     # ── MercadoLibre (comisión real = sale_fee · liberación = money_release_date) ──
     ml_set = tg["ml"]
-    if ml_set:
+    ml_combo = tg.get("ml_combo", {})
+    if ml_set or ml_combo:
         try:
             from ml_scraper import _ml_session_auth, ML_API as _MLAPI
             s, uid = _ml_session_auth()
@@ -4805,7 +4885,9 @@ def _mj_sync(window_days=None) -> dict:
                             continue
                         oi_mj = [oi for oi in od.get("order_items", [])
                                  if str((oi.get("item") or {}).get("id")
-                                        or "") in ml_set]
+                                        or "") in ml_set
+                                 or str((oi.get("item") or {}).get("id")
+                                        or "") in ml_combo]
                         if not oi_mj:
                             continue
                         dc = od.get("date_created") or ""
@@ -4853,25 +4935,56 @@ def _mj_sync(window_days=None) -> dict:
                                 desc = 0.0
                                 env_i = env * (q / tot_u)
                             units_by_item[iid] = units_by_item.get(iid, 0) + q
-                            tmp.append({
-                                "iid": iid, "oid": oid, "q": q, "gross": gross,
-                                "fee": fee, "ret": ret, "desc": desc,
-                                "env": env_i, "fecha": fecha,
-                                "rel": rel, "rel_done": rel_done,
-                                "info": ml_set.get(iid, {}),
-                                "nombre": (it.get("title")
-                                           or ml_set.get(iid, {}).get(
-                                               "name", ""))})
+                            base = {"oid": oid, "fecha": fecha, "rel": rel,
+                                    "rel_done": rel_done, "iid_ad": iid,
+                                    "qad": q}
+                            cb = (None if iid in ml_set
+                                  else ml_combo.get(iid))
+                            if cb:
+                                # COMBO → despiece: una fila por componente de
+                                # María José; bruto y costos reales prorrateados
+                                # por wshare (precio individual × cantidad). La
+                                # parte de componentes BOUN no se atribuye.
+                                for cp in cb["comps"]:
+                                    if not cp.get("mj"):
+                                        continue
+                                    w = float(cp.get("wshare") or 0)
+                                    if w <= 0:
+                                        continue
+                                    tmp.append(dict(base, **{
+                                        "iid": "%s#%s" % (iid, cp["code"]),
+                                        "q": q * int(cp.get("cant") or 1),
+                                        "gross": gross * w, "fee": fee * w,
+                                        "ret": ret * w, "desc": desc * w,
+                                        "env": env_i * w, "adw": w,
+                                        "info": {
+                                            "product_id": cp["product_id"],
+                                            "code": cp.get("code", ""),
+                                            "thumb": cp.get("thumb", "")},
+                                        "nombre": "%s (combo %s)" % (
+                                            cp.get("name") or cp.get("code"),
+                                            cb.get("code", ""))}))
+                            else:
+                                tmp.append(dict(base, **{
+                                    "iid": iid, "q": q, "gross": gross,
+                                    "fee": fee, "ret": ret, "desc": desc,
+                                    "env": env_i, "adw": 1.0,
+                                    "info": ml_set.get(iid, {}),
+                                    "nombre": (it.get("title")
+                                               or ml_set.get(iid, {}).get(
+                                                   "name", ""))}))
                     total = d.get("paging", {}).get("total", 0)
                     offset += 50
                     if offset >= total or not res:
                         break
                 for t in tmp:
-                    iid = t["iid"]
+                    iid = t.get("iid_ad") or t["iid"]
                     pub = 0.0
                     tot_ad = ad_cost.get(iid, 0.0)
                     if tot_ad and units_by_item.get(iid):
-                        pub = tot_ad * (t["q"] / units_by_item[iid])
+                        pub = (tot_ad * (t.get("qad", t["q"])
+                                         / units_by_item[iid])
+                               * float(t.get("adw", 1.0)))
                     desc = t.get("desc", 0.0)
                     neto = (t["gross"] - desc - t["fee"] - t["ret"]
                             - t["env"] - pub)
@@ -4879,7 +4992,7 @@ def _mj_sync(window_days=None) -> dict:
                     libre = bool(t.get("rel_done") or (rel and rel <= today))
                     rows.append({
                         "plataforma": "mercadolibre", "order_id": t["oid"],
-                        "item_id": iid,
+                        "item_id": t["iid"],
                         "product_id": t["info"].get("product_id"),
                         "codigo": t["info"].get("code", ""),
                         "nombre": t["nombre"], "thumb": t["info"].get("thumb", ""),
@@ -4900,7 +5013,9 @@ def _mj_sync(window_days=None) -> dict:
 
     # ── Falabella (comisión y liberación estimadas por configuración) ──
     fa_set = tg["fa"]
-    if fa_set or tg["codes"]:
+    fa_combo = tg.get("fa_combo", {})
+    code_combo = tg.get("code_combo", {})
+    if fa_set or tg["codes"] or fa_combo or code_combo:
         try:
             import falabella as fb
             fee_pct = _mj_setting_f("mj_falabella_fee_pct", 0.18)
@@ -4938,7 +5053,7 @@ def _mj_sync(window_days=None) -> dict:
                 # códigos para no perder ventas de María José según qué campo
                 # traiga el SKU vendedor. (Fix jul-2026: la venta del arenero
                 # KAT ASTRO no entraba porque solo se miraba 'SellerSku'.)
-                info, sku = None, ""
+                info, sku, cb = None, "", None
                 for _cand in (it.get("Sku"), it.get("SellerSku")):
                     _c = str(_cand or "").strip()
                     if not _c:
@@ -4947,14 +5062,22 @@ def _mj_sync(window_days=None) -> dict:
                     if info:
                         sku = _c
                         break
-                if not info:
+                    # COMBO: la pub/SKU vendida es un combo con componentes
+                    # de María José → se despieza al armar las filas.
+                    if cb is None:
+                        _cb = (fa_combo.get(_c)
+                               or code_combo.get(_c.upper()))
+                        if _cb:
+                            cb, sku = _cb, _c
+                if not info and not cb:
                     continue
                 oid = str(it.get("OrderId") or "")
                 cre = it.get("CreatedAt") or ""
                 key = (oid, sku)
                 a = agg.setdefault(key, {"oid": oid, "sku": sku, "q": 0,
                                          "gross": 0.0, "cre": cre,
-                                         "info": info,
+                                         "info": info or {},
+                                         "combo": (None if info else cb),
                                          "name": it.get("Name", "")})
                 a["q"] += 1
                 try:
@@ -4968,11 +5091,46 @@ def _mj_sync(window_days=None) -> dict:
                         a["cre"].replace("Z", "+00:00")).astimezone(co).date()
                 except Exception:
                     fv = today
+                rel = fv + _dt.timedelta(days=rel_days)
+                libre = rel <= today
+                cb = a.get("combo")
+                if cb:
+                    # COMBO → una fila por componente de María José, con el
+                    # bruto prorrateado por wshare (los % de comisión y
+                    # retención aplican igual sobre la parte de cada uno).
+                    for cp in cb["comps"]:
+                        if not cp.get("mj"):
+                            continue
+                        w = float(cp.get("wshare") or 0)
+                        if w <= 0:
+                            continue
+                        g = a["gross"] * w
+                        fee_c = g * fee_pct
+                        ret_c = g * RETENCION_FUENTE
+                        rows.append({
+                            "plataforma": "falabella", "order_id": oid,
+                            "item_id": "%s#%s" % (sku, cp["code"]),
+                            "product_id": cp["product_id"],
+                            "codigo": cp.get("code", ""),
+                            "nombre": "%s (combo %s)" % (
+                                cp.get("name") or cp.get("code"),
+                                cb.get("code", "")),
+                            "thumb": cp.get("thumb", ""),
+                            "unidades": a["q"] * int(cp.get("cant") or 1),
+                            "fecha_venta": fv.isoformat(),
+                            "precio_venta": round(g, 2), "descuentos": 0,
+                            "comision": round(fee_c, 2),
+                            "retencion": round(ret_c, 2),
+                            "costo_envio": 0, "costo_publicidad": 0,
+                            "neto_mj": round(g - fee_c - ret_c, 2),
+                            "release_date": rel.isoformat(),
+                            "liberado": libre,
+                            "estado_pago": ("liberado" if libre
+                                            else "pendiente")})
+                    continue
                 fee = a["gross"] * fee_pct
                 ret = a["gross"] * RETENCION_FUENTE
                 neto = a["gross"] - fee - ret
-                rel = fv + _dt.timedelta(days=rel_days)
-                libre = rel <= today
                 rows.append({
                     "plataforma": "falabella", "order_id": oid,
                     "item_id": sku, "product_id": a["info"].get("product_id"),
@@ -4990,7 +5148,7 @@ def _mj_sync(window_days=None) -> dict:
             errores.append("Falabella: %s" % str(e)[:90])
 
     # ── Shopify (tienda propia: se atribuye por SKU = código BOUN) ──
-    if tg["codes"]:
+    if tg["codes"] or code_combo:
         fee_pct = _mj_setting_f("mj_shopify_fee_pct", 0.0)
         rel_days = int(_mj_setting_f("mj_shopify_release_days", 0))
         for ch, shop in _SHOPIFY_SHOPS.items():
@@ -5013,14 +5171,48 @@ def _mj_sync(window_days=None) -> dict:
                 for li in od.get("line_items", []):
                     sku = str(li.get("sku") or "").strip().upper()
                     info = tg["codes"].get(sku)
-                    if not info:
+                    cb = None if info else code_combo.get(sku)
+                    if not info and not cb:
                         continue
                     q = int(li.get("quantity") or 0)
                     gross = float(li.get("price") or 0) * q
-                    fee = gross * fee_pct
-                    neto = gross - fee
                     rel = fv + _dt.timedelta(days=rel_days)
                     libre = rel <= today
+                    if cb:
+                        # COMBO → despiece por componente de María José.
+                        for cp in cb["comps"]:
+                            if not cp.get("mj"):
+                                continue
+                            w = float(cp.get("wshare") or 0)
+                            if w <= 0:
+                                continue
+                            g = gross * w
+                            fee_c = g * fee_pct
+                            rows.append({
+                                "plataforma": ch,
+                                "order_id": str(od.get("id")),
+                                "item_id": "%s#%s" % (str(li.get("id")),
+                                                      cp["code"]),
+                                "product_id": cp["product_id"],
+                                "codigo": cp.get("code", ""),
+                                "nombre": "%s (combo %s)" % (
+                                    cp.get("name") or cp.get("code"),
+                                    cb.get("code", "")),
+                                "thumb": cp.get("thumb", ""),
+                                "unidades": q * int(cp.get("cant") or 1),
+                                "fecha_venta": fv.isoformat(),
+                                "precio_venta": round(g, 2),
+                                "descuentos": 0,
+                                "comision": round(fee_c, 2), "retencion": 0,
+                                "costo_envio": 0, "costo_publicidad": 0,
+                                "neto_mj": round(g - fee_c, 2),
+                                "release_date": rel.isoformat(),
+                                "liberado": libre,
+                                "estado_pago": ("liberado" if libre
+                                                else "pendiente")})
+                        continue
+                    fee = gross * fee_pct
+                    neto = gross - fee
                     rows.append({
                         "plataforma": ch, "order_id": str(od.get("id")),
                         "item_id": str(li.get("id")),
