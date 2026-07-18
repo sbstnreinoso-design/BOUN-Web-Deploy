@@ -759,10 +759,46 @@ var act=items.filter(function(i){return i.estado==='activa';}),blo=items.filter(
    grid.appendChild(card);
   });
   window.__promoPend=pendTotal;
-  if(!pendTotal){ empty.style.display='block'; empty.innerHTML='✅ <b>Todo revisado.</b> Las variantes que aprobaste se aplicarán en la próxima corrida y pasarán a activas en su campaña. (Las ya activas y las no elegibles no se muestran aquí.)'; }
+  /* ── RECHAZADAS SIEMPRE VISIBLES (fix 17-jul-2026) ─────────────────────────
+     Bug: el filtro de arriba oculta toda pub con decisión previa, y buildPromos
+     re-emite `rechazada` en CADA envío. Resultado: una vez rechazada, la pub
+     quedaba invisible y se auto-rechazaba para siempre, sin forma de deshacerlo
+     (pasó con 85 variantes). Ahora se listan aquí con botón «↩ Reactivar». */
+  const rjList=[];
+  camps.forEach((cp)=>(cp.pubs||[]).forEach(p=>{
+    const est=p.estado||'pendiente'; if(est==='activa'||est==='bloqueada')return;
+    if(dmGet(dm,cp.id,p.id)==='rechazada') rjList.push({cp,p});
+  }));
+  if(rjList.length){
+    const rrows=rjList.map(({cp,p})=>{
+      const id=String(p.id).replace(/\D/g,''); const inv=(window.__INV||{})[id]||{};
+      const ptitle=p.t||inv.t||('#'+id); const pimg=p.img||inv.img||'';
+      const priceReal=(p.precio_real!=null)?fmt(p.precio_real):(p.rango||'—');
+      return '<div class="op" style="align-items:center;opacity:.72">'+
+        '<img src="'+pimg+'" loading="lazy" onerror="this.style.display=\'none\'" alt="">'+
+        '<div class="opt">'+ptitle+'<small>'+(cp.nombre||'')+' · '+p.id+'</small></div>'+
+        '<div class="opp"><b>'+priceReal+'</b><small style="color:#FF7A7A">rechazada</small></div>'+
+        '<div class="pbtns"><button class="pbun" data-c="'+cp.id+'" data-id="'+id+'" style="border:0;border-radius:8px;padding:6px 9px;font-weight:700;cursor:pointer;background:var(--card2);color:var(--muted)">↩ Reactivar</button></div>'+
+      '</div>';
+    }).join('');
+    const rcard=document.createElement('div'); rcard.className='item';
+    rcard.innerHTML='<div class="datebig"><span style="font-size:20px">✗</span><div><div class="d">Rechazadas</div>'+
+      '<small style="color:var(--muted)">Reactiva cualquiera para volver a decidirla</small></div>'+
+      '<span class="hour" style="background:var(--card2);padding:4px 10px;border-radius:8px;font-size:12px;font-weight:600">'+rjList.length+'</span></div>'+
+      '<div class="offProds">'+rrows+'</div>';
+    grid.appendChild(rcard);
+  }
+  window.__promoPend=pendTotal;
+  if(!pendTotal && !rjList.length){ empty.style.display='block'; empty.innerHTML='✅ <b>Todo revisado.</b> Las variantes que aprobaste se aplicarán en la próxima corrida y pasarán a activas en su campaña. (Las ya activas y las no elegibles no se muestran aquí.)'; }
   // wire buttons
   grid.querySelectorAll('.pbap').forEach(b=>b.onclick=()=>setP(+b.dataset.ci,b.dataset.id,1));
   grid.querySelectorAll('.pbrj').forEach(b=>b.onclick=()=>setP(+b.dataset.ci,b.dataset.id,0));
+  grid.querySelectorAll('.pbun').forEach(b=>b.onclick=()=>{
+    const id=String(b.dataset.id).replace(/\D/g,'');
+    delete window.__promoDec[String(b.dataset.c)+'::'+id];
+    delete window.__promoDec['*::'+id];
+    render(window.__promosData);
+  });
   updStats();
  }
 
