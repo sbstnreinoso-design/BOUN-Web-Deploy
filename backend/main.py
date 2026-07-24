@@ -1190,7 +1190,8 @@ def _shopify_orders(shop: str, token: str, since_iso: str,
     url = "https://%s/admin/api/2025-01/orders.json" % shop
     params = {"status": "any", "created_at_min": since_iso,
               "created_at_max": until_iso, "limit": 250,
-              "fields": "created_at,total_price,line_items,financial_status"}
+              "fields": "created_at,total_price,line_items,"
+                        "financial_status,cancelled_at"}
     headers = {"X-Shopify-Access-Token": token}
     for _ in range(15):
         r = _rq.get(url, params=params, headers=headers, timeout=20)
@@ -1298,7 +1299,15 @@ def _shopify_daily_sales(days: int = 14, date_from: str = None,
             continue
         tienda = ckey.replace("shopify_", "").upper()
         pids = set()
+        # Solo cuentan ventas REALES: excluir canceladas y pagos no
+        # completados (pending/expired/voided). Antes contaba "status: any"
+        # sin filtrar, inflando ventas con pedidos vencidos o cancelados.
+        _PAID_OK = {"paid", "partially_paid", "partially_refunded", "refunded"}
         for od in orders:
+            if od.get("cancelled_at"):
+                continue
+            if (od.get("financial_status") or "").lower() not in _PAID_OK:
+                continue
             ca = od.get("created_at") or ""
             try:
                 dt = _dt.datetime.fromisoformat(
