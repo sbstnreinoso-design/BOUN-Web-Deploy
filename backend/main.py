@@ -4124,12 +4124,15 @@ def mapeo_scan(key: str = "", authorization: Optional[str] = Header(None)):
 
 
 @app.get("/api/shopify/ordenes-dia")
-def shopify_ordenes_dia(date: str = "", key: str = "",
+def shopify_ordenes_dia(date: str = "", key: str = "", pendientes: str = "",
                         authorization: Optional[str] = Header(None)):
     """Órdenes Shopify de un día (BOUN + KAT) con detalle de envío para que el
     equipo pueda despachar. Auth: ?key=BOUN_EXPORT_TOKEN (planificador sin
     sesión) o sesión admin. `date`=YYYY-MM-DD en zona Colombia; por defecto
-    AYER. La consume la skill diaria 'reporte-ventas-shopify'."""
+    AYER. La consume la skill diaria 'reporte-ventas-shopify'.
+    `pendientes=1` → excluye las órdenes YA ENVIADAS (fulfillment_status
+    'fulfilled') para que un pedido despachado no se vuelva a listar en el
+    reporte de despacho (evita duplicados entre cortes)."""
     token = os.environ.get("BOUN_EXPORT_TOKEN", "")
     authed = bool(token and key == token)
     if not authed:
@@ -4140,6 +4143,7 @@ def shopify_ordenes_dia(date: str = "", key: str = "",
             authed = False
     if not authed:
         return JSONResponse({"error": "unauthorized"}, status_code=401)
+    skip_enviados = str(pendientes).strip().lower() in ("1", "true", "yes", "si", "sí")
     import datetime as _dt
     co = _dt.timezone(_dt.timedelta(hours=-5))
     try:
@@ -4185,6 +4189,11 @@ def shopify_ordenes_dia(date: str = "", key: str = "",
             prod_img, var_img = {}, {}
         for o in raw:
             if o.get("cancelled_at"):
+                continue
+            # En modo despacho, saltar las órdenes YA ENVIADAS para no
+            # re-listarlas entre cortes (evita duplicados de pedidos enviados).
+            if skip_enviados and (o.get("fulfillment_status")
+                                  or "").lower() == "fulfilled":
                 continue
             sa = o.get("shipping_address") or {}
             cust = o.get("customer") or {}
