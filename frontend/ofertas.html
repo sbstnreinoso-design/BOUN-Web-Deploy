@@ -252,7 +252,7 @@ summary::before{content:'▸ '} details[open] summary::before{content:'▾ '}
   <div class="mxchart" id="mxChart"></div>
   <div class="cmpBlock">
     <h3 class="cmpTitle">Ventas día a día · por campaña y variante<small>últimos 14 días · fuente: órdenes reales de ML · celda amarilla ⚡ = ese día la variante estuvo en oferta · ⭐ = la mejor de su campaña</small></h3>
-    <div id="cmpMatrix" class="cmpWrap"><div class="cmpLoad">Cargando ventas por publicación… (lee las órdenes reales de ML, puede tardar unos segundos)</div></div>
+    <div id="cmpMatrix" class="cmpWrap"><div class="cmpLoad" style="text-align:center"><button id="cmpLoadBtn" style="background:#8B7BD8;color:#fff;border:0;border-radius:10px;padding:12px 18px;font-weight:700;font-size:14px;cursor:pointer">📊 Ver ventas por campaña y variante</button><div style="font-size:11px;color:var(--muted);margin-top:8px">Matriz pesada (14 días × todas las variantes). Se carga aparte para que la página abra rápido en el teléfono.</div></div></div>
   </div>
   <div class="mxgrid2">
     <div><h3 style="font-family:'Anton',sans-serif;font-size:15px;letter-spacing:.5px;text-transform:uppercase;margin:2px 0 10px">Top publicaciones · ventas reales 60 días</h3><p style="font-size:11px;color:var(--muted);margin:0 0 10px">Por publicación (ID exacto, fuente: inventario web BOUN). No depende del filtro de fechas; cuando corran ofertas ⚡ se sumará el top específico de los días con oferta.</p><div id="mxTop" style="display:flex;flex-direction:column;gap:8px"></div></div>
@@ -941,7 +941,7 @@ var act=items.filter(function(i){return i.estado==='activa';}),blo=items.filter(
      rows+='<tr class="cmpGroup"><td colspan="'+(fechas.length+2)+'"><span style="color:'+g.clr+'">'+g.label+'</span> — <b>'+gTot+' u</b> en 14 días · '+items.length+' variantes'+(items.length>LIM?'<span class="cmpMore" data-g="'+gi+'">ver las '+items.length+'</span>':'')+'</td></tr>';
      items.forEach((p,pi)=>{
        const hid=pi>=LIM?' style="display:none" data-hg="'+gi+'"':'';
-       rows+='<tr'+hid+'><td class="pcol"><div class="cmpPub">'+(pi===0&&p.tot>0?'<span title="La mejor de su campaña">⭐</span>':'')+(p.img?'<img src="'+p.img+'" loading="lazy" onerror="this.style.display=\'none\'">':'')+'<span class="cmpN">'+String(p.t).slice(0,46)+'<small>#'+p.id+'</small></span></div></td>';
+       rows+='<tr'+hid+'><td class="pcol"><div class="cmpPub">'+(pi===0&&p.tot>0?'<span title="La mejor de su campaña">⭐</span>':'')+((pi<LIM&&p.img)?'<img src="'+p.img+'" loading="lazy" onerror="this.style.display=\'none\'">':'')+'<span class="cmpN">'+String(p.t).slice(0,46)+'<small>#'+p.id+'</small></span></div></td>';
        fechas.forEach(f=>{
          const u=p.by[f]||0;
          const al=u?(0.12+0.5*Math.min(1,u/maxU)):0;
@@ -967,7 +967,8 @@ var act=items.filter(function(i){return i.estado==='activa';}),blo=items.filter(
   try{ window.__renderEstados&&window.__renderEstados(); }catch(_){}
   try{ if(window.__reloadPromos) await window.__reloadPromos(); }catch(_){}
   try{ window.__chequear&&window.__chequear(); }catch(_){}
-  try{ window.__loadCmp&&window.__loadCmp(); }catch(_){}
+  /* Sección 4 (matriz pesada): NO auto-cargar — se dispara al tocar el botón, para no tumbar el móvil */
+  try{ var b=document.getElementById('cmpLoadBtn'); if(b) b.onclick=function(){ var h=document.getElementById('cmpMatrix'); if(h) h.innerHTML='<div class="cmpLoad">Cargando ventas por publicación… puede tardar unos segundos</div>'; window.__loadCmp&&window.__loadCmp(); }; }catch(_){}
  }
  if(window.__mainReady) seq(); else document.addEventListener('boun:main-ready',seq);
  /* Auto-refresh: si la corrida publica un plan nuevo mientras la página está abierta, recargar sola (máx. cada 5 min) */
