@@ -1265,6 +1265,59 @@ def _shopify_product_images(shop: str, token: str, product_ids) -> dict:
     return out
 
 
+def _shopify_variant_images(shop: str, token: str, product_ids):
+    """Devuelve (prod_img, var_img): mapas {str(product_id): src} y
+    {str(variant_id): src}. La imagen de VARIANTE permite mostrar en el reporte
+    el color real vendido (ej. Lila vs Negro); si la variante no tiene imagen
+    propia asignada en Shopify, el consumidor cae al featured del producto."""
+    import requests as _rq
+    prod_img, var_img = {}, {}
+    ids = [str(p) for p in product_ids if p]
+    if not ids:
+        return prod_img, var_img
+    seen, uids = set(), []
+    for x in ids:
+        if x not in seen:
+            seen.add(x)
+            uids.append(x)
+    headers = {"X-Shopify-Access-Token": token}
+    url = "https://%s/admin/api/2025-01/products.json" % shop
+    for i in range(0, len(uids), 250):
+        chunk = uids[i:i + 250]
+        try:
+            r = _rq.get(url, params={"ids": ",".join(chunk),
+                                     "fields": "id,image,images,variants",
+                                     "limit": 250},
+                        headers=headers, timeout=20)
+            if r.status_code != 200:
+                continue
+            for p in r.json().get("products", []) or []:
+                pid = str(p.get("id"))
+                feat = (p.get("image") or {}).get("src") or ""
+                if feat:
+                    prod_img[pid] = feat
+                imgs = p.get("images") or []
+                # 1) por images[].variant_ids
+                for img in imgs:
+                    src = img.get("src") or ""
+                    if not src:
+                        continue
+                    for vid in (img.get("variant_ids") or []):
+                        var_img[str(vid)] = src
+                # 2) fallback por variants[].image_id
+                by_id = {str(im.get("id")): im.get("src") for im in imgs}
+                for v in (p.get("variants") or []):
+                    vid = str(v.get("id"))
+                    if vid in var_img:
+                        continue
+                    iid = v.get("image_id")
+                    if iid and str(iid) in by_id and by_id[str(iid)]:
+                        var_img[vid] = by_id[str(iid)]
+        except Exception:
+            continue
+    return prod_img, var_img
+
+
 def _shopify_daily_sales(days: int = 14, date_from: str = None,
                          date_to: str = None) -> dict:
     """Ventas diarias combinadas de las tiendas Shopify (BOUN + KAT)."""
@@ -4100,7 +4153,8 @@ def shopify_ordenes_dia(date: str = "", key: str = "",
     until = _dt.datetime.combine(d, _dt.time(23, 59, 59), co).isoformat()
     fields = ("id,name,created_at,total_price,subtotal_price,total_tax,"
               "currency,financial_status,fulfillment_status,line_items,"
-              "shipping_address,customer,email,phone,note,cancelled_at")
+              "shipping_address,customer,email,phone,note,cancelled_at,"
+              "gateway,payment_gateway_names,shipping_lines")
     tiendas = {"BOUN": _SHOPIFY_SHOPS["shopify_boun"],
                "KAT": _SHOPIFY_SHOPS["shopify_kat"]}
     out = {"ok": True, "fecha": d.isoformat(), "tiendas": {}}
@@ -4126,9 +4180,9 @@ def shopify_ordenes_dia(date: str = "", key: str = "",
                 if li.get("product_id"):
                     pids.append(li.get("product_id"))
         try:
-            imgs = _shopify_product_images(shop, tok, pids)
+            prod_img, var_img = _shopify_variant_images(shop, tok, pids)
         except Exception:
-            imgs = {}
+            prod_img, var_img = {}, {}
         for o in raw:
             if o.get("cancelled_at"):
                 continue
@@ -4145,13 +4199,18 @@ def shopify_ordenes_dia(date: str = "", key: str = "",
                     "sku": li.get("sku") or "",
                     "cantidad": q,
                     "precio_unit": li.get("price") or "",
-                    "imagen": imgs.get(str(li.get("product_id")), "")})
+                    "imagen": (var_img.get(str(li.get("variant_id")))
+                               or prod_img.get(str(li.get("product_id")), ""))})
             tel = (sa.get("phone") or cust.get("phone")
                    or o.get("phone") or "")
             nombre = (sa.get("name")
                       or (((cust.get("first_name") or "") + " "
                            + (cust.get("last_name") or "")).strip())
                       or "—")
+            gws = [g for g in (o.get("payment_gateway_names") or []) if g]
+            pago_metodo = ", ".join(gws) if gws else (o.get("gateway") or "")
+            shls = o.get("shipping_lines") or []
+            envio_metodo = (shls[0].get("title") if shls else "") or ""
             info["ordenes"].append({
                 "numero": o.get("name") or "",
                 "creado": o.get("created_at") or "",
@@ -4170,7 +4229,9 @@ def shopify_ordenes_dia(date: str = "", key: str = "",
                 "total": o.get("total_price") or "",
                 "moneda": o.get("currency") or "COP",
                 "pago": o.get("financial_status") or "",
+                "pago_metodo": pago_metodo,
                 "envio": o.get("fulfillment_status") or "unfulfilled",
+                "envio_metodo": envio_metodo,
                 "nota": o.get("note") or ""})
             tot_ord += 1
             tot_uni += uni
