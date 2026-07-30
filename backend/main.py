@@ -6841,7 +6841,7 @@ def embarque_recibo_delete(rid: int, user: dict = Depends(_current_user)):
 # (app_settings), sin que nadie tenga que copiar el token a mano.
 
 _SHOP_SCOPES = ("read_products,write_products,read_inventory,write_inventory,"
-                "read_orders,read_locations")
+                "read_orders,write_orders,read_locations")
 _SHOP_REDIRECT = "https://boun-web-deploy.onrender.com/shopify/callback"
 
 
