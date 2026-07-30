@@ -3121,6 +3121,172 @@ async def webhook_ml(request: Request):
     return Response(status_code=200)
 
 
+# ── Webhook Wompi → crea el pedido en Shopify (conciliación) ─────────────────
+# Wompi NO tiene app nativa de Shopify: cuando un cliente paga por Wompi en el
+# checkout de la tienda, Shopify NO crea el pedido (queda como carrito
+# abandonado) y el dinero entra sin registro → venta perdida silenciosa.
+# Este webhook recibe el evento de pago APROBADO de Wompi, busca el carrito
+# abandonado que coincide por email + monto y crea el pedido PAGADO por la
+# Admin API (equivale a hacerlo a mano). Idempotente por id de transacción.
+
+def _wompi_secret() -> str:
+    return (db.get_setting("wompi_events_secret", "")
+            or os.environ.get("WOMPI_EVENTS_SECRET", ""))
+
+
+def _wompi_verify(body: dict, secret: str) -> bool:
+    """Valida el checksum del evento Wompi: SHA256 de la concatenación de los
+    valores de signature.properties (en orden) + timestamp + secret."""
+    try:
+        sig = body.get("signature") or {}
+        props = sig.get("properties") or []
+        given = str(sig.get("checksum") or "").strip()
+        if not (secret and props and given):
+            return False
+        parts = []
+        for path in props:
+            cur = body.get("data") or {}
+            for key in str(path).split("."):
+                cur = cur.get(key) if isinstance(cur, dict) else None
+            parts.append("" if cur is None else str(cur))
+        ts = body.get("timestamp")
+        raw = "".join(parts) + ("" if ts is None else str(ts)) + secret
+        calc = _hashlib.sha256(raw.encode()).hexdigest()
+        return _hmac.compare_digest(calc.lower(), given.lower())
+    except Exception:
+        return False
+
+
+def _wompi_match_checkout(checkouts: list, email: str, amount_cop: float):
+    """Del listado de carritos abandonados Shopify, devuelve el MÁS RECIENTE
+    que coincide por email (case-insensitive) y total == amount_cop (±1 COP)."""
+    email = (email or "").strip().lower()
+    best = None
+    for c in checkouts or []:
+        cem = (c.get("email") or (c.get("customer") or {}).get("email") or "")
+        if email and cem.strip().lower() != email:
+            continue
+        try:
+            tot = float(c.get("total_price") or 0)
+        except Exception:
+            tot = 0.0
+        if abs(tot - amount_cop) > 1.0:
+            continue
+        ca = c.get("created_at") or ""
+        if best is None or ca > (best.get("created_at") or ""):
+            best = c
+    return best
+
+
+def _shopify_abandoned_checkouts(shop: str, token: str) -> list:
+    import requests as _rq
+    url = "https://%s/admin/api/2025-01/checkouts.json" % shop
+    r = _rq.get(url, params={"limit": 250},
+                headers={"X-Shopify-Access-Token": token}, timeout=20)
+    if r.status_code != 200:
+        raise Exception("checkouts HTTP %d" % r.status_code)
+    return r.json().get("checkouts", []) or []
+
+
+def _shopify_create_paid_order(shop: str, token: str, checkout: dict,
+                               amount_cop: float, wompi_tx: str,
+                               wompi_ref: str) -> dict:
+    import requests as _rq
+    line_items = []
+    for li in checkout.get("line_items", []) or []:
+        vid = li.get("variant_id")
+        qty = int(li.get("quantity") or 0)
+        if vid and qty:
+            line_items.append({"variant_id": vid, "quantity": qty})
+    if not line_items:
+        raise Exception("checkout sin line_items con variant_id")
+    order = {
+        "email": (checkout.get("email")
+                  or (checkout.get("customer") or {}).get("email") or ""),
+        "currency": checkout.get("currency") or "COP",
+        "financial_status": "paid",
+        "line_items": line_items,
+        "note": ("Pago Wompi %s (ref %s) conciliado automáticamente desde el "
+                 "carrito abandonado %s." % (wompi_tx, wompi_ref,
+                                             checkout.get("token") or "")),
+        "note_attributes": [
+            {"name": "wompi_tx", "value": wompi_tx},
+            {"name": "wompi_ref", "value": wompi_ref},
+            {"name": "origen", "value": "webhook-wompi"},
+        ],
+        "tags": "wompi-auto",
+        "transactions": [{"kind": "sale", "status": "success",
+                          "amount": "%.2f" % amount_cop, "gateway": "Wompi"}],
+        "send_receipt": True,
+        "send_fulfillment_receipt": False,
+    }
+    sa = checkout.get("shipping_address")
+    if sa:
+        order["shipping_address"] = sa
+        order["billing_address"] = checkout.get("billing_address") or sa
+    cust = checkout.get("customer") or {}
+    if cust.get("id"):
+        order["customer"] = {"id": cust["id"]}
+    r = _rq.post("https://%s/admin/api/2025-01/orders.json" % shop,
+                 headers={"X-Shopify-Access-Token": token,
+                          "Content-Type": "application/json"},
+                 json={"order": order}, timeout=25)
+    if r.status_code not in (200, 201):
+        raise Exception("orders POST HTTP %d: %s" % (r.status_code,
+                                                     r.text[:200]))
+    return r.json().get("order", {}) or {}
+
+
+@app.post("/webhooks/wompi")
+async def webhook_wompi(request: Request):
+    raw = await request.body()
+    try:
+        body = json.loads(raw or b"{}")
+    except Exception:
+        return Response(status_code=400)
+    if not _wompi_verify(body, _wompi_secret()):
+        return Response(status_code=401)
+    tx = (body.get("data") or {}).get("transaction") or {}
+    txid = str(tx.get("id") or "")
+    status = str(tx.get("status") or "").upper()
+    if body.get("event") != "transaction.updated" or status != "APPROVED":
+        return Response(status_code=200)          # solo pagos aprobados
+    if not txid or db.get_setting("wompi_tx_done::%s" % txid, ""):
+        return Response(status_code=200)          # ya procesado / sin id
+    email = tx.get("customer_email") or ""
+    ref = str(tx.get("reference") or "")
+    amount_cop = round(float(tx.get("amount_in_cents") or 0) / 100.0, 2)
+
+    def _work():
+        try:
+            for _ckey, shop in _SHOPIFY_SHOPS.items():
+                tok = db.get_setting("shopify_token::%s" % shop, "")
+                if not tok:
+                    continue
+                try:
+                    chks = _shopify_abandoned_checkouts(shop, tok)
+                except Exception:
+                    continue
+                match = _wompi_match_checkout(chks, email, amount_cop)
+                if not match:
+                    continue
+                order = _shopify_create_paid_order(shop, tok, match,
+                                                   amount_cop, txid, ref)
+                if order.get("id"):
+                    db.set_setting("wompi_tx_done::%s" % txid,
+                                   str(order.get("name") or order.get("id")))
+                    return
+            # sin carrito que coincida → registrar para revisión humana
+            db.set_setting("wompi_unmatched::%s" % txid,
+                           json.dumps({"email": email, "amount": amount_cop,
+                                       "ref": ref}))
+        except Exception as e:
+            db.set_setting("wompi_error::%s" % txid, str(e)[:300])
+
+    threading.Thread(target=_work, daemon=True).start()
+    return Response(status_code=200)
+
+
 # ── Poller Falabella (cada SYNC_FALABELLA_POLL_SEC) ──────────────────────────
 
 def _falabella_poll_once():
