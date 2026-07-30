@@ -3237,6 +3237,48 @@ def _shopify_create_paid_order(shop: str, token: str, checkout: dict,
     return r.json().get("order", {}) or {}
 
 
+def _wompi_alerta(txid: str, email: str, amount_cop: float, ref: str,
+                  checkout: dict, err: str):
+    """Deja un pendiente 🔴 en Cerebro (setting `cerebro_alertas`) con TODO el
+    detalle para crear el pedido a mano, cuando el webhook no pudo crearlo
+    (p. ej. el token sin scope write_orders, o sin carrito que coincida).
+    Dedupe por wompi_tx. Sirve de red de seguridad para NO perder ventas."""
+    prod = addr = ""
+    if checkout:
+        lis = []
+        for li in checkout.get("line_items", []) or []:
+            nom = ("%s %s x%s" % (li.get("title") or "",
+                                  li.get("variant_title") or "",
+                                  li.get("quantity") or 1)).strip()
+            lis.append(nom)
+        prod = "; ".join([x for x in lis if x])
+        sa = checkout.get("shipping_address") or {}
+        addr = ", ".join([x for x in [sa.get("address1"), sa.get("address2"),
+                          sa.get("city"), sa.get("province"), sa.get("phone")]
+                          if x])
+    txt = ("Pago Wompi APROBADO $%.0f de %s (tx %s, ref %s) SIN pedido en "
+           "Shopify. " % (amount_cop, email or "?", txid, ref))
+    if prod:
+        txt += "Producto: %s. " % prod
+    if addr:
+        txt += "Envío: %s. " % addr
+    if err:
+        txt += "Motivo: %s. " % err
+    txt += "→ Crear el pedido a mano y marcarlo pagado."
+    try:
+        raw = db.get_setting("cerebro_alertas", "")
+        arr = json.loads(raw) if raw else []
+        if not isinstance(arr, list):
+            arr = []
+    except Exception:
+        arr = []
+    if any(isinstance(a, dict) and a.get("wompi_tx") == txid for a in arr):
+        return
+    arr.append({"sev": "err", "title": "Pago Wompi sin pedido",
+                "txt": txt, "wompi_tx": txid})
+    db.set_setting("cerebro_alertas", json.dumps(arr[-50:]))
+
+
 @app.post("/webhooks/wompi")
 async def webhook_wompi(request: Request):
     raw = await request.body()
@@ -3258,6 +3300,8 @@ async def webhook_wompi(request: Request):
     amount_cop = round(float(tx.get("amount_in_cents") or 0) / 100.0, 2)
 
     def _work():
+        matched = None
+        err = ""
         try:
             for _ckey, shop in _SHOPIFY_SHOPS.items():
                 tok = db.get_setting("shopify_token::%s" % shop, "")
@@ -3267,21 +3311,29 @@ async def webhook_wompi(request: Request):
                     chks = _shopify_abandoned_checkouts(shop, tok)
                 except Exception:
                     continue
-                match = _wompi_match_checkout(chks, email, amount_cop)
-                if not match:
+                m = _wompi_match_checkout(chks, email, amount_cop)
+                if not m:
                     continue
-                order = _shopify_create_paid_order(shop, tok, match,
-                                                   amount_cop, txid, ref)
+                matched = m
+                try:
+                    order = _shopify_create_paid_order(shop, tok, m,
+                                                       amount_cop, txid, ref)
+                except Exception as ce:
+                    err = str(ce)[:200]
+                    break
                 if order.get("id"):
                     db.set_setting("wompi_tx_done::%s" % txid,
                                    str(order.get("name") or order.get("id")))
-                    return
-            # sin carrito que coincida → registrar para revisión humana
-            db.set_setting("wompi_unmatched::%s" % txid,
-                           json.dumps({"email": email, "amount": amount_cop,
-                                       "ref": ref}))
+                    return                    # ✅ pedido creado, listo
+            if not matched and not err:
+                err = "sin carrito abandonado que coincida por email+monto"
         except Exception as e:
-            db.set_setting("wompi_error::%s" % txid, str(e)[:300])
+            err = err or str(e)[:200]
+        # No se pudo crear el pedido → red de seguridad: alerta a Cerebro
+        db.set_setting("wompi_error::%s" % txid,
+                       json.dumps({"email": email, "amount": amount_cop,
+                                   "ref": ref, "err": err}))
+        _wompi_alerta(txid, email, amount_cop, ref, matched, err)
 
     threading.Thread(target=_work, daemon=True).start()
     return Response(status_code=200)
