@@ -668,11 +668,12 @@ async function saveIngreso(pid){
 // Shopify BOUN verde · Shopify KAT rosa.
 const CHMETA={
   mercadolibre:{lbl:"MercadoLibre",short:"ML",col:"#E0A23C"},
+  mercadolibre_kat:{lbl:"MercadoLibre KAT",short:"ML KAT",col:"#B48BE0"},
   falabella:{lbl:"Falabella",short:"Falabella",col:"#7FB3E0"},
   shopify_boun:{lbl:"Shopify BOUN",short:"BOUN",col:"#3FCB82"},
   shopify_kat:{lbl:"Shopify KAT",short:"KAT",col:"#E68CA8"},
 };
-const CH_ORDER=["mercadolibre","falabella","shopify_boun","shopify_kat"];
+const CH_ORDER=["mercadolibre","mercadolibre_kat","falabella","shopify_boun","shopify_kat"];
 function chMeta(c){ return CHMETA[c]||{lbl:c||"—",short:c||"—",col:"var(--muted)"}; }
 function chBadge(c){ const m=chMeta(c);
   return `<span class="ch-badge" style="background:${m.col}">${esc(m.short)}</span>`; }
@@ -1097,8 +1098,8 @@ async function mjAbonoDel(id){
 }
 
 // ── PENDIENTES DE BODEGA ─────────────────────────────────────────────────────
-const CANAL_LBL={ml:"MercadoLibre",mercadolibre:"MercadoLibre",shopify_boun:"Shopify BOUN",shopify_kat:"Shopify KAT",falabella:"Falabella",test:"Prueba"};
-const CANAL_COL={ml:"#E0A23C",mercadolibre:"#E0A23C",falabella:"#7FB3E0",shopify_boun:"#3FCB82",shopify_kat:"#E68CA8",test:"#9B9A96"};
+const CANAL_LBL={ml:"MercadoLibre",mercadolibre:"MercadoLibre",ml_kat:"ML KAT",mercadolibre_kat:"ML KAT",shopify_boun:"Shopify BOUN",shopify_kat:"Shopify KAT",falabella:"Falabella",test:"Prueba"};
+const CANAL_COL={ml:"#E0A23C",mercadolibre:"#E0A23C",ml_kat:"#B48BE0",mercadolibre_kat:"#B48BE0",falabella:"#7FB3E0",shopify_boun:"#3FCB82",shopify_kat:"#E68CA8",test:"#9B9A96"};
 function canalChip(c){ const lbl=CANAL_LBL[c]||c||"—", col=CANAL_COL[c]||"#9B9A96";
   return `<span style="display:inline-flex;align-items:center;gap:5px;padding:2px 9px;border-radius:11px;border:1px solid ${col}55;background:${col}1A;color:${col};font-size:11px;font-weight:700"><span style="width:6px;height:6px;border-radius:50%;background:${col}"></span>${esc(lbl)}</span>`; }
 function _fechaHora(s){ if(!s) return ""; try{ const d=new Date(s); return d.toLocaleString("es-CO",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}); }catch(e){ return s; } }
@@ -1953,7 +1954,8 @@ async function syncApplySaveDelta(){
 }
 
 // ── Escaneo de reconciliación de stock (Web BOUN → canales) ─────────────────
-const SCAN_CH = {mercadolibre:"MercadoLibre", falabella:"Falabella",
+const SCAN_CH = {mercadolibre:"MercadoLibre", mercadolibre_kat:"MercadoLibre KAT",
+                 falabella:"Falabella",
                  shopify_boun:"Shopify BOUN", shopify_kat:"Shopify KAT"};
 function scanChLabel(c){ return SCAN_CH[c] || c; }
 function scanHTML(){

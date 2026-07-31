@@ -354,7 +354,8 @@ _XLS_EDIT = [
 _XLS_READONLY = ["ML Full", "Inventario total", "Vendidas 60d",
                  "Publicaciones asignadas"]
 
-_CH_LABEL = {"mercadolibre": "ML", "falabella": "Falabella",
+_CH_LABEL = {"mercadolibre": "ML", "mercadolibre_kat": "ML KAT",
+             "falabella": "Falabella",
              "shopify_boun": "Shopify BOUN", "shopify_kat": "Shopify KAT"}
 
 
@@ -592,6 +593,28 @@ def _fetch_channel_items() -> tuple:
             ch_status["mercadolibre"] = {"ok": False, "error": r.get("error")}
     except Exception as e:
         ch_status["mercadolibre"] = {"ok": False, "error": str(e)[:160]}
+
+    # ── MercadoLibre KAT (segunda cuenta) ──
+    try:
+        from ml_scraper import get_my_items_basic as _gmi_kat
+        from ml_scraper import _ml_kat_session_auth as _kat_auth
+        _ks, _kuid = _kat_auth()
+        if _ks:
+            rk = _gmi_kat(acct="kat")
+            if rk.get("ok"):
+                for it in rk["items"]:
+                    it["channel"] = "mercadolibre_kat"
+                    items.append(it)
+                ch_status["mercadolibre_kat"] = {"ok": True, "n": len(rk["items"])}
+            else:
+                ch_status["mercadolibre_kat"] = {"ok": False,
+                                                 "error": rk.get("error")}
+        else:
+            # Cuenta KAT no conectada aún: canal ausente sin marcar error.
+            ch_status["mercadolibre_kat"] = {"ok": False,
+                                             "error": "kat_no_conectada"}
+    except Exception as e:
+        ch_status["mercadolibre_kat"] = {"ok": False, "error": str(e)[:160]}
 
     # ── Falabella (SellerSku = código BOUN) ──
     try:
@@ -947,6 +970,7 @@ def ml_auth_url(user: dict = Depends(_admin)):
 
 class ExchangeIn(BaseModel):
     code: str
+    account: Optional[str] = ""   # "" | "boun" = cuenta principal · "kat" = 2ª cuenta ML
 
 
 @app.post("/api/ml/exchange")
@@ -971,21 +995,46 @@ def ml_exchange(data: ExchangeIn, user: dict = Depends(_admin)):
     if r.status_code != 200:
         raise HTTPException(400, "Error al obtener token: %s" % r.text[:200])
     td = r.json()
+    uname = get_ml_username(td.get("access_token", ""), str(td.get("user_id", "")))
+    if (data.account or "").strip().lower() == "kat":
+        # Segunda cuenta ML (KAT): tokens paralelos, NO tocan los de BOUN.
+        db.set_setting("ml_kat_access_token", td.get("access_token", ""))
+        db.set_setting("ml_kat_refresh_token", td.get("refresh_token", ""))
+        db.set_setting("ml_kat_token_ts", str(_t.time()))
+        db.set_setting("ml_kat_user_id", str(td.get("user_id", "")))
+        db.set_setting("ml_kat_username", uname)
+        return {"ok": True, "account": "kat", "username": uname}
     db.set_setting("ml_access_token", td.get("access_token", ""))
     db.set_setting("ml_refresh_token", td.get("refresh_token", ""))
     db.set_setting("ml_token_ts", str(_t.time()))
     db.set_setting("ml_user_id", str(td.get("user_id", "")))
-    uname = get_ml_username(td.get("access_token", ""), str(td.get("user_id", "")))
     db.set_setting("ml_username", uname)
     return {"ok": True, "username": uname}
 
 
 @app.post("/api/ml/disconnect")
-def ml_disconnect(user: dict = Depends(_admin)):
-    for k in ("ml_access_token", "ml_refresh_token", "ml_username",
-              "ml_user_id", "ml_token_ts"):
+def ml_disconnect(user: dict = Depends(_admin), account: str = ""):
+    keys = (("ml_kat_access_token", "ml_kat_refresh_token", "ml_kat_username",
+             "ml_kat_user_id", "ml_kat_token_ts")
+            if (account or "").strip().lower() == "kat" else
+            ("ml_access_token", "ml_refresh_token", "ml_username",
+             "ml_user_id", "ml_token_ts"))
+    for k in keys:
         db.set_setting(k, "")
     return {"ok": True}
+
+
+@app.get("/api/ml/kat-status")
+def ml_kat_status(user: dict = Depends(_current_user)):
+    """Estado de la conexión de la SEGUNDA cuenta ML (KAT)."""
+    try:
+        from ml_scraper import _ml_kat_session_auth
+        s, uid = _ml_kat_session_auth()
+        return {"connected": bool(s),
+                "username": db.get_setting("ml_kat_username", ""),
+                "user_id": db.get_setting("ml_kat_user_id", "")}
+    except Exception:
+        return {"connected": False, "username": "", "user_id": ""}
 
 
 # ── Dashboard ────────────────────────────────────────────────────────────────
@@ -2003,18 +2052,25 @@ def _ml_guard(key: str):
 
 
 def _ml_request(method: str, path: str, json_body=None, timeout: int = 20,
-                headers=None):
+                headers=None, acct: str = "boun"):
     """Petición a la API de ML con el token del backend; si responde 401,
     refresca el token y reintenta una vez. `headers` mergea headers extra
-    (p. ej. x-version para /user-products/.../stock). Devuelve el Response o None."""
-    from ml_scraper import _ml_session_auth, _try_refresh, ML_API
-    s, _uid = _ml_session_auth()
+    (p. ej. x-version para /user-products/.../stock). Devuelve el Response o None.
+    acct: "boun" (cuenta principal) o "kat" (segunda cuenta ML, token ml_kat_*)."""
+    from ml_scraper import (_ml_session_auth, _try_refresh, ML_API,
+                            _ml_kat_session_auth, _kat_try_refresh)
+    if acct == "kat":
+        s, _uid = _ml_kat_session_auth()
+        _refresh = _kat_try_refresh
+    else:
+        s, _uid = _ml_session_auth()
+        _refresh = _try_refresh
     if not s:
         return None
     url = ML_API + path
     r = s.request(method, url, json=json_body, timeout=timeout, headers=headers)
     if r.status_code == 401:
-        tok = _try_refresh()
+        tok = _refresh()
         if tok:
             s.headers["Authorization"] = "Bearer " + tok
             r = s.request(method, url, json=json_body, timeout=timeout,
@@ -2145,7 +2201,8 @@ def ml_set_stock_preflight():
 
 
 def _ml_set_stock_one(item_id: str, cantidad: int, dry: bool = False,
-                      max_delta=None, reactivate: bool = False) -> dict:
+                      max_delta=None, reactivate: bool = False,
+                      acct: str = "boun") -> dict:
     """Fija available_quantity de UNA publicación ML al valor ABSOLUTO `cantidad`.
     Devuelve un dict plano (lo usan el endpoint y el motor de propagación).
 
@@ -2164,7 +2221,8 @@ def _ml_set_stock_one(item_id: str, cantidad: int, dry: bool = False,
             return {"ok": False, "error": "bad_request", "item_id": item_id}
         r = _ml_request(
             "GET", "/items/%s?attributes=id,status,sub_status,available_quantity,"
-                   "variations,shipping,catalog_listing,user_product_id" % item_id)
+                   "variations,shipping,catalog_listing,user_product_id" % item_id,
+            acct=acct)
         if r is None:
             return {"ok": False, "error": "ml_not_connected", "item_id": item_id}
         if r.status_code != 200:
@@ -2191,7 +2249,8 @@ def _ml_set_stock_one(item_id: str, cantidad: int, dry: bool = False,
                 return {"ok": False, "skip": True, "reason": "catalog_no_upid",
                         "item_id": item_id}
             return _ml_up_stock_one(upid, c, dry=dry, max_delta=max_delta,
-                                    item_id=item_id, reactivate=reactivate)
+                                    item_id=item_id, reactivate=reactivate,
+                                    acct=acct)
         # Pausadas: solo se tocan si reactivate=True Y están pausadas por falta de
         # stock Y hay algo que cargar. Las pausadas a propósito quedan intactas.
         reactivar = False
@@ -2224,7 +2283,8 @@ def _ml_set_stock_one(item_id: str, cantidad: int, dry: bool = False,
             return {"ok": True, "dry_run": True, "item_id": item_id, "set": c,
                     "actual": actual, "applied_to": applied_to, "reactivar": reactivar,
                     "status": status, "logistic": logistic, "body": body}
-        pr = _ml_request("PUT", "/items/%s" % item_id, json_body=body)
+        pr = _ml_request("PUT", "/items/%s" % item_id, json_body=body,
+                         acct=acct)
         if pr is None:
             return {"ok": False, "error": "ml_not_connected", "item_id": item_id}
         if pr.status_code in (200, 201):
@@ -2246,7 +2306,8 @@ def _ml_set_stock_one(item_id: str, cantidad: int, dry: bool = False,
 
 
 def _ml_up_stock_one(upid, c, dry=False, max_delta=None, item_id="",
-                     reactivate=True, loc_type="selling_address"):
+                     reactivate=True, loc_type="selling_address",
+                     acct: str = "boun"):
     """Stock de depósito vendedor (selling_address) de un user_product vía API
     oficial. GET /user-products/{upid}/stock (lee x-version + actual); PUT a
     /user-products/{upid}/stock/type/selling_address con {"quantity": c} y el
@@ -2255,7 +2316,7 @@ def _ml_up_stock_one(upid, c, dry=False, max_delta=None, item_id="",
         c = int(c)
     except (ValueError, TypeError):
         return {"ok": False, "error": "bad_request", "upid": upid}
-    g = _ml_request("GET", "/user-products/%s/stock" % upid)
+    g = _ml_request("GET", "/user-products/%s/stock" % upid, acct=acct)
     if g is None:
         return {"ok": False, "error": "ml_not_connected", "upid": upid}
     if g.status_code != 200:
@@ -2282,7 +2343,7 @@ def _ml_up_stock_one(upid, c, dry=False, max_delta=None, item_id="",
     hdrs = {"x-version": str(xver)} if xver else None
     body = {"quantity": c}
     pr = _ml_request("PUT", "/user-products/%s/stock/type/%s" % (upid, loc_type),
-                     json_body=body, headers=hdrs)
+                     json_body=body, headers=hdrs, acct=acct)
     if pr is None:
         return {"ok": False, "error": "ml_not_connected", "upid": upid}
     if pr.status_code in (200, 201, 204):
@@ -2619,6 +2680,22 @@ def _compute_plan(codigo: str, disponible: int, reactivate: bool = False) -> dic
                                "excluidas": ml_excl}
     else:
         out["mercadolibre"] = {"reparto": {}, "excluidas": []}
+    # MercadoLibre KAT (2ª cuenta): reparte disp_ml (misma regla de bodega que
+    # ML BOUN: solo Bogotá mientras ml_solo_bogota esté activa) entre las
+    # publicaciones MAPEADAS en inventory_links (channel=mercadolibre_kat).
+    kat_ids = []
+    if pid and db.channel_supported():
+        try:
+            for _l in (db._sb_get(
+                    "inventory_links?product_id=eq.%d&channel=eq.mercadolibre_kat"
+                    "&select=ml_item_id" % pid) or []):
+                _ext = (_l.get("ml_item_id") or "").strip()
+                if _ext:
+                    kat_ids.append(_ext)
+        except Exception:
+            pass
+    out["mercadolibre_kat"] = {"reparto": _sync.reparto(
+        disp_ml, [{"key": k, "ventas": 0} for k in sorted(set(kat_ids))])}
     # Falabella: SKUs del CSV histórico + las publicaciones MAPEADAS en
     # inventory_links (sección Mapeo). Antes el reparto usaba SOLO el CSV
     # estático, así que una publicación de Falabella mapeada por Mapeo y que no
@@ -2765,6 +2842,23 @@ def _apply_plan(codigo: str, plan: dict, order_id: str = "",
                     "ok": bool(r.get("ok")),
                     "detalle": str(r.get("reason") or r.get("error") or "")[:200]})
         out["canales"]["mercadolibre"] = ml_res
+    # ── MercadoLibre KAT (2ª cuenta, token ml_kat_*) ─────────────────────────
+    if "mercadolibre_kat" in permitidos:
+        mlk_res = []
+        reparto = (plan.get("mercadolibre_kat", {}) or {}).get("reparto", {}) or {}
+        for item_id, cant in reparto.items():
+            r = _ml_set_stock_one(str(item_id), int(cant), dry=dry,
+                                  max_delta=max_delta, reactivate=reactivate,
+                                  acct="kat")
+            mlk_res.append(r)
+            if not dry:
+                _safe(db._sb_post, "sync_aplicacion", {
+                    "codigo_boun": codigo, "canal": "mercadolibre_kat",
+                    "ref": str(item_id), "order_id": str(order_id),
+                    "actual": r.get("actual"), "objetivo": r.get("set"),
+                    "ok": bool(r.get("ok")),
+                    "detalle": str(r.get("reason") or r.get("error") or "")[:200]})
+        out["canales"]["mercadolibre_kat"] = mlk_res
     # ── Falabella ─────────────────────────────────────────────────────────────
     # fb.set_stock fija el valor absoluto (ProductUpdate) y _post ya reintenta los
     # 503/429 con backoff. No hay snapshot barato del stock actual → sin delta_guard.
@@ -2866,7 +2960,8 @@ def _descontar_una(canal, order_id, p, cantidad, es_full, es_flex=False):
             cola.update({"estado": "pendiente"})
             db._sb_post("cola_bodega", cola)
             asignado = "pendiente(flex_sin_stock)"
-    elif canal == "mercadolibre" and _ml_solo_bogota() and bog > 0:
+    elif canal in ("mercadolibre", "ml", "ml_kat") and _ml_solo_bogota() \
+            and bog > 0:
         bog = max(0, bog - cantidad)
         db._sb_patch("inventory_products", "id=eq.%d" % pid, {"qty_bogota": bog})
         db._sb_post("movimiento_stock", {
@@ -2957,8 +3052,8 @@ def _combo_vender(canal, order_id, codigo, cantidad, es_full, es_flex=False):
                 best = mk if best is None else min(best, mk)
             return max(0, best or 0)
         cap_bog = _cap("qty_bogota")
-        cap_yop = 0 if (canal == "mercadolibre" and _ml_solo_bogota()) \
-            else _cap("qty_yopal")
+        cap_yop = 0 if (canal in ("mercadolibre", "ml", "ml_kat")
+                        and _ml_solo_bogota()) else _cap("qty_yopal")
         if cap_bog >= cantidad:           # cabe todo en Bogotá
             plan_bog = cantidad
         elif cap_yop >= cantidad:         # cabe todo en Yopal
@@ -3113,6 +3208,18 @@ def _ml_code_for_item(item_id: str) -> str:
     return p[0]["code"] if p else ""
 
 
+def _ml_kat_code_for_item(item_id: str) -> str:
+    """código BOUN de una publicación de la 2ª cuenta ML (KAT), vía
+    inventory_links channel=mercadolibre_kat."""
+    links = db._sb_get("inventory_links?ml_item_id=eq.%s&channel=eq."
+                       "mercadolibre_kat&select=product_id" % _q_(item_id)) or []
+    if not links:
+        return ""
+    p = db._sb_get("inventory_products?id=eq.%d&select=code"
+                   % links[0]["product_id"]) or []
+    return p[0]["code"] if p else ""
+
+
 def _ml_item_full(item_id: str) -> bool:
     """¿La publicación ML vendida es Full? Usa el logistic_type guardado en
     inventory_links (=fulfillment). Si no hay dato, asume que NO (la lógica de
@@ -3122,11 +3229,11 @@ def _ml_item_full(item_id: str) -> bool:
     return bool(links) and (links[0].get("ml_logistic") == "fulfillment")
 
 
-def _ml_order_logistic(order: dict) -> str:
+def _ml_order_logistic(order: dict, acct: str = "boun") -> str:
     """logistic_type REAL del envío de una orden ML (nivel orden, no listing).
     'fulfillment' = Full · 'self_service' = Flex · 'xd_drop_off'/'cross_docking'
     = correo/colecta. Lee shipping.logistic_type y, si no viene, consulta el
-    envío por su id. '' si no se puede determinar."""
+    envío por su id (con el token de la cuenta `acct`). '' si no se determina."""
     sh = order.get("shipping") or {}
     lt = sh.get("logistic_type")
     if lt:
@@ -3134,7 +3241,7 @@ def _ml_order_logistic(order: dict) -> str:
     sid = sh.get("id")
     if sid:
         try:
-            r = _ml_request("GET", "/shipments/%s" % sid)
+            r = _ml_request("GET", "/shipments/%s" % sid, acct=acct)
             if r is not None and r.status_code == 200:
                 return (r.json() or {}).get("logistic_type") or ""
         except Exception:
@@ -3145,6 +3252,12 @@ def _ml_order_logistic(order: dict) -> str:
 def _ml_order_flags(order: dict):
     """(es_full, es_flex) según el logistic_type real del envío de la orden."""
     lt = _ml_order_logistic(order)
+    return (lt == "fulfillment"), (lt == "self_service")
+
+
+def _ml_kat_order_flags(order: dict):
+    """(es_full, es_flex) de una orden de la 2ª cuenta ML (KAT)."""
+    lt = _ml_order_logistic(order, acct="kat")
     return (lt == "fulfillment"), (lt == "self_service")
 
 
@@ -3195,11 +3308,33 @@ async def webhook_ml(request: Request):
     except Exception:
         data = {}
     resource = data.get("resource", "") or ""
-    # solo órdenes
+    # solo órdenes. La notificación trae user_id → distingue cuenta BOUN vs KAT.
     if "/orders/" in resource and _sync_enabled():
         oid = resource.rstrip("/").split("/")[-1]
+        notif_uid = str(data.get("user_id") or "")
+        kat_uid = db.get_setting("ml_kat_user_id", "")
+        es_kat = bool(kat_uid) and notif_uid == str(kat_uid)
 
         def _work():
+            if es_kat:
+                r = _ml_request("GET", "/orders/%s" % oid, acct="kat")
+                if not r or r.status_code != 200:
+                    return
+                order = r.json()
+                es_full, es_flex = _ml_kat_order_flags(order)
+                agg = {}
+                for oi in order.get("order_items", []):
+                    iid = (oi.get("item") or {}).get("id")
+                    qty = int(oi.get("quantity") or 0)
+                    code = _ml_kat_code_for_item(iid) if iid else ""
+                    if code and qty:
+                        k = (code, es_full)
+                        agg[k] = agg.get(k, 0) + qty
+                items = [(c, q, f, es_flex) for (c, f), q in agg.items()]
+                if items:
+                    _safe(_process_sale, "ml_kat", oid, items,
+                          {"webhook": "ml_kat"})
+                return
             r = _ml_request("GET", "/orders/%s" % oid)
             if not r or r.status_code != 200:
                 return
@@ -3560,12 +3695,78 @@ def _ml_poll_once():
         db.set_setting("sync_ml_since", newest)
 
 
+def _ml_kat_poll_once():
+    """Órdenes nuevas de la SEGUNDA cuenta ML (KAT). Espejo de _ml_poll_once:
+    watermark propio (sync_ml_kat_since), canal evento 'ml_kat', mapeo por
+    inventory_links channel=mercadolibre_kat. es_full/es_flex se leen a nivel
+    ORDEN (logistic_type del envío)."""
+    if not _sync_enabled():
+        return
+    from ml_scraper import _ml_kat_session_auth, ML_API
+    s, uid = _ml_kat_session_auth()
+    if not s:
+        return
+    co = timezone(timedelta(hours=-5))
+    fmt = "%Y-%m-%dT%H:%M:%S.000-05:00"
+    wm = db.get_setting("sync_ml_kat_since", "")
+    if not wm:
+        db.set_setting("sync_ml_kat_since", datetime.now(co).strftime(fmt))
+        return
+    try:
+        base = (datetime.strptime(wm[:19], "%Y-%m-%dT%H:%M:%S")
+                .replace(tzinfo=co) - timedelta(hours=2))
+    except Exception:
+        base = datetime.now(co) - timedelta(hours=2)
+    since = base.strftime(fmt)
+    until = datetime.now(co).strftime(fmt)
+    newest = wm
+    offset = 0
+    while True:
+        r = s.get("%s/orders/search?seller=%s&order.date_created.from=%s"
+                  "&order.date_created.to=%s&sort=date_desc&limit=50&offset=%d"
+                  % (ML_API, uid, since, until, offset), timeout=20)
+        if r.status_code != 200:
+            break
+        d = r.json()
+        results = d.get("results", [])
+        for od in results:
+            dc = od.get("date_created", "")
+            if dc <= wm:
+                continue
+            newest = max(newest, dc)
+            oid = str(od.get("id"))
+            ev = db._sb_get("evento_venta?canal=eq.ml_kat&order_id=eq.%s&"
+                            "select=estado" % _q_(oid)) or []
+            if ev and ev[0].get("estado") in ("procesado", "procesando"):
+                continue
+            es_full, es_flex = _ml_kat_order_flags(od)
+            agg = {}
+            for oi in od.get("order_items", []):
+                iid = (oi.get("item") or {}).get("id")
+                qty = int(oi.get("quantity") or 0)
+                code = _ml_kat_code_for_item(iid) if iid else ""
+                if code and qty:
+                    k = (code, es_full)
+                    agg[k] = agg.get(k, 0) + qty
+            if agg:
+                items = [(c, q, f, es_flex) for (c, f), q in agg.items()]
+                _safe(_process_sale, "ml_kat", oid, items,
+                      {"poller": "ml_kat", "created": dc})
+        total = d.get("paging", {}).get("total", 0)
+        offset += 50
+        if offset >= total or not results:
+            break
+    if newest > wm:
+        db.set_setting("sync_ml_kat_since", newest)
+
+
 def _poller_loop():
     sec = int(os.environ.get("SYNC_FALABELLA_POLL_SEC", "180") or 180)
     sec = max(60, sec)
     while True:
         _safe(_falabella_poll_once)
         _safe(_ml_poll_once)
+        _safe(_ml_kat_poll_once)
         time.sleep(sec)
 
 
@@ -3795,7 +3996,7 @@ def sync_apply_preview(key: str = "", codigo: str = "", vendidos: int = 0,
 
 # ── Activación de la escritura real — toggle admin (sin SQL) ─────────────────
 
-_APPLY_CHANNELS_VALIDOS = {"mercadolibre", "falabella",
+_APPLY_CHANNELS_VALIDOS = {"mercadolibre", "mercadolibre_kat", "falabella",
                            "shopify_boun", "shopify_kat"}
 
 

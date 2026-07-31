@@ -326,6 +326,72 @@ def _load_token():
     return token
 
 
+# ── Segunda cuenta ML (KAT) — token paralelo bajo settings ml_kat_* ──────────
+# Misma app de ML (ml_app_id/ml_client_secret): un token por usuario que
+# autoriza. El de BOUN vive en ml_access_token; el de KAT en ml_kat_*.
+
+def _kat_try_refresh():
+    """Refresca el token de la cuenta KAT usando su refresh_token propio."""
+    refresh = get_setting("ml_kat_refresh_token", "")
+    app_id  = get_setting("ml_app_id", "")
+    secret  = get_setting("ml_client_secret", "")
+    if not refresh or not app_id or not secret:
+        return ""
+    try:
+        s = _get_session()
+        r = s.post(
+            "%s/oauth/token" % ML_API,
+            data={
+                "grant_type":    "refresh_token",
+                "client_id":     app_id,
+                "client_secret": secret,
+                "refresh_token": refresh,
+            },
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            timeout=15,
+        )
+        if r.status_code == 200:
+            data = r.json()
+            token = data.get("access_token", "")
+            set_setting("ml_kat_access_token",  token)
+            set_setting("ml_kat_refresh_token", data.get("refresh_token", refresh))
+            set_setting("ml_kat_token_ts",      str(time.time()))
+            return token
+    except Exception:
+        pass
+    return ""
+
+
+def _kat_load_token():
+    """Token de la cuenta KAT; refresca solo si está por vencer. Sin fallback a
+    client_credentials (ese token no representa al usuario KAT)."""
+    token = get_setting("ml_kat_access_token", "")
+    ts    = float(get_setting("ml_kat_token_ts", "0") or 0)
+    if not token:
+        return ""
+    age = time.time() - ts
+    if age > TOKEN_TTL - 300:
+        refreshed = _kat_try_refresh()
+        return refreshed or ""
+    return token
+
+
+def _ml_kat_session_auth():
+    """Sesión autenticada + user_id de la cuenta KAT, o (None, None)."""
+    tok = _kat_load_token()
+    if not tok:
+        return None, None
+    s = _get_session()
+    s.headers["Authorization"] = "Bearer " + tok
+    try:
+        me = s.get(f"{ML_API}/users/me", timeout=12)
+        if me.status_code == 200:
+            return s, me.json().get("id")
+    except Exception:
+        pass
+    return None, None
+
+
 def is_connected():
     return bool(_load_token())
 
@@ -1648,11 +1714,12 @@ def guess_category(product_name: str) -> str:
     return "Otro / General"
 
 
-def get_my_items_basic(progress=None) -> dict:
+def get_my_items_basic(progress=None, acct="boun") -> dict:
     """
     Lista LIGERA de todas las publicaciones del usuario (para asignarlas
     al inventario): solo id, título, foto, precio y estado. Sin órdenes
     ni publicidad → carga en segundos.
+    acct: "boun" (cuenta principal) o "kat" (segunda cuenta ML, token ml_kat_*).
     """
     def _say(t):
         if progress:
@@ -1661,9 +1728,10 @@ def get_my_items_basic(progress=None) -> dict:
             except Exception:
                 pass
 
-    s, uid = _ml_session_auth()
+    s, uid = (_ml_kat_session_auth() if acct == "kat" else _ml_session_auth())
     if not s:
-        return {"ok": False, "error": "No hay conexión con MercadoLibre."}
+        return {"ok": False, "error": "No hay conexión con MercadoLibre%s."
+                % (" (cuenta KAT)" if acct == "kat" else "")}
 
     _say("Obteniendo tus publicaciones…")
     item_ids = []
