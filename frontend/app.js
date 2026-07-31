@@ -210,7 +210,7 @@ function exportInv(){
   if(!INV.length){ alert("Sin datos de inventario."); return; }
   const cols=[["code","Código"],["name","Producto"],["n_links","Publicaciones"],
     ["cost_product","Costo producto"],["cost_shipping","Costo envío"],["__cost_total","Costo total unit"],
-    ["qty_bogota","Bod Bogotá"],["qty_yopal","Bod Yopal"],["qty_full","ML Full"],["qty_transit","En camino"],
+    ["qty_bogota","Bod Bogotá"],["qty_yopal","Bod Yopal"],["qty_flex_med","Flex Medellín"],["qty_full","ML Full"],["qty_transit","En camino"],
     ["__inv_total","Inventario total"],["__costo_inv","Costo inventario"],["avg_net","Gan/u prom"],
     ["__gan_esp","Ganancia esperada"],["avg_price","Precio prom"],["__valor_venta","Valor de venta"],
     ["avg_margin","Margen prom %"],["avg_roas","ROAS prom"],["avg_acos","ACOS prom %"],
@@ -240,7 +240,7 @@ function exportInv(){
   a.href=URL.createObjectURL(blob);
   a.download="BOUN_inventario_"+new Date().toISOString().slice(0,10)+".csv"; a.click();
 }
-function prodUnits(p){ return (+p.qty_bogota||0)+(+p.qty_yopal||0)+(+p.qty_full||0)+(+p.qty_transit||0); }
+function prodUnits(p){ return (+p.qty_bogota||0)+(+p.qty_yopal||0)+(+p.qty_flex_med||0)+(+p.qty_full||0)+(+p.qty_transit||0); }
 function prodCostUnit(p){ return (+p.cost_product||0)+(+p.cost_shipping||0); }
 
 // ── Inventario · Excel (descargar / subir) ──────────────────────────────────
@@ -464,6 +464,10 @@ function invCard(p){
   const fYop = isCombo? fcolRO("Bod. Yopal","🔒","muted")
              : adminBod? fcol("Bod. Yopal",inp(p.id,"qty_yopal",p.qty_yopal,64))
              : fcolRO("Bod. Yopal",Math.round(+p.qty_yopal||0));
+  // Flex Medellín: bodega propia de envíos Flex ML (solo admin edita).
+  const fMed = isCombo? fcolRO("Flex Medellín","🔒","muted")
+             : adminBod? fcol("Flex Medellín",inp(p.id,"qty_flex_med",p.qty_flex_med,64))
+             : fcolRO("Flex Medellín",Math.round(+p.qty_flex_med||0));
   // "En camino" lo manejan los embarques (sección 🚢): solo lectura.
   const traV=Math.round(+p.qty_transit||0);
   const fTra = isCombo? fcolRO("En camino","🔒","muted")
@@ -491,6 +495,7 @@ function invCard(p){
       <div class="vsep"></div>
       ${fBog}
       ${fYop}
+      ${fMed}
       ${fcolRO("ML Full",p.qty_full||0)}
       ${fTra}
       ${fcolRO(isCombo?"Armables":"Inv. total",u,u?"acc":"red")}
@@ -615,7 +620,7 @@ async function delProduct(pid){
 // ── Ingreso de mercancía (SUMA, no reemplaza) ───────────────────────────────
 function ingresoDialog(pid){
   const p=INV.find(x=>x.id===pid); if(!p) return;
-  const bog=Math.round(+p.qty_bogota||0), yop=Math.round(+p.qty_yopal||0);
+  const bog=Math.round(+p.qty_bogota||0), yop=Math.round(+p.qty_yopal||0), med=Math.round(+p.qty_flex_med||0);
   openModal(`<h3>📥 Ingreso de mercancía — ${esc(p.code)}</h3>
     <div class="sub">Suma las unidades que <b>llegaron</b> a la bodega. <b>No reemplaza</b> el total: respeta los descuentos por ventas que el sistema ya aplicó, así no se "revive" stock vendido.</div>
     <div id="ingErr" class="err"></div>
@@ -623,6 +628,7 @@ function ingresoDialog(pid){
       <select id="ingBod" class="field" onchange="ingPreview(${pid})">
         <option value="bogota">Bogotá (actual: ${bog})</option>
         <option value="yopal">Yopal (actual: ${yop})</option>
+        <option value="flex_med">Flex Medellín (actual: ${med})</option>
       </select></div>
     <div class="set-row"><label>Unidades que llegaron</label>
       <input id="ingCant" class="field" type="text" placeholder="Ej. 20" autocomplete="off" oninput="ingPreview(${pid})"></div>
@@ -635,11 +641,13 @@ function ingresoDialog(pid){
 function ingPreview(pid){
   const p=INV.find(x=>x.id===pid); if(!p) return;
   const bod=val("ingBod");
-  const actual=Math.round(+(bod==="bogota"?p.qty_bogota:p.qty_yopal)||0);
+  const BOD={bogota:["Bogotá",p.qty_bogota],yopal:["Yopal",p.qty_yopal],flex_med:["Flex Medellín",p.qty_flex_med]};
+  const [nom,val0]=BOD[bod]||BOD.bogota;
+  const actual=Math.round(+val0||0);
   const cant=parseInt((document.getElementById("ingCant").value||"").replace(/[^0-9]/g,""))||0;
   const el=document.getElementById("ingPrev"); if(!el) return;
   el.innerHTML = cant>0
-    ? `Quedará en <b class="acc">${actual+cant}</b> unidades en ${bod==="bogota"?"Bogotá":"Yopal"} <span class="muted">(${actual} actual + ${cant} ingresadas)</span>.`
+    ? `Quedará en <b class="acc">${actual+cant}</b> unidades en ${nom} <span class="muted">(${actual} actual + ${cant} ingresadas)</span>.`
     : "";
 }
 async function saveIngreso(pid){

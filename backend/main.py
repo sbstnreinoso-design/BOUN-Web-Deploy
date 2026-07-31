@@ -232,6 +232,7 @@ class InvUpdateIn(BaseModel):
     qty_bogota: Optional[float] = None
     qty_yopal: Optional[float] = None
     qty_transit: Optional[float] = None
+    qty_flex_med: Optional[float] = None  # bodega Flex Medellín (envíos Flex ML)
     owner: Optional[str] = None       # 'BOUN' | 'MARIA_JOSE'
     mj_qty: Optional[float] = None     # unidades de María José (0/None = todas)
     mj_anchor: Optional[str] = None    # 'YYYY-MM-DD' desde cuándo cuentan sus ventas
@@ -247,10 +248,11 @@ def inv_update(pid: int, data: InvUpdateIn,
     # Solo el administrador puede editar el SKU/código del producto.
     if "code" in fields and user.get("role") != "admin":
         raise HTTPException(403, "Solo el administrador puede editar el SKU.")
-    # Las bodegas (Bogotá/Yopal) solo las edita el admin directamente; los
-    # demás usuarios cargan stock con el botón "Ingreso de mercancía".
+    # Las bodegas (Bogotá/Yopal/Flex Medellín) solo las edita el admin
+    # directamente; los demás usuarios cargan stock con "Ingreso de mercancía".
     if user.get("role") != "admin" and ("qty_bogota" in fields or
-                                        "qty_yopal" in fields):
+                                        "qty_yopal" in fields or
+                                        "qty_flex_med" in fields):
         raise HTTPException(403, "Solo el administrador puede editar las "
                                  "bodegas. Usa el botón «Ingreso de mercancía».")
     ok = db.inv_update_product(pid, fields)
@@ -273,26 +275,32 @@ def inv_update(pid: int, data: InvUpdateIn,
 
 
 class IngresoIn(BaseModel):
-    bodega: str                       # "bogota" | "yopal"
+    bodega: str                       # "bogota" | "yopal" | "flex_med"
     cantidad: float                   # > 0 (unidades que LLEGARON)
     nota: Optional[str] = ""
 
 
+# Bodega válida → columna de stock. Flex Medellín es un contador propio
+# (envíos Flex ML), aparte del motor de despacho Bogotá/Yopal.
+_INGRESO_COL = {"bogota": "qty_bogota", "yopal": "qty_yopal",
+                "flex_med": "qty_flex_med"}
+
+
 @app.post("/api/inventory/{pid}/ingreso")
 def inv_ingreso(pid: int, data: IngresoIn, user: dict = Depends(_current_user)):
-    """Ingreso de mercancía: SUMA unidades a una bodega (Bogotá o Yopal) sobre
-    el valor ACTUAL del sistema; nunca reemplaza el total. Así no se borran los
-    descuentos que el motor ya aplicó por ventas. Deja registro en
-    movimiento_stock con delta positivo. Los combos no aplican (su stock se
+    """Ingreso de mercancía: SUMA unidades a una bodega (Bogotá, Yopal o Flex
+    Medellín) sobre el valor ACTUAL del sistema; nunca reemplaza el total. Así
+    no se borran los descuentos que el motor ya aplicó por ventas. Deja registro
+    en movimiento_stock con delta positivo. Los combos no aplican (su stock se
     deriva de los componentes)."""
     bod = (data.bodega or "").strip().lower()
-    if bod not in ("bogota", "yopal"):
-        raise HTTPException(400, "bodega debe ser 'bogota' o 'yopal'")
+    if bod not in _INGRESO_COL:
+        raise HTTPException(400, "bodega debe ser 'bogota', 'yopal' o 'flex_med'")
     cant = int(data.cantidad or 0)
     if cant <= 0:
         raise HTTPException(400, "La cantidad debe ser mayor a 0")
     rows = db._sb_get("inventory_products?id=eq.%d&select=id,code,name,"
-                      "qty_bogota,qty_yopal" % pid) or []
+                      "qty_bogota,qty_yopal,qty_flex_med" % pid) or []
     if not rows:
         raise HTTPException(404, "Producto no encontrado")
     p = rows[0]
@@ -300,7 +308,7 @@ def inv_ingreso(pid: int, data: IngresoIn, user: dict = Depends(_current_user)):
     if _combo_components(codigo):
         raise HTTPException(400, "Es un combo: su stock se calcula desde los "
                                  "componentes. Ingresa la mercancía en ellos.")
-    col = "qty_bogota" if bod == "bogota" else "qty_yopal"
+    col = _INGRESO_COL[bod]
     actual = int(p.get(col) or 0)
     nuevo = actual + cant
     db._sb_patch("inventory_products", "id=eq.%d" % pid, {col: nuevo})
@@ -339,6 +347,7 @@ _XLS_EDIT = [
     ("Costo envío", "cost_shipping"),
     ("Bodega Bogotá", "qty_bogota"),
     ("Bodega Yopal", "qty_yopal"),
+    ("Bodega Flex Medellín", "qty_flex_med"),
     ("En tránsito", "qty_transit"),
 ]
 # Columnas de SOLO LECTURA (referencia; el import las ignora).
@@ -421,17 +430,19 @@ def inv_export_xlsx(k: str = "", authorization: Optional[str] = Header(None)):
 
     for p in prods:
         u = (int(p.get("qty_bogota") or 0) + int(p.get("qty_yopal") or 0)
-             + int(p.get("qty_full") or 0) + int(p.get("qty_transit") or 0))
+             + int(p.get("qty_full") or 0) + int(p.get("qty_transit") or 0)
+             + int(p.get("qty_flex_med") or 0))
         ws.append([
             p.get("code", ""), p.get("name", ""),
             float(p.get("cost_product") or 0), float(p.get("cost_shipping") or 0),
             int(p.get("qty_bogota") or 0), int(p.get("qty_yopal") or 0),
+            int(p.get("qty_flex_med") or 0),
             int(p.get("qty_transit") or 0),
             int(p.get("qty_full") or 0), u,
             int(p.get("sold60_total") or 0), _links_summary(p),
         ])
 
-    widths = [18, 40, 14, 12, 14, 13, 11, 9, 14, 12, 60]
+    widths = [18, 40, 14, 12, 14, 13, 16, 11, 9, 14, 12, 60]
     from openpyxl.utils import get_column_letter
     for i, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(i)].width = w
@@ -505,8 +516,8 @@ async def inv_import_xlsx(request: Request,
     prods = {str(p.get("code", "")).strip(): p for p in db.inv_list_products()}
 
     numeric = {"cost_product", "cost_shipping", "qty_bogota", "qty_yopal",
-               "qty_transit"}
-    qty_fields = {"qty_bogota", "qty_yopal", "qty_transit"}
+               "qty_transit", "qty_flex_med"}
+    qty_fields = {"qty_bogota", "qty_yopal", "qty_transit", "qty_flex_med"}
     updated, unchanged, not_found, errors = [], [], [], []
 
     for r in rows[1:]:
@@ -2811,17 +2822,23 @@ def _apply_plan(codigo: str, plan: dict, order_id: str = "",
     return out
 
 
-def _descontar_una(canal, order_id, p, cantidad, es_full):
+def _descontar_una(canal, order_id, p, cantidad, es_full, es_flex=False):
     """Registra la venta de UN producto y asigna/descuenta bodega (misma lógica
-    del motor: Full / regla ML-Bogotá / ambas→pendiente / una→auto / sin stock).
-    Devuelve (asignado, bog, yop) con las bodegas ya actualizadas en memoria."""
+    del motor: Full / Flex Medellín / regla ML-Bogotá / ambas→pendiente /
+    una→auto / sin stock).
+    Devuelve (asignado, bog, yop) con las bodegas ya actualizadas en memoria.
+    Flex (es_flex): la venta salió por Mercado Envíos Flex → se despacha desde la
+    bodega Flex Medellín (qty_flex_med), aparte del motor Bogotá/Yopal. Si Flex
+    Medellín no tiene stock, la venta queda PENDIENTE (no cae a Bogotá)."""
     pid = p["id"]
     codigo = p.get("code")
     bog = int(p.get("qty_bogota") or 0)
     yop = int(p.get("qty_yopal") or 0)
+    med = int(p.get("qty_flex_med") or 0)
     mov = db._sb_post("movimiento_stock", {
         "codigo_boun": codigo, "delta": -cantidad,
-        "motivo": "venta_%s%s" % (canal, "_full" if es_full else ""),
+        "motivo": "venta_%s%s" % (canal, "_full" if es_full else
+                                  ("_flex" if es_flex else "")),
         "canal": canal, "order_id": str(order_id)})
     cola = {"movimiento_id": (mov or {}).get("id"), "codigo_boun": codigo,
             "nombre": p.get("name"), "cantidad": cantidad,
@@ -2830,6 +2847,25 @@ def _descontar_una(canal, order_id, p, cantidad, es_full):
         cola.update({"estado": "full"})
         db._sb_post("cola_bodega", cola)
         asignado = "full"
+    elif es_flex is True:
+        # Flex → despacha desde Flex Medellín. Solo si hay stock suficiente;
+        # si no, PENDIENTE (el humano decide; no se toca Bogotá/Yopal).
+        if med >= cantidad:
+            med = max(0, med - cantidad)
+            db._sb_patch("inventory_products", "id=eq.%d" % pid,
+                         {"qty_flex_med": med})
+            db._sb_post("movimiento_stock", {
+                "codigo_boun": codigo, "delta": -cantidad,
+                "motivo": "asignacion_bodega_flex_med", "canal": canal,
+                "order_id": str(order_id)})
+            cola.update({"estado": "confirmado", "bodega_asignada": "flex_med",
+                         "auto": True})
+            db._sb_post("cola_bodega", cola)
+            asignado = "flex_med(auto)"
+        else:
+            cola.update({"estado": "pendiente"})
+            db._sb_post("cola_bodega", cola)
+            asignado = "pendiente(flex_sin_stock)"
     elif canal == "mercadolibre" and _ml_solo_bogota() and bog > 0:
         bog = max(0, bog - cantidad)
         db._sb_patch("inventory_products", "id=eq.%d" % pid, {"qty_bogota": bog})
@@ -2881,23 +2917,37 @@ def _propagar(codigo, disp, order_id):
     return plan, aplicado
 
 
-def _combo_vender(canal, order_id, codigo, cantidad, es_full):
+def _combo_vender(canal, order_id, codigo, cantidad, es_full, es_flex=False):
     """Venta de un COMBO: descuenta sus componentes desde la MISMA bodega (un
     combo solo se arma si todos sus componentes están juntos). Decide cuántos
     salen de Bogotá y cuántos de Yopal; descuenta y propaga cada componente y el
-    propio combo (= armables totales)."""
+    propio combo (= armables totales).
+    Flex (es_flex): el combo salió por Flex → sus componentes se descuentan de
+    Flex Medellín (qty_flex_med). Si no alcanza, el faltante queda sin descontar
+    (sobreventa reportada), no se toca Bogotá/Yopal."""
     comps = _combo_components(codigo) or []
     items = []
     for comp in comps:
         ccod = str(comp.get("codigo") or "").strip()
         cq = max(1, int(comp.get("cant") or 1))
         rows = db._sb_get("inventory_products?code=eq.%s&select=id,code,name,"
-                          "qty_bogota,qty_yopal" % _q_(ccod)) or []
+                          "qty_bogota,qty_yopal,qty_flex_med" % _q_(ccod)) or []
         items.append({"codigo": ccod, "cant": cq,
                       "row": (rows[0] if rows else None)})
     # ── Decidir de qué bodega(s) sale el combo (componentes de la MISMA) ──────
-    plan_bog = plan_yop = 0
-    if es_full is not True:
+    plan_bog = plan_yop = plan_med = 0
+    if es_full is not True and es_flex is True:
+        # Flex → todo desde Flex Medellín (lo que alcance).
+        def _cap_med():
+            best = None
+            for it in items:
+                if not it["row"]:
+                    return 0
+                mk = int(it["row"].get("qty_flex_med") or 0) // it["cant"]
+                best = mk if best is None else min(best, mk)
+            return max(0, best or 0)
+        plan_med = min(cantidad, _cap_med())
+    elif es_full is not True:
         def _cap(wh):
             best = None
             for it in items:
@@ -2916,7 +2966,7 @@ def _combo_vender(canal, order_id, codigo, cantidad, es_full):
         else:                             # ninguna sola alcanza → divide lo posible
             plan_bog = min(cantidad, cap_bog)
             plan_yop = min(cantidad - plan_bog, cap_yop)
-    faltante = cantidad - (plan_bog + plan_yop)   # >0 = sobreventa (no había stock junto)
+    faltante = cantidad - (plan_bog + plan_yop + plan_med)  # >0 = sobreventa (no había stock junto)
     # ── Descontar cada componente de la(s) bodega(s) decidida(s) ─────────────
     res_comp = []
     for it in items:
@@ -2932,6 +2982,22 @@ def _combo_vender(canal, order_id, codigo, cantidad, es_full):
             "order_id": str(order_id)})
         if es_full is True:
             res_comp.append({"componente": ccod, "cantidad": ccant, "bodega": "full"})
+            continue
+        if es_flex is True:
+            # Flex → descuenta de Flex Medellín; no toca Bogotá/Yopal ni el
+            # disponible central de los canales.
+            nm = int(row.get("qty_flex_med") or 0)
+            from_med = plan_med * cq
+            if from_med:
+                nm = max(0, nm - from_med)
+                db._sb_patch("inventory_products", "id=eq.%d" % pid,
+                             {"qty_flex_med": nm})
+                db._sb_post("movimiento_stock", {
+                    "codigo_boun": ccod, "delta": -from_med,
+                    "motivo": "asignacion_bodega_flex_med_combo", "canal": canal,
+                    "order_id": str(order_id)})
+            res_comp.append({"componente": ccod, "cantidad": ccant,
+                             "flex_med": from_med})
             continue
         nb = int(row.get("qty_bogota") or 0); ny = int(row.get("qty_yopal") or 0)
         from_bog = plan_bog * cq; from_yop = plan_yop * cq
@@ -2962,6 +3028,7 @@ def _combo_vender(canal, order_id, codigo, cantidad, es_full):
     return {"codigo": codigo, "combo": True, "cantidad": cantidad,
             "componentes": res_comp, "disponible_combo": combo_disp,
             "reparto_bodega": {"bogota": plan_bog, "yopal": plan_yop,
+                               "flex_med": plan_med,
                                "faltante": max(0, faltante)},
             "plan": plan, "aplicado": aplicado}
 
@@ -2987,31 +3054,35 @@ def _process_sale(canal: str, order_id: str, items: list,
                      % (_q_(canal), _q_(order_id)), {"estado": "procesando"})
     resultados = []
     for raw in items:
-        # items: (codigo, cantidad) o (codigo, cantidad, es_full). es_full=True
-        # cuando el canal informa que el envío salió de Full (ML logistic_type
-        # =fulfillment); None = desconocido → se decide por stock de bodega.
+        # items: (codigo, cantidad), (codigo, cantidad, es_full) o
+        # (codigo, cantidad, es_full, es_flex). es_full=True cuando el envío
+        # salió de Full (ML logistic_type=fulfillment); es_flex=True cuando salió
+        # por Mercado Envíos Flex (logistic_type=self_service) → Flex Medellín.
+        # None/False = desconocido → se decide por stock de bodega.
         codigo, cantidad = raw[0], int(raw[1])
         es_full = raw[2] if len(raw) >= 3 else None
+        es_flex = bool(raw[3]) if len(raw) >= 4 else False
         # COMBO: descuenta sus componentes en vez de la bodega del propio combo.
         if _combo_components(codigo):
             resultados.append(_combo_vender(canal, order_id, codigo, cantidad,
-                                            es_full))
+                                            es_full, es_flex))
             continue
         prows = db._sb_get("inventory_products?code=eq.%s&select=id,code,name,"
-                           "qty_bogota,qty_yopal" % _q_(codigo)) or []
+                           "qty_bogota,qty_yopal,qty_flex_med" % _q_(codigo)) or []
         if not prows:
             resultados.append({"codigo": codigo, "skip": True,
                                "motivo": "no_en_inventario_central"})
             continue
         # Descuento de bodega + registro (helper reutilizable, también para combos)
         asignado, bog, yop = _descontar_una(canal, order_id, prows[0], cantidad,
-                                            es_full)
+                                            es_full, es_flex)
         disp = max(0, bog + yop - _pending_cola(codigo))
         # Propagación a canales: escribe SOLO los de la lista blanca (si vacía,
         # sigue en DRY-RUN).
         plan, aplicado = _propagar(codigo, disp, order_id)
         resultados.append({"codigo": codigo, "cantidad": cantidad,
-                           "es_full": bool(es_full), "bodega": asignado,
+                           "es_full": bool(es_full), "es_flex": es_flex,
+                           "bodega": asignado,
                            "disponible_tras_venta": disp,
                            "plan": plan, "aplicado": aplicado})
     db._sb_patch("evento_venta", "canal=eq.%s&order_id=eq.%s"
@@ -3049,6 +3120,32 @@ def _ml_item_full(item_id: str) -> bool:
     links = db._sb_get("inventory_links?ml_item_id=eq.%s&%sselect=ml_logistic"
                        % (_q_(item_id), db._ml_only_filter())) or []
     return bool(links) and (links[0].get("ml_logistic") == "fulfillment")
+
+
+def _ml_order_logistic(order: dict) -> str:
+    """logistic_type REAL del envío de una orden ML (nivel orden, no listing).
+    'fulfillment' = Full · 'self_service' = Flex · 'xd_drop_off'/'cross_docking'
+    = correo/colecta. Lee shipping.logistic_type y, si no viene, consulta el
+    envío por su id. '' si no se puede determinar."""
+    sh = order.get("shipping") or {}
+    lt = sh.get("logistic_type")
+    if lt:
+        return lt
+    sid = sh.get("id")
+    if sid:
+        try:
+            r = _ml_request("GET", "/shipments/%s" % sid)
+            if r is not None and r.status_code == 200:
+                return (r.json() or {}).get("logistic_type") or ""
+        except Exception:
+            pass
+    return ""
+
+
+def _ml_order_flags(order: dict):
+    """(es_full, es_flex) según el logistic_type real del envío de la orden."""
+    lt = _ml_order_logistic(order)
+    return (lt == "fulfillment"), (lt == "self_service")
 
 
 def _process_async(canal, order_id, items, payload=None):
@@ -3106,15 +3203,17 @@ async def webhook_ml(request: Request):
             r = _ml_request("GET", "/orders/%s" % oid)
             if not r or r.status_code != 200:
                 return
+            order = r.json()
+            _of, es_flex = _ml_order_flags(order)   # Flex = self_service (nivel orden)
             agg = {}
-            for oi in r.json().get("order_items", []):
+            for oi in order.get("order_items", []):
                 iid = (oi.get("item") or {}).get("id")
                 qty = int(oi.get("quantity") or 0)
                 code = _ml_code_for_item(iid) if iid else ""
                 if code and qty:
                     k = (code, _ml_item_full(iid))
                     agg[k] = agg.get(k, 0) + qty
-            items = [(c, q, f) for (c, f), q in agg.items()]
+            items = [(c, q, f, es_flex) for (c, f), q in agg.items()]
             if items:
                 _safe(_process_sale, "ml", oid, items, {"webhook": "ml"})
         threading.Thread(target=_work, daemon=True).start()
@@ -3440,6 +3539,7 @@ def _ml_poll_once():
                             "select=estado" % _q_(oid)) or []
             if ev and ev[0].get("estado") in ("procesado", "procesando"):
                 continue
+            _of, es_flex = _ml_order_flags(od)   # Flex = self_service (nivel orden)
             agg = {}
             for oi in od.get("order_items", []):
                 iid = (oi.get("item") or {}).get("id")
@@ -3449,7 +3549,7 @@ def _ml_poll_once():
                     k = (code, _ml_item_full(iid))
                     agg[k] = agg.get(k, 0) + qty
             if agg:
-                items = [(c, q, f) for (c, f), q in agg.items()]
+                items = [(c, q, f, es_flex) for (c, f), q in agg.items()]
                 _safe(_process_sale, "ml", oid, items,
                       {"poller": "ml", "created": dc})
         total = d.get("paging", {}).get("total", 0)
@@ -3624,9 +3724,11 @@ def sync_order_trace(order_id: str = "", canal: str = "",
 
 @app.get("/api/sync/simular")
 def sync_simular(key: str = "", canal: str = "test", order_id: str = "",
-                 codigo: str = "", cantidad: int = 1, full: str = ""):
+                 codigo: str = "", cantidad: int = 1, full: str = "",
+                 flex: str = ""):
     """Simula una venta y corre el pipeline (DRY-RUN) para probar end-to-end.
-    full=1 marca la venta como Full (no descuenta bodega)."""
+    full=1 marca la venta como Full (no descuenta bodega).
+    flex=1 marca la venta como Flex → descuenta de Flex Medellín."""
     token = os.environ.get("BOUN_EXPORT_TOKEN", "")
     if not token or key != token:
         return JSONResponse({"error": "unauthorized"}, status_code=401,
@@ -3637,8 +3739,9 @@ def sync_simular(key: str = "", canal: str = "test", order_id: str = "",
                             status_code=400, headers=_EXPORT_CORS)
     try:
         es_full = True if full == "1" else None
+        es_flex = (flex == "1")
         res = _process_sale(canal, order_id,
-                            [(codigo, int(cantidad), es_full)],
+                            [(codigo, int(cantidad), es_full, es_flex)],
                             payload={"simulado": True})
         return JSONResponse(res, headers=_EXPORT_CORS)
     except Exception as e:
