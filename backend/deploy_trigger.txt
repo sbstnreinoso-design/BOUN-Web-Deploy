@@ -1,3 +1,1 @@
-Marcador para disparar auto-deploy en Render cuando el cambio es solo de frontend
-(rootDir=backend: Render ignora pushes que no tocan backend/).
-Última actualización: 2026-07-28 19:55 — fix móvil: la matriz de Sección 4 (712 imágenes) ya no auto-carga; se abre con botón. Antes tumbaba la memoria del teléfono y las ofertas "aparecían y desaparecían".
+deploy despachos v4.1 2026-08-01 18:13:11

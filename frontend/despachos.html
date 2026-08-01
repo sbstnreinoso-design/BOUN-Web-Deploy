@@ -529,7 +529,10 @@ function cobrosBlock(o){
   const c = o.cobros;
   if(!c) return '<div class="money"><span class="total">'+fmt(o.total)+'</span></div>';
   const rows = [];
-  rows.push('<div class="cr"><span>Productos (subtotal)</span><b>'+fmt(c.subtotal)+'</b></div>');
+  // Shopify: subtotal ya trae el descuento aplicado → mostrar productos ANTES
+  // del descuento para que la resta cuadre en la factura.
+  const productos = (Number(c.subtotal)||0) + (Number(c.descuento)||0);
+  rows.push('<div class="cr"><span>Productos</span><b>'+fmt(productos)+'</b></div>');
   if(c.descuento>0) rows.push('<div class="cr desc"><span>Descuento'+(c.descuento_codigo?' ('+esc(c.descuento_codigo)+')':'')+'</span><span>−'+fmt(c.descuento)+'</span></div>');
   rows.push('<div class="cr"><span>Envío cobrado</span><b>'+(c.envio>0?fmt(c.envio):'Gratis')+'</b></div>');
   if(c.impuestos>0) rows.push('<div class="cr"><span>'+(c.impuestos_incluidos?'IVA incluido':'Impuestos')+'</span><b>'+fmt(c.impuestos)+'</b></div>');
