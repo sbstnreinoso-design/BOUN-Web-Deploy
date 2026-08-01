@@ -780,7 +780,8 @@ def inv_costs_map() -> dict:
             for l in links if l.get("ml_item_id")}
 
 
-VALID_CHANNELS = ("mercadolibre", "falabella", "shopify_boun", "shopify_kat")
+VALID_CHANNELS = ("mercadolibre", "mercadolibre_kat", "falabella",
+                  "shopify_boun", "shopify_kat")
 
 
 def inv_link_add(pid: int, channel: str, ext_id: str, meta: dict = None) -> bool:
