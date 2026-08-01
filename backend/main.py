@@ -4688,7 +4688,8 @@ def _ordenes_build(d, skip_enviados):
     fields = ("id,name,created_at,total_price,subtotal_price,total_tax,"
               "currency,financial_status,fulfillment_status,line_items,"
               "shipping_address,customer,email,phone,note,cancelled_at,"
-              "gateway,payment_gateway_names,shipping_lines")
+              "gateway,payment_gateway_names,shipping_lines,"
+              "total_discounts,discount_codes,taxes_included")
     tiendas = {"BOUN": _SHOPIFY_SHOPS["shopify_boun"],
                "KAT": _SHOPIFY_SHOPS["shopify_kat"]}
     out = {"ok": True, "fecha": d.isoformat(), "tiendas": {}}
@@ -4750,6 +4751,26 @@ def _ordenes_build(d, skip_enviados):
             pago_metodo = ", ".join(gws) if gws else (o.get("gateway") or "")
             shls = o.get("shipping_lines") or []
             envio_metodo = (shls[0].get("title") if shls else "") or ""
+            # Desglose de cobros al cliente (para facturar desde la ficha):
+            # subtotal productos, descuentos (con código), envío cobrado e
+            # impuestos. taxes_included=True → el IVA va DENTRO del total.
+            def _f(x):
+                try:
+                    return float(x or 0)
+                except Exception:
+                    return 0.0
+            envio_cobrado = sum(_f(s.get("discounted_price") or s.get("price"))
+                                for s in shls)
+            dcodes = ", ".join([str(dc.get("code") or "").strip()
+                                for dc in (o.get("discount_codes") or [])
+                                if dc.get("code")])
+            cobros = {"subtotal": _f(o.get("subtotal_price")),
+                      "descuento": _f(o.get("total_discounts")),
+                      "descuento_codigo": dcodes,
+                      "envio": envio_cobrado,
+                      "impuestos": _f(o.get("total_tax")),
+                      "impuestos_incluidos": bool(o.get("taxes_included")),
+                      "total": _f(o.get("total_price"))}
             info["ordenes"].append({
                 "id": o.get("id"),
                 "numero": o.get("name") or "",
@@ -4770,6 +4791,7 @@ def _ordenes_build(d, skip_enviados):
                 "moneda": o.get("currency") or "COP",
                 "pago": o.get("financial_status") or "",
                 "pago_metodo": pago_metodo,
+                "cobros": cobros,
                 "envio": o.get("fulfillment_status") or "unfulfilled",
                 "envio_metodo": envio_metodo,
                 "nota": o.get("note") or ""})

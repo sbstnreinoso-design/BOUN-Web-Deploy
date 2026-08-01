@@ -82,6 +82,12 @@
   .prod-meta{font-size:12px;color:var(--muted);margin-top:2px}
   .qty{font-weight:800;color:var(--navy)}
 
+  .cobros{border-top:1px solid var(--line);margin-top:6px;padding:9px 0 2px}
+  .cobros .cr{display:flex;justify-content:space-between;font-size:12.5px;color:var(--muted);padding:2px 0}
+  .cobros .cr b{color:var(--ink);font-weight:650}
+  .cobros .cr.desc span:last-child{color:var(--good)}
+  .cobros .cr.tot{border-top:1px dashed var(--line);margin-top:5px;padding-top:6px;font-size:14px}
+  .cobros .cr.tot span{color:var(--ink);font-weight:800}
   .money{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:11px 0 4px;border-top:1px solid var(--line);margin-top:6px;font-size:13.5px}
   .total{font-weight:800;font-size:16px}
   .pill{font-size:11px;font-weight:700;padding:3px 8px;border-radius:6px}
@@ -518,6 +524,19 @@ function render(){
   grid.innerHTML = list.map(card).join("");
 }
 
+function cobrosBlock(o){
+  // Desglose de cobros al cliente — para hacer la factura desde la ficha.
+  const c = o.cobros;
+  if(!c) return '<div class="money"><span class="total">'+fmt(o.total)+'</span></div>';
+  const rows = [];
+  rows.push('<div class="cr"><span>Productos (subtotal)</span><b>'+fmt(c.subtotal)+'</b></div>');
+  if(c.descuento>0) rows.push('<div class="cr desc"><span>Descuento'+(c.descuento_codigo?' ('+esc(c.descuento_codigo)+')':'')+'</span><span>−'+fmt(c.descuento)+'</span></div>');
+  rows.push('<div class="cr"><span>Envío cobrado</span><b>'+(c.envio>0?fmt(c.envio):'Gratis')+'</b></div>');
+  if(c.impuestos>0) rows.push('<div class="cr"><span>'+(c.impuestos_incluidos?'IVA incluido':'Impuestos')+'</span><b>'+fmt(c.impuestos)+'</b></div>');
+  rows.push('<div class="cr tot"><span>Total cobrado</span><span>'+fmt(c.total)+'</span></div>');
+  return '<div class="cobros">'+rows.join('')+'</div>';
+}
+
 function card(o){
   const done = isDone(o);
   const dir = o.direccion||{};
@@ -550,8 +569,8 @@ function card(o){
       (o.email?'<div class="row"><span class="lbl">Email</span><span class="val">'+cp("mail",o.email)+'</span></div>':'')+
       '<div class="row"><span class="lbl">Dirección</span><span class="val">'+cp("dir",dirStr)+'</span></div>'+
       prods+
-      '<div class="money"><span class="total">'+fmt(o.total)+'</span>'+
-        '<span class="pill '+(pagado?'paid':'pend')+'">'+(pagado?'Pagado':esc(o.pago||'—'))+'</span></div>'+
+      cobrosBlock(o)+
+      '<div class="money" style="border-top:none;padding-top:2px"><span class="pill '+(pagado?'paid':'pend')+'">'+(pagado?'Pagado':esc(o.pago||'—'))+'</span></div>'+
       (o.pago_metodo?'<div class="meta-line">Pago: '+esc(o.pago_metodo)+'</div>':'')+
       (o.envio_metodo?'<div class="meta-line">Entrega: '+esc(o.envio_metodo)+'</div>':'')+
       (o.nota?'<div class="nota">'+esc(o.nota)+'</div>':'')+
