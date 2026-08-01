@@ -1811,4 +1811,21 @@ def get_my_items_basic(progress=None, acct="boun") -> dict:
             continue
         _say(f"Cargando… {min(i+20, len(item_ids))}/{len(item_ids)}")
 
+    # Rescate del SKU por variación (solo cuenta KAT): el multiget por lote NO
+    # devuelve seller_custom_field/attributes de las variaciones. Para las pubs
+    # que quedaron sin SKU, se consulta el ítem individual (GET completo sí trae
+    # las variaciones completas) y se re-extrae. Acotado a KAT para no frenar BOUN.
+    if acct == "kat":
+        faltan = [it for it in items if not (it.get("sku") or "").strip()]
+        _say(f"Leyendo SKU de {len(faltan)} publicaciones…")
+        for it in faltan:
+            try:
+                rr = s.get(f"{ML_API}/items/{it['item_id']}", timeout=15)
+                if rr.status_code == 200:
+                    sk = _sku_of(rr.json())
+                    if sk:
+                        it["sku"] = sk
+            except Exception:
+                continue
+
     return {"ok": True, "items": items}
