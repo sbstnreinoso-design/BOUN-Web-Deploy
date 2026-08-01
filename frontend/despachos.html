@@ -115,6 +115,10 @@
   .mbox label{display:block;font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin:10px 0 5px}
   .mbox input,.mbox select{width:100%;padding:11px 13px;border:1px solid var(--line);border-radius:10px;font-size:15px;background:#fff;color:var(--ink)}
   .mbox input:focus,.mbox select:focus{outline:none;border-color:var(--swim);box-shadow:0 0 0 3px rgba(45,198,255,.18)}
+  .m-detect{font-size:12px;border-radius:9px;padding:7px 10px;margin-top:10px;display:none}
+  .m-detect.reading{display:block;background:#eef6fd;color:#2b6ca3}
+  .m-detect.ok{display:block;background:#e2f6ec;color:var(--good);font-weight:650}
+  .m-detect.fail{display:block;background:#fdf0dc;color:#8a6d1f}
   .m-actions{display:flex;gap:9px;margin-top:18px}
   .m-actions .btn2{flex:1;border:none;border-radius:11px;padding:12px;font-size:14px;font-weight:750;cursor:pointer}
   .m-actions .go{background:var(--good);color:#fff}
@@ -200,6 +204,7 @@
       <option value="99 Minutos">99 Minutos</option>
       <option value="Otra">Otra</option>
     </select>
+    <div class="m-detect" id="mDetect"></div>
     <div class="m-actions">
       <button class="btn2 no" onclick="cancelarModal()">Cancelar</button>
       <button class="btn2 go" id="mGo" onclick="confirmarDespacho()">✓ Despachar y notificar</button>
@@ -283,6 +288,83 @@ function marcar(numero, tienda, despachado, btn, oid){
 
 let MODAL_CTX = null; // {numero,tienda,btn,oid,foto}
 
+// ── Auto-lectura de la guía (código de barras + OCR) ────────────
+let _OCR_LOADING = null;
+function loadOCR(){
+  // Tesseract.js (OCR) se carga solo la primera vez que se necesita.
+  if(window.Tesseract) return Promise.resolve();
+  if(_OCR_LOADING) return _OCR_LOADING;
+  _OCR_LOADING = new Promise((res, rej)=>{
+    const s = document.createElement("script");
+    s.src = "https://cdnjs.cloudflare.com/ajax/libs/tesseract.js/5.1.1/tesseract.min.js";
+    s.onload = ()=>res(); s.onerror = ()=>rej(new Error("cdn"));
+    document.head.appendChild(s);
+  });
+  return _OCR_LOADING;
+}
+
+async function leerBarcode(bitmap){
+  // El código de barras de la etiqueta trae el número EXACTO de la guía.
+  if(!("BarcodeDetector" in window)) return "";
+  try{
+    const det = new BarcodeDetector({formats:["code_128","code_39","itf","ean_13","codabar"]});
+    const codes = await det.detect(bitmap);
+    const nums = codes.map(c=>String(c.rawValue||"").replace(/\D/g,""))
+                      .filter(n=>n.length>=8 && n.length<=18)
+                      .sort((a,b)=>b.length-a.length);
+    return nums[0]||"";
+  }catch(e){ return ""; }
+}
+
+function parseGuiaTexto(texto){
+  const T = (texto||"").toUpperCase();
+  const CARRIERS = [
+    [/INTER\s*RAPID/, "Interrapidísimo"],
+    [/SERVIENTREGA/, "Servientrega"],
+    [/COORDINADORA/, "Coordinadora"],
+    [/DEPRISA/, "Deprisa"],
+    [/99\s*MIN/, "99 Minutos"],
+    [/ENV[IÍ]A/, "Envía"],
+    [/TCC/, "TCC"],
+  ];
+  let transp = "";
+  for(const [re, name] of CARRIERS){ if(re.test(T)){ transp = name; break; } }
+  // Número: preferir el que aparece tras la palabra GUIA; si no, el más largo.
+  let num = "";
+  const cerca = T.match(/GU[IÍ]A[^0-9]{0,25}(\d[\d\s\-\.]{5,}\d)/);
+  if(cerca) num = cerca[1].replace(/\D/g,"");
+  if(!num || num.length<8){
+    const runs = (T.match(/\d[\d\s\-\.]{6,}\d/g)||[]).map(s=>s.replace(/\D/g,""))
+      .filter(n=>n.length>=8 && n.length<=16)
+      .filter(n=>!(n.length===10 && n[0]==="3"));  // evitar celulares
+    runs.sort((a,b)=>b.length-a.length);
+    num = runs[0]||num||"";
+  }
+  return {num, transp};
+}
+
+async function analizarGuia(file, foto){
+  // 1) Barcode (exacto) sobre la imagen original; 2) OCR para transportadora
+  // y número de respaldo. Nunca bloquea: si falla, se digita a mano.
+  const out = {num:"", transp:""};
+  let bitmap = null;
+  try{ bitmap = await createImageBitmap(file); }catch(e){
+    try{ const im=new Image(); im.src=foto; await im.decode(); bitmap=im; }catch(e2){}
+  }
+  if(bitmap){ out.num = await leerBarcode(bitmap); }
+  try{
+    await Promise.race([loadOCR(), new Promise((_,rj)=>setTimeout(rj, 6000))]);
+    const ocr = await Promise.race([
+      Tesseract.recognize(foto, "spa+eng"),
+      new Promise((_,rj)=>setTimeout(()=>rj(new Error("timeout")), 20000))
+    ]);
+    const p = parseGuiaTexto(ocr && ocr.data && ocr.data.text || "");
+    if(!out.num) out.num = p.num;
+    out.transp = p.transp;
+  }catch(e){ /* sin OCR: queda el barcode o manual */ }
+  return out;
+}
+
 document.getElementById("guiaFile").addEventListener("change", async function(){
   const f = this.files && this.files[0];
   if(!f || !PENDING_MARK){ PENDING_MARK=null; return; }
@@ -295,8 +377,24 @@ document.getElementById("guiaFile").addEventListener("change", async function(){
     document.getElementById("mNum").value = "";
     document.getElementById("mSub").textContent = "Pedido "+ctx.numero+" · la guía quedará como comprobante y el cliente será notificado por Shopify con su número de rastreo.";
     const go = document.getElementById("mGo"); go.disabled=false; go.textContent="✓ Despachar y notificar";
+    const det = document.getElementById("mDetect");
+    det.className = "m-detect reading"; det.textContent = "🔎 Leyendo el número y la transportadora de la foto…";
     document.getElementById("guiaModal").classList.add("show");
-    setTimeout(()=>document.getElementById("mNum").focus(), 150);
+    const miCtx = MODAL_CTX;
+    analizarGuia(f, foto).then(r=>{
+      if(MODAL_CTX !== miCtx) return; // el modal cambió/cerró
+      const numEl = document.getElementById("mNum");
+      if(r.num && !numEl.value) numEl.value = r.num;
+      if(r.transp) document.getElementById("mTransp").value = r.transp;
+      if(r.num || r.transp){
+        det.className = "m-detect ok";
+        det.textContent = "✓ Leído de la foto"+(r.num?" · guía "+r.num:"")+(r.transp?" · "+r.transp:"")+" — verifica antes de confirmar.";
+      } else {
+        det.className = "m-detect fail";
+        det.textContent = "No pude leer la guía en la foto — escribe el número manualmente.";
+        numEl.focus();
+      }
+    }).catch(()=>{ det.className="m-detect fail"; det.textContent="No pude leer la guía — escribe el número manualmente."; });
   }catch(e){
     toast("No se pudo leer la foto");
     const btn = ctx.btn; if(btn){ btn.disabled=false; btn.textContent="✓ Marcar despachado"; }
