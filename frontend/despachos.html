@@ -106,6 +106,20 @@
   .viewer.show{display:flex}
   .viewer img{max-width:96vw;max-height:92vh;border-radius:14px;box-shadow:0 20px 60px rgba(0,0,0,.5)}
   .viewer .close{position:absolute;top:16px;right:18px;background:rgba(255,255,255,.14);border:none;color:#fff;font-size:26px;width:44px;height:44px;border-radius:12px;cursor:pointer}
+  .modal{position:fixed;inset:0;background:rgba(15,25,38,.55);display:none;align-items:center;justify-content:center;z-index:150;padding:18px}
+  .modal.show{display:flex}
+  .mbox{background:var(--card);border-radius:18px;box-shadow:0 24px 70px rgba(0,0,0,.3);max-width:420px;width:100%;padding:22px}
+  .mbox h3{margin:0 0 4px;font-size:17px;letter-spacing:-.2px}
+  .mbox .m-sub{color:var(--muted);font-size:12.5px;margin-bottom:14px}
+  .mbox .prev{width:100%;max-height:170px;object-fit:cover;border-radius:12px;border:1px solid var(--line);margin-bottom:14px}
+  .mbox label{display:block;font-size:11.5px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);margin:10px 0 5px}
+  .mbox input,.mbox select{width:100%;padding:11px 13px;border:1px solid var(--line);border-radius:10px;font-size:15px;background:#fff;color:var(--ink)}
+  .mbox input:focus,.mbox select:focus{outline:none;border-color:var(--swim);box-shadow:0 0 0 3px rgba(45,198,255,.18)}
+  .m-actions{display:flex;gap:9px;margin-top:18px}
+  .m-actions .btn2{flex:1;border:none;border-radius:11px;padding:12px;font-size:14px;font-weight:750;cursor:pointer}
+  .m-actions .go{background:var(--good);color:#fff}
+  .m-actions .go:disabled{opacity:.55;cursor:wait}
+  .m-actions .no{background:var(--shade);color:var(--muted);border:1px solid var(--line)}
   .empty{text-align:center;padding:70px 20px;color:var(--muted)}
   .empty .big{font-size:44px;margin-bottom:10px}
   .empty h2{color:var(--ink);font-weight:750;font-size:19px;margin:0 0 5px}
@@ -168,6 +182,30 @@
 <div class="toast" id="toast"></div>
 <input type="file" id="guiaFile" accept="image/*" capture="environment" style="display:none">
 <div class="viewer" id="viewer" onclick="this.classList.remove('show')"><button class="close">✕</button><img id="viewerImg" src="" alt="Guía de envío"></div>
+<div class="modal" id="guiaModal">
+  <div class="mbox">
+    <h3>Confirmar despacho</h3>
+    <div class="m-sub" id="mSub">La guía quedará como comprobante y el cliente será notificado por Shopify.</div>
+    <img class="prev" id="mPrev" src="" alt="Guía">
+    <label>Número de guía (para que el cliente rastree)</label>
+    <input id="mNum" type="text" inputmode="numeric" autocomplete="off" placeholder="Ej. 240012345678">
+    <label>Transportadora</label>
+    <select id="mTransp">
+      <option value="Interrapidísimo">Interrapidísimo</option>
+      <option value="Servientrega">Servientrega</option>
+      <option value="Coordinadora">Coordinadora</option>
+      <option value="Envía">Envía</option>
+      <option value="TCC">TCC</option>
+      <option value="Deprisa">Deprisa</option>
+      <option value="99 Minutos">99 Minutos</option>
+      <option value="Otra">Otra</option>
+    </select>
+    <div class="m-actions">
+      <button class="btn2 no" onclick="cancelarModal()">Cancelar</button>
+      <button class="btn2 go" id="mGo" onclick="confirmarDespacho()">✓ Despachar y notificar</button>
+    </div>
+  </div>
+</div>
 
 <script>
 // ── Config / auth ───────────────────────────────────────────────
@@ -243,19 +281,49 @@ function marcar(numero, tienda, despachado, btn, oid){
   enviarMarca(numero, tienda, false, "", btn, oid);
 }
 
+let MODAL_CTX = null; // {numero,tienda,btn,oid,foto}
+
 document.getElementById("guiaFile").addEventListener("change", async function(){
   const f = this.files && this.files[0];
   if(!f || !PENDING_MARK){ PENDING_MARK=null; return; }
-  const {numero, tienda, btn, oid} = PENDING_MARK; PENDING_MARK = null;
-  if(btn){ btn.disabled = true; btn.textContent = "Subiendo guía…"; }
+  const ctx = PENDING_MARK; PENDING_MARK = null;
   try{
     const foto = await comprimir(f);
-    await enviarMarca(numero, tienda, true, foto, btn, oid);
+    MODAL_CTX = {...ctx, foto};
+    // Modal: número de guía + transportadora antes de confirmar
+    document.getElementById("mPrev").src = foto;
+    document.getElementById("mNum").value = "";
+    document.getElementById("mSub").textContent = "Pedido "+ctx.numero+" · la guía quedará como comprobante y el cliente será notificado por Shopify con su número de rastreo.";
+    const go = document.getElementById("mGo"); go.disabled=false; go.textContent="✓ Despachar y notificar";
+    document.getElementById("guiaModal").classList.add("show");
+    setTimeout(()=>document.getElementById("mNum").focus(), 150);
   }catch(e){
     toast("No se pudo leer la foto");
-    if(btn){ btn.disabled=false; btn.textContent="✓ Marcar despachado"; }
+    const btn = ctx.btn; if(btn){ btn.disabled=false; btn.textContent="✓ Marcar despachado"; }
   }
 });
+
+function cancelarModal(){
+  document.getElementById("guiaModal").classList.remove("show");
+  const btn = MODAL_CTX && MODAL_CTX.btn; MODAL_CTX = null;
+  if(btn){ btn.disabled=false; btn.textContent="✓ Marcar despachado"; }
+}
+
+async function confirmarDespacho(){
+  if(!MODAL_CTX) return;
+  const num = document.getElementById("mNum").value.trim();
+  if(!num){
+    if(!confirm("¿Despachar SIN número de guía? El cliente no podrá rastrear.")) {
+      document.getElementById("mNum").focus(); return;
+    }
+  }
+  const transp = document.getElementById("mTransp").value;
+  const {numero, tienda, btn, oid, foto} = MODAL_CTX;
+  const go = document.getElementById("mGo"); go.disabled = true; go.textContent = "Enviando…";
+  await enviarMarca(numero, tienda, true, foto, btn, oid, num, transp);
+  document.getElementById("guiaModal").classList.remove("show");
+  MODAL_CTX = null;
+}
 
 function comprimir(file){
   // Reduce la foto a máx 1280px JPEG (~150-350KB) para subirla rápido.
@@ -276,11 +344,12 @@ function comprimir(file){
   });
 }
 
-async function enviarMarca(numero, tienda, despachado, foto, btn, oid){
+async function enviarMarca(numero, tienda, despachado, foto, btn, oid, guiaNum, transp){
   try{
     const r = await fetch("/api/despachos/marcar?t="+encodeURIComponent(TOKEN),{
       method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({numero, tienda, despachado, foto: foto||"", order_id: String(oid||"")})
+      body: JSON.stringify({numero, tienda, despachado, foto: foto||"", order_id: String(oid||""),
+        guia_numero: guiaNum||"", transportadora: transp||""})
     });
     if(!r.ok){
       const e = await r.json().catch(()=>({}));
@@ -392,7 +461,7 @@ function card(o){
     (done && (DATA.marcas[markKey(o)]||{}).guia
       ? '<div style="padding:0 15px"><div class="guia" onclick=\'verGuia('+JSON.stringify(o.numero)+','+JSON.stringify(o.tienda)+')\'>'+
         '<img src="/api/despachos/guia?numero='+encodeURIComponent(o.numero)+'&tienda='+encodeURIComponent(o.tienda)+'&t='+encodeURIComponent(TOKEN)+'" loading="lazy" onerror="this.style.display=\'none\'">'+
-        '<div><div class="g-txt">📋 Guía de envío adjunta</div><div class="g-sub">'+
+        '<div><div class="g-txt">📋 '+((DATA.marcas[markKey(o)]||{}).guia_num ? 'Guía '+esc(DATA.marcas[markKey(o)].guia_num)+((DATA.marcas[markKey(o)]||{}).transp?' · '+esc(DATA.marcas[markKey(o)].transp):'') : 'Guía de envío adjunta')+'</div><div class="g-sub">'+
         ((DATA.marcas[markKey(o)]||{}).fulfill ? 'Cliente notificado por Shopify ✓' : 'Toca para ver el comprobante')+
         '</div></div></div></div>'
       : '')+

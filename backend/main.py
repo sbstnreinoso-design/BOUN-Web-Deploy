@@ -4894,10 +4894,45 @@ def _despachos_snapshot(days=3):
     return data
 
 
-def _shopify_fulfill_order(shop, tok, order_id):
+_TRACKING_URLS = {
+    # Transportadoras Colombia → URL de rastreo con la guía. Shopify pone el
+    # link en el correo de envío del cliente.
+    "interrapidisimo": "https://interrapidisimo.com/sigue-tu-envio/?guia={n}",
+    "servientrega": ("https://mobile.servientrega.com/WebSitePortal/"
+                     "RastreoEnvioDetalle.aspx?Guia={n}"),
+    "coordinadora": ("https://coordinadora.com/rastreo/"
+                     "rastreo-de-guia/detalle-de-rastreo-de-guia/?guia={n}"),
+    "envia": "https://envia.co/#rastrear|{n}",
+    "tcc": "https://tcc.com.co/rastrear-envio/?guia={n}",
+    "deprisa": "https://www.deprisa.com/Tracking/?track={n}",
+    "99minutos": "https://tracking.99minutos.com/search/{n}",
+}
+
+
+def _tracking_info(guia_numero, transportadora):
+    """Arma el tracking_info del fulfillment (número + empresa + URL de
+    rastreo si la transportadora es conocida)."""
+    num = (guia_numero or "").strip()
+    if not num:
+        return None
+    comp = (transportadora or "").strip()
+    info = {"number": num}
+    if comp:
+        info["company"] = comp
+    key = (comp.lower().replace(" ", "").replace("í", "i")
+           .replace("é", "e").replace("á", "a"))
+    for k, tpl in _TRACKING_URLS.items():
+        if k in key:
+            info["url"] = tpl.format(n=num)
+            break
+    return info
+
+
+def _shopify_fulfill_order(shop, tok, order_id, tracking=None):
     """Marca una orden Shopify como ENVIADA (fulfilled) notificando al
-    cliente. Flujo moderno: fulfillment_orders abiertas → POST fulfillment
-    con notify_customer=true. Devuelve (ok, detalle)."""
+    cliente, con número de guía/transportadora si se pasan (tracking =
+    dict de _tracking_info). Flujo moderno: fulfillment_orders abiertas →
+    POST fulfillment con notify_customer=true. Devuelve (ok, detalle)."""
     import requests as _rq
     hd = {"X-Shopify-Access-Token": tok, "Content-Type": "application/json"}
     base = "https://%s/admin/api/2025-01" % shop
@@ -4917,6 +4952,8 @@ def _shopify_fulfill_order(shop, tok, order_id):
                 "line_items_by_fulfillment_order": [
                     {"fulfillment_order_id": fo.get("id")}],
                 "notify_customer": True}}
+            if tracking:
+                body["fulfillment"]["tracking_info"] = tracking
             r2 = _rq.post("%s/fulfillments.json" % base, json=body,
                           headers=hd, timeout=20)
             if r2.status_code in (200, 201):
@@ -4947,6 +4984,8 @@ class DespachoMarcaIn(BaseModel):
     despachado: bool = True
     foto: Optional[str] = ""  # dataURL JPEG de la guía de envío (comprobante)
     order_id: Optional[str] = ""  # id Shopify → fulfill + notificar cliente
+    guia_numero: Optional[str] = ""  # nº de guía → tracking en Shopify
+    transportadora: Optional[str] = ""  # empresa de mensajería del envío
 
 
 @app.post("/api/despachos/marcar")
@@ -4986,17 +5025,22 @@ def despachos_marcar(body: DespachoMarcaIn, t: str = "",
                                 status_code=400)
         marcas[key] = {"despachado": True, "ts": now.isoformat(),
                        "guia": tiene_guia}
+        if (body.guia_numero or "").strip():
+            marcas[key]["guia_num"] = (body.guia_numero or "").strip()[:40]
+        if (body.transportadora or "").strip():
+            marcas[key]["transp"] = (body.transportadora or "").strip()[:40]
         # Con la guía adjunta, marcar ENVIADA en Shopify → el cliente recibe
         # la notificación de envío de la tienda (la guía es el disparador).
         fulfill_ok, fulfill_msg = None, ""
         shop_key = {"BOUN": "shopify_boun", "KAT": "shopify_kat"}.get(
             (body.tienda or "").upper())
+        tracking = _tracking_info(body.guia_numero, body.transportadora)
         if body.order_id and shop_key:
             shop = _SHOPIFY_SHOPS[shop_key]
             tok = db.get_setting("shopify_token::%s" % shop, "")
             if tok:
                 fulfill_ok, fulfill_msg = _shopify_fulfill_order(
-                    shop, tok, body.order_id)
+                    shop, tok, body.order_id, tracking)
             else:
                 fulfill_ok, fulfill_msg = False, "sin token de tienda"
         marcas[key]["fulfill"] = bool(fulfill_ok)
