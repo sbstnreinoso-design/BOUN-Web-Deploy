@@ -1754,10 +1754,30 @@ def get_my_items_basic(progress=None, acct="boun") -> dict:
     if not item_ids:
         return {"ok": False, "error": "No se encontraron publicaciones."}
 
+    def _sku_of(b):
+        # SKU del vendedor: seller_custom_field (ítem) → attr SELLER_SKU (ítem) →
+        # lo mismo a nivel de VARIACIÓN. Primer no-vacío gana. (Las pubs de KAT
+        # traen el SKU como SELLER_SKU / por variación, no en seller_custom_field.)
+        s = (b.get("seller_custom_field") or "").strip()
+        if s:
+            return s
+        for a in (b.get("attributes") or []):
+            if a.get("id") == "SELLER_SKU" and (a.get("value_name") or "").strip():
+                return a["value_name"].strip()
+        for v in (b.get("variations") or []):
+            s = (v.get("seller_custom_field") or "").strip()
+            if s:
+                return s
+            for a in (v.get("attributes") or []):
+                if a.get("id") == "SELLER_SKU" and (a.get("value_name") or "").strip():
+                    return a["value_name"].strip()
+        return ""
+
     items = []
     attrs = ("id,title,price,status,thumbnail,secure_thumbnail,"
              "sold_quantity,available_quantity,shipping,"
-             "user_product_id,inventory_id,catalog_listing,seller_custom_field")
+             "user_product_id,inventory_id,catalog_listing,seller_custom_field,"
+             "attributes,variations")
     for i in range(0, len(item_ids), 20):
         batch = item_ids[i:i + 20]
         try:
@@ -1773,8 +1793,9 @@ def get_my_items_basic(progress=None, acct="boun") -> dict:
                             "price":   b.get("price", 0) or 0,
                             "status":  b.get("status", "") or "",
                             # SKU declarado por el vendedor en ML (para verificar
-                            # el mapeo, no solo su existencia).
-                            "sku":     b.get("seller_custom_field", "") or "",
+                            # el mapeo, no solo su existencia). Lee seller_custom_field,
+                            # y si está vacío, SELLER_SKU / SKU de variación.
+                            "sku":     _sku_of(b),
                             "thumbnail": (b.get("secure_thumbnail")
                                           or b.get("thumbnail", "")
                                           or "").replace("http://", "https://"),
