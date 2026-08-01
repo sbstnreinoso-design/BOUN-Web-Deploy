@@ -1,1 +1,1 @@
-deploy despachos v4.1 2026-08-01 18:13:11
+deploy despachos v4.2 aviso confidencial 2026-08-01 18:22:11

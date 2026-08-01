@@ -130,6 +130,8 @@
   .m-actions .go{background:var(--good);color:#fff}
   .m-actions .go:disabled{opacity:.55;cursor:wait}
   .m-actions .no{background:var(--shade);color:var(--muted);border:1px solid var(--line)}
+  .confid{display:flex;align-items:center;gap:8px;background:#fdf6e3;border:1px solid #ecdcae;color:#7a621d;border-radius:11px;padding:9px 13px;font-size:12.5px;margin:0 0 14px;line-height:1.4}
+  .confid b{font-weight:750}
   .empty{text-align:center;padding:70px 20px;color:var(--muted)}
   .empty .big{font-size:44px;margin-bottom:10px}
   .empty h2{color:var(--ink);font-weight:750;font-size:19px;margin:0 0 5px}
@@ -185,6 +187,8 @@
         <div class="chip done" id="chipHide" onclick="toggleHide()">Ocultar despachados</div>
       </div>
     </div>
+
+    <div class="confid">🔒 <span><b>Enlace confidencial del equipo BOUN.</b> Contiene datos de clientes — no lo compartas ni lo publiques fuera del equipo.</span></div>
 
     <div class="grid" id="grid"></div>
   </div>
