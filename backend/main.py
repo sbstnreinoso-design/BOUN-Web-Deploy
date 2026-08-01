@@ -3364,8 +3364,11 @@ async def webhook_ml(request: Request):
 # Admin API (equivale a hacerlo a mano). Idempotente por id de transacción.
 
 def _wompi_secret() -> str:
+    # .strip() OBLIGATORIO: el valor pegado en Render traía un caracter
+    # invisible (45 chars vs 44 reales del secreto Wompi) y tumbó la firma
+    # de TODOS los eventos con 401 (ventas de Angela y Laura, jul-2026).
     return (db.get_setting("wompi_events_secret", "")
-            or os.environ.get("WOMPI_EVENTS_SECRET", ""))
+            or os.environ.get("WOMPI_EVENTS_SECRET", "")).strip()
 
 
 def _wompi_verify(body: dict, secret: str) -> bool:
