@@ -3521,6 +3521,35 @@ async def webhook_wompi(request: Request):
     except Exception:
         return Response(status_code=400)
     if not _wompi_verify(body, _wompi_secret()):
+        # ⚠️ FIRMA INVÁLIDA — NO morir en silencio (lección 31-jul-2026: el
+        # secreto de eventos quedó desactualizado en Render y 3 eventos REALES
+        # del pago de Laura Hoyos se perdieron con 401 sin dejar rastro).
+        # Si el cuerpo PARECE un evento real de Wompi (transacción APROBADA
+        # con id), dejar alerta 🔴 en Cerebro + setting wompi_error para que
+        # Sebastián cree el pedido a mano y corrija WOMPI_EVENTS_SECRET.
+        # Los 401 de escáneres/basura (sin transacción) siguen silenciosos.
+        try:
+            _tx = (body.get("data") or {}).get("transaction") or {}
+            _st = str(_tx.get("status") or "").upper()
+            if (body.get("event") == "transaction.updated"
+                    and _st == "APPROVED" and _tx.get("id")):
+                _txid = str(_tx.get("id"))
+                _amt = round(float(_tx.get("amount_in_cents") or 0) / 100.0, 2)
+                _em = _tx.get("customer_email") or ""
+                _rf = str(_tx.get("reference") or "")
+                db.set_setting("wompi_error::%s" % _txid,
+                               json.dumps({"email": _em, "amount": _amt,
+                                           "ref": _rf,
+                                           "err": "firma invalida (401): "
+                                                  "WOMPI_EVENTS_SECRET no "
+                                                  "coincide con el secreto "
+                                                  "de Eventos de Wompi"}))
+                _wompi_alerta(_txid, _em, _amt, _rf, None,
+                              "firma inválida (401) — revisar que el secreto "
+                              "de EVENTOS de Wompi esté idéntico en Render "
+                              "(WOMPI_EVENTS_SECRET) y redeployar")
+        except Exception:
+            pass
         return Response(status_code=401)
     tx = (body.get("data") or {}).get("transaction") or {}
     txid = str(tx.get("id") or "")
