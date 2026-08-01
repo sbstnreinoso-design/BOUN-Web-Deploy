@@ -4677,36 +4677,12 @@ def mapeo_scan(key: str = "", authorization: Optional[str] = Header(None)):
             "reconciliacion": audit["reconciliacion"], "channels": audit["channels"]}
 
 
-@app.get("/api/shopify/ordenes-dia")
-def shopify_ordenes_dia(date: str = "", key: str = "", pendientes: str = "",
-                        authorization: Optional[str] = Header(None)):
-    """Órdenes Shopify de un día (BOUN + KAT) con detalle de envío para que el
-    equipo pueda despachar. Auth: ?key=BOUN_EXPORT_TOKEN (planificador sin
-    sesión) o sesión admin. `date`=YYYY-MM-DD en zona Colombia; por defecto
-    AYER. La consume la skill diaria 'reporte-ventas-shopify'.
-    `pendientes=1` → excluye las órdenes YA ENVIADAS (fulfillment_status
-    'fulfilled') para que un pedido despachado no se vuelva a listar en el
-    reporte de despacho (evita duplicados entre cortes)."""
-    token = os.environ.get("BOUN_EXPORT_TOKEN", "")
-    authed = bool(token and key == token)
-    if not authed:
-        try:
-            u = _current_user(authorization)
-            authed = bool(u and u.get("role") == "admin")
-        except Exception:
-            authed = False
-    if not authed:
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    skip_enviados = str(pendientes).strip().lower() in ("1", "true", "yes", "si", "sí")
+def _ordenes_build(d, skip_enviados):
+    """Construye el payload de órdenes Shopify (BOUN+KAT) del día `d`
+    (datetime.date). Salta canceladas y, si skip_enviados, las ya
+    despachadas. Reutilizado por /api/shopify/ordenes-dia y /api/despachos."""
     import datetime as _dt
     co = _dt.timezone(_dt.timedelta(hours=-5))
-    try:
-        if date:
-            d = _dt.date.fromisoformat(date[:10])
-        else:
-            d = (_dt.datetime.now(co) - _dt.timedelta(days=1)).date()
-    except Exception:
-        return JSONResponse({"error": "fecha inválida"}, status_code=400)
     since = _dt.datetime.combine(d, _dt.time(0, 0, 0), co).isoformat()
     until = _dt.datetime.combine(d, _dt.time(23, 59, 59), co).isoformat()
     fields = ("id,name,created_at,total_price,subtotal_price,total_tax,"
@@ -4775,6 +4751,7 @@ def shopify_ordenes_dia(date: str = "", key: str = "", pendientes: str = "",
             shls = o.get("shipping_lines") or []
             envio_metodo = (shls[0].get("title") if shls else "") or ""
             info["ordenes"].append({
+                "id": o.get("id"),
                 "numero": o.get("name") or "",
                 "creado": o.get("created_at") or "",
                 "cliente": nombre,
@@ -4806,6 +4783,269 @@ def shopify_ordenes_dia(date: str = "", key: str = "", pendientes: str = "",
     out["resumen"] = {"ordenes": tot_ord, "unidades": tot_uni,
                       "ingresos": tot_ing}
     return out
+
+@app.get("/api/shopify/ordenes-dia")
+def shopify_ordenes_dia(date: str = "", key: str = "", pendientes: str = "",
+                        authorization: Optional[str] = Header(None)):
+    """Órdenes Shopify de un día (BOUN + KAT) con detalle de envío para que el
+    equipo pueda despachar. Auth: ?key=BOUN_EXPORT_TOKEN (planificador sin
+    sesión) o sesión admin. `date`=YYYY-MM-DD en zona Colombia; por defecto
+    AYER. La consume la skill diaria 'reporte-ventas-shopify'.
+    `pendientes=1` → excluye las órdenes YA ENVIADAS (fulfillment_status
+    'fulfilled') para que un pedido despachado no se vuelva a listar en el
+    reporte de despacho (evita duplicados entre cortes)."""
+    token = os.environ.get("BOUN_EXPORT_TOKEN", "")
+    authed = bool(token and key == token)
+    if not authed:
+        try:
+            u = _current_user(authorization)
+            authed = bool(u and u.get("role") == "admin")
+        except Exception:
+            authed = False
+    if not authed:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    skip_enviados = str(pendientes).strip().lower() in ("1", "true", "yes", "si", "sí")
+    import datetime as _dt
+    co = _dt.timezone(_dt.timedelta(hours=-5))
+    try:
+        if date:
+            d = _dt.date.fromisoformat(date[:10])
+        else:
+            d = (_dt.datetime.now(co) - _dt.timedelta(days=1)).date()
+    except Exception:
+        return JSONResponse({"error": "fecha inválida"}, status_code=400)
+    return _ordenes_build(d, skip_enviados)
+
+
+# ── Tablero de DESPACHOS (compartible al equipo) ─────────────────────────────
+# Token de SOLO LECTURA propio (distinto del BOUN_EXPORT_TOKEN maestro). Se
+# guarda como setting 'despachos_token'; solo permite ver el tablero y marcar
+# pedidos como despachados — nunca escribe inventario ni toca otros canales.
+_DESPACHOS_CACHE = {"ts": 0.0, "data": None}
+_DESPACHOS_TTL = 45  # seg: aunque varios del equipo tengan el tablero abierto,
+# Shopify se consulta a lo sumo 1 vez cada 45s (auto-refresh liviano).
+
+
+def _despachos_token():
+    return (os.environ.get("BOUN_DESPACHOS_TOKEN", "")
+            or db.get_setting("despachos_token", ""))
+
+
+def _despachos_authed(t, authorization=None):
+    want = _despachos_token()
+    if want and t and t == want:
+        return True
+    try:
+        u = _current_user(authorization)
+        return bool(u and u.get("role") == "admin")
+    except Exception:
+        return False
+
+
+def _despachos_marcas():
+    try:
+        return json.loads(db.get_setting("despachos_marcas", "{}") or "{}")
+    except Exception:
+        return {}
+
+
+def _despachos_snapshot(days=3):
+    """Lista plana de pedidos SIN despachar (unfulfilled) de los últimos
+    `days` días, BOUN+KAT, deduplicada por (tienda,numero). Cacheada 45s
+    para no golpear Shopify en cada refresco de cada miembro del equipo."""
+    now = time.time()
+    c = _DESPACHOS_CACHE
+    if c["data"] is not None and (now - c["ts"]) < _DESPACHOS_TTL:
+        return c["data"]
+    import datetime as _dt
+    co = _dt.timezone(_dt.timedelta(hours=-5))
+    hoy = _dt.datetime.now(co).date()
+    vistos = set()
+    ordenes = []
+    tot_uni = 0
+    tot_ing = 0.0
+    for i in range(days):
+        d = hoy - _dt.timedelta(days=i)
+        try:
+            # skip_enviados=False: los ya enviados TAMBIÉN se listan — el
+            # tablero los muestra como "despachados" con su guía adjunta.
+            payload = _ordenes_build(d, False)
+        except Exception:
+            continue
+        for marca, info in (payload.get("tiendas") or {}).items():
+            for o in (info.get("ordenes") or []):
+                key = (marca, o.get("numero"))
+                if key in vistos:
+                    continue
+                vistos.add(key)
+                o = dict(o)
+                o["tienda"] = marca
+                ordenes.append(o)
+                tot_uni += int(o.get("unidades") or 0)
+                try:
+                    tot_ing += float(o.get("total") or 0)
+                except Exception:
+                    pass
+    data = {"ok": True, "ordenes": ordenes,
+            "resumen": {"ordenes": len(ordenes), "unidades": tot_uni,
+                        "ingresos": tot_ing}}
+    c["ts"] = now
+    c["data"] = data
+    return data
+
+
+def _shopify_fulfill_order(shop, tok, order_id):
+    """Marca una orden Shopify como ENVIADA (fulfilled) notificando al
+    cliente. Flujo moderno: fulfillment_orders abiertas → POST fulfillment
+    con notify_customer=true. Devuelve (ok, detalle)."""
+    import requests as _rq
+    hd = {"X-Shopify-Access-Token": tok, "Content-Type": "application/json"}
+    base = "https://%s/admin/api/2025-01" % shop
+    try:
+        r = _rq.get("%s/orders/%s/fulfillment_orders.json" % (base, order_id),
+                    headers=hd, timeout=20)
+        if r.status_code != 200:
+            return False, "fulfillment_orders HTTP %d" % r.status_code
+        fos = [fo for fo in (r.json().get("fulfillment_orders") or [])
+               if fo.get("status") in ("open", "in_progress", "scheduled")]
+        if not fos:
+            return False, "sin fulfillment_orders abiertas (¿ya enviada?)"
+        oks = 0
+        errs = []
+        for fo in fos:
+            body = {"fulfillment": {
+                "line_items_by_fulfillment_order": [
+                    {"fulfillment_order_id": fo.get("id")}],
+                "notify_customer": True}}
+            r2 = _rq.post("%s/fulfillments.json" % base, json=body,
+                          headers=hd, timeout=20)
+            if r2.status_code in (200, 201):
+                oks += 1
+            else:
+                errs.append("HTTP %d %s" % (r2.status_code, r2.text[:120]))
+        if oks and not errs:
+            return True, "fulfilled (%d)" % oks
+        if oks:
+            return True, "parcial: %s" % "; ".join(errs)[:160]
+        return False, "; ".join(errs)[:200] or "sin respuesta"
+    except Exception as e:
+        return False, str(e)[:160]
+
+
+@app.get("/api/despachos/data")
+def despachos_data(t: str = "", authorization: Optional[str] = Header(None)):
+    if not _despachos_authed(t, authorization):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    snap = dict(_despachos_snapshot())
+    snap["marcas"] = _despachos_marcas()
+    return snap
+
+
+class DespachoMarcaIn(BaseModel):
+    numero: str
+    tienda: str = ""
+    despachado: bool = True
+    foto: Optional[str] = ""  # dataURL JPEG de la guía de envío (comprobante)
+    order_id: Optional[str] = ""  # id Shopify → fulfill + notificar cliente
+
+
+@app.post("/api/despachos/marcar")
+def despachos_marcar(body: DespachoMarcaIn, t: str = "",
+                     authorization: Optional[str] = Header(None)):
+    if not _despachos_authed(t, authorization):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    import datetime as _dt
+    co = _dt.timezone(_dt.timedelta(hours=-5))
+    now = _dt.datetime.now(co)
+    marcas = _despachos_marcas()
+    # Poda: descartar marcas de más de 21 días para que el setting no crezca.
+    for k in list(marcas.keys()):
+        try:
+            ts = _dt.datetime.fromisoformat(marcas[k].get("ts"))
+            if (now - ts).days > 21:
+                marcas.pop(k, None)
+                db.set_setting("despachos_guia::" + k, "")
+        except Exception:
+            pass
+    key = "%s|%s" % (body.tienda or "", body.numero or "")
+    gkey = "despachos_guia::" + key
+    if body.despachado:
+        foto = (body.foto or "").strip()
+        tiene_guia = bool(foto) or bool(marcas.get(key, {}).get("guia"))
+        if foto:
+            if len(foto) > 2_800_000:  # ~2.8MB dataURL: el front comprime a menos
+                return JSONResponse({"error": "foto muy grande"}, status_code=413)
+            if not foto.startswith("data:image/"):
+                return JSONResponse({"error": "formato de foto inválido"},
+                                    status_code=400)
+            db.set_setting(gkey, foto)
+        elif not tiene_guia:
+            # La foto de la guía ES el comprobante del despacho: sin ella no
+            # se marca (el equipo la toma con el celular al momento de enviar).
+            return JSONResponse({"error": "falta la foto de la guía"},
+                                status_code=400)
+        marcas[key] = {"despachado": True, "ts": now.isoformat(),
+                       "guia": tiene_guia}
+        # Con la guía adjunta, marcar ENVIADA en Shopify → el cliente recibe
+        # la notificación de envío de la tienda (la guía es el disparador).
+        fulfill_ok, fulfill_msg = None, ""
+        shop_key = {"BOUN": "shopify_boun", "KAT": "shopify_kat"}.get(
+            (body.tienda or "").upper())
+        if body.order_id and shop_key:
+            shop = _SHOPIFY_SHOPS[shop_key]
+            tok = db.get_setting("shopify_token::%s" % shop, "")
+            if tok:
+                fulfill_ok, fulfill_msg = _shopify_fulfill_order(
+                    shop, tok, body.order_id)
+            else:
+                fulfill_ok, fulfill_msg = False, "sin token de tienda"
+        marcas[key]["fulfill"] = bool(fulfill_ok)
+        if not fulfill_ok and fulfill_msg:
+            marcas[key]["fulfill_err"] = fulfill_msg
+        _DESPACHOS_CACHE["ts"] = 0.0  # refrescar: la orden ya salió en Shopify
+        db.set_setting("despachos_marcas", json.dumps(marcas))
+        return {"ok": True, "marcas": marcas,
+                "fulfill": fulfill_ok, "fulfill_msg": fulfill_msg}
+    marcas.pop(key, None)
+    db.set_setting(gkey, "")  # al reabrir, se descarta el comprobante
+    _DESPACHOS_CACHE["ts"] = 0.0
+    db.set_setting("despachos_marcas", json.dumps(marcas))
+    return {"ok": True, "marcas": marcas}
+
+
+@app.get("/api/despachos/guia")
+def despachos_guia(numero: str = "", tienda: str = "", t: str = "",
+                   authorization: Optional[str] = Header(None)):
+    """Devuelve la foto de la guía (comprobante) de un pedido despachado."""
+    if not _despachos_authed(t, authorization):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    key = "%s|%s" % (tienda or "", numero or "")
+    data = db.get_setting("despachos_guia::" + key, "")
+    if not data or not data.startswith("data:image/"):
+        return JSONResponse({"error": "sin guía"}, status_code=404)
+    try:
+        head, b64 = data.split(",", 1)
+        mime = head.split(":", 1)[1].split(";", 1)[0] or "image/jpeg"
+        return Response(content=base64.b64decode(b64), media_type=mime,
+                        headers={"Cache-Control": "private, max-age=300"})
+    except Exception:
+        return JSONResponse({"error": "guía corrupta"}, status_code=500)
+
+
+@app.get("/api/despachos/token")
+def despachos_token_get(user: dict = Depends(_admin)):
+    """Token actual del tablero (admin) para armar el enlace compartible."""
+    return {"token": _despachos_token(),
+            "from_env": bool(os.environ.get("BOUN_DESPACHOS_TOKEN", ""))}
+
+
+@app.post("/api/despachos/token")
+def despachos_token_rotate(user: dict = Depends(_admin)):
+    """Genera/rota el token del tablero (admin). Invalida enlaces viejos."""
+    tk = secrets.token_urlsafe(15)
+    db.set_setting("despachos_token", tk)
+    return {"token": tk}
+
 
 
 class MapeoAsociarIn(BaseModel):

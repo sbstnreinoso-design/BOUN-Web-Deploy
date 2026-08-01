@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>BOUN · Despachos del día</title>
+<link rel="icon" href="/favicon.ico">
+<style>
+  :root{
+    --navy:#1F3A5F; --swim:#2DC6FF; --ink:#23272E; --muted:#7A8794;
+    --line:#E4E9EF; --bg:#F4F7FA; --card:#FFFFFF; --shade:#F8FAFC;
+    --good:#1FA971; --warn:#E0A23C; --kat:#E68CA8;
+    --shadow:0 1px 3px rgba(31,58,95,.08),0 8px 24px rgba(31,58,95,.06);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Arial,sans-serif;background:var(--bg);color:var(--ink);font-size:14px;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 16px 90px}
+  a{color:inherit}
+
+  header.top{background:linear-gradient(120deg,var(--navy),#2b4f7d);color:#fff;border-radius:0 0 20px 20px;padding:22px 24px 20px;box-shadow:var(--shadow);margin-bottom:16px}
+  .brand{display:flex;align-items:center;gap:13px;flex-wrap:wrap}
+  .logo{width:44px;height:44px;border-radius:12px;background:var(--swim);display:flex;align-items:center;justify-content:center;font-weight:800;color:var(--navy);font-size:19px;letter-spacing:-1px}
+  h1{font-size:20px;margin:0;font-weight:750;letter-spacing:-.3px}
+  .sub{color:#cfe6f5;font-size:12.5px;margin-top:2px}
+  .hd-right{margin-left:auto;display:flex;align-items:center;gap:10px}
+  .refresh{background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.24);color:#fff;border-radius:10px;padding:9px 13px;font-size:13px;font-weight:600;cursor:pointer;display:inline-flex;gap:7px;align-items:center;transition:.15s}
+  .refresh:hover{background:rgba(255,255,255,.24)}
+  .refresh.spin svg{animation:sp .8s linear infinite}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  .updated{font-size:11.5px;color:#bcd6ea}
+
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:11px;margin:16px 0}
+  .stat{background:var(--card);border:1px solid var(--line);border-radius:13px;padding:13px 15px;box-shadow:var(--shadow)}
+  .stat .k{font-size:10.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);font-weight:700}
+  .stat .v{font-size:23px;font-weight:800;margin-top:2px;letter-spacing:-.5px}
+  .stat.p .v{color:var(--navy)} .stat.u .v{color:var(--swim)} .stat.d .v{color:var(--good)} .stat.i .v{color:var(--warn)}
+  .stat .v small{font-size:12px;color:var(--muted);font-weight:600}
+
+  .toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px}
+  .search{flex:1;min-width:200px;position:relative}
+  .search input{width:100%;padding:11px 14px 11px 38px;border:1px solid var(--line);border-radius:11px;font-size:14px;background:var(--card);box-shadow:var(--shadow)}
+  .search input:focus{outline:none;border-color:var(--swim);box-shadow:0 0 0 3px rgba(45,198,255,.18)}
+  .search svg{position:absolute;left:12px;top:50%;transform:translateY(-50%);opacity:.4}
+  .chips{display:flex;gap:7px;flex-wrap:wrap}
+  .chip{border:1px solid var(--line);background:var(--card);border-radius:999px;padding:9px 15px;font-size:13px;font-weight:650;cursor:pointer;color:var(--muted);transition:.15s;box-shadow:var(--shadow)}
+  .chip.on{background:var(--navy);color:#fff;border-color:var(--navy)}
+  .chip.kat.on{background:var(--kat);border-color:var(--kat)}
+  .chip.done.on{background:var(--good);border-color:var(--good)}
+
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(340px,1fr));gap:15px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow);overflow:hidden;display:flex;flex-direction:column;transition:.18s;position:relative}
+  .card.done{opacity:.62}
+  .card.done .c-body{filter:saturate(.6)}
+  .c-head{display:flex;align-items:center;gap:9px;padding:13px 15px 11px;border-bottom:1px solid var(--line)}
+  .tienda{font-size:11px;font-weight:800;letter-spacing:.4px;padding:4px 9px;border-radius:7px;color:#fff}
+  .tienda.BOUN{background:var(--navy)} .tienda.KAT{background:var(--kat)}
+  .pedido{font-weight:800;font-size:15.5px;letter-spacing:-.2px}
+  .hora{margin-left:auto;font-size:11.5px;color:var(--muted);font-weight:600;white-space:nowrap}
+  .badge-done{position:absolute;top:11px;right:13px;background:var(--good);color:#fff;font-size:10.5px;font-weight:800;letter-spacing:.4px;padding:4px 9px;border-radius:7px;display:none;box-shadow:0 2px 6px rgba(31,169,113,.35)}
+  .card.done .badge-done{display:block}
+
+  .c-body{padding:12px 15px 4px}
+  .row{display:flex;align-items:flex-start;gap:8px;padding:5px 0;font-size:13.5px;line-height:1.35}
+  .row .lbl{color:var(--muted);font-weight:650;min-width:64px;flex-shrink:0;font-size:12.5px;padding-top:1px}
+  .row .val{flex:1;word-break:break-word}
+  .copyable{cursor:pointer;border-radius:6px;padding:1px 4px;margin:-1px -4px;transition:.12s;display:inline-flex;align-items:center;gap:6px}
+  .copyable:hover{background:#EEF6FD}
+  .copyable:active{background:#d9edfb}
+  .copyable svg{opacity:.35;flex-shrink:0}
+  .copyable.copied{background:#e2f6ec;color:var(--good)}
+  .copyable.copied svg{opacity:0}
+  .copyable.copied::after{content:"¡Copiado!";font-size:11px;font-weight:700}
+
+  .prod{display:flex;gap:11px;align-items:center;padding:9px 0;border-top:1px dashed var(--line)}
+  .prod:first-of-type{border-top:1px solid var(--line);margin-top:5px}
+  .thumb{width:60px;height:60px;border-radius:11px;object-fit:cover;background:#EEF2F6;border:1px solid var(--line);flex-shrink:0}
+  .noimg{width:60px;height:60px;border-radius:11px;background:#EEF2F6;border:1px dashed #C9D3DE;display:flex;align-items:center;justify-content:center;color:#A9B4C0;font-size:9px;text-align:center;flex-shrink:0}
+  .prod-info{flex:1;min-width:0}
+  .prod-tit{font-weight:700;font-size:14px;display:flex;align-items:center;gap:6px}
+  .dot{width:12px;height:12px;border-radius:50%;flex-shrink:0;border:1px solid rgba(0,0,0,.12)}
+  .prod-meta{font-size:12px;color:var(--muted);margin-top:2px}
+  .qty{font-weight:800;color:var(--navy)}
+
+  .money{display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:11px 0 4px;border-top:1px solid var(--line);margin-top:6px;font-size:13.5px}
+  .total{font-weight:800;font-size:16px}
+  .pill{font-size:11px;font-weight:700;padding:3px 8px;border-radius:6px}
+  .pill.paid{background:#e2f6ec;color:var(--good)} .pill.pend{background:#fdf0dc;color:var(--warn)}
+  .meta-line{font-size:12px;color:var(--muted);padding:2px 0}
+  .nota{font-size:12px;color:#8a6d1f;background:#fdf8ec;border:1px solid #f0e4c4;border-radius:9px;padding:7px 10px;margin:6px 0 2px}
+
+  .c-foot{padding:11px 15px 14px;margin-top:auto}
+  .mark{width:100%;border:none;border-radius:11px;padding:12px;font-size:14px;font-weight:750;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:.15s}
+  .mark.todo{background:var(--good);color:#fff}
+  .mark.todo:hover{background:#178a5d}
+  .mark.doneb{background:var(--card);color:var(--muted);border:1.5px solid var(--line)}
+  .mark.doneb:hover{background:var(--shade)}
+
+  .guia{display:flex;align-items:center;gap:10px;background:#f2faf6;border:1px solid #cdeeda;border-radius:11px;padding:8px 11px;margin:8px 0 2px;cursor:pointer;transition:.15s}
+  .guia:hover{background:#e2f6ec}
+  .guia img{width:52px;height:52px;border-radius:8px;object-fit:cover;border:1px solid #cdeeda}
+  .guia .g-txt{font-size:12.5px;font-weight:700;color:var(--good)}
+  .guia .g-sub{font-size:11px;color:var(--muted);font-weight:500;margin-top:1px}
+  .mark:disabled{opacity:.6;cursor:wait}
+  .viewer{position:fixed;inset:0;background:rgba(15,25,38,.86);display:none;align-items:center;justify-content:center;z-index:200;padding:20px}
+  .viewer.show{display:flex}
+  .viewer img{max-width:96vw;max-height:92vh;border-radius:14px;box-shadow:0 20px 60px rgba(0,0,0,.5)}
+  .viewer .close{position:absolute;top:16px;right:18px;background:rgba(255,255,255,.14);border:none;color:#fff;font-size:26px;width:44px;height:44px;border-radius:12px;cursor:pointer}
+  .empty{text-align:center;padding:70px 20px;color:var(--muted)}
+  .empty .big{font-size:44px;margin-bottom:10px}
+  .empty h2{color:var(--ink);font-weight:750;font-size:19px;margin:0 0 5px}
+  .toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(80px);background:var(--ink);color:#fff;padding:12px 20px;border-radius:12px;font-size:14px;font-weight:600;box-shadow:0 8px 30px rgba(0,0,0,.25);opacity:0;transition:.28s;z-index:99}
+  .toast.show{transform:translateX(-50%) translateY(0);opacity:1}
+  .locked{max-width:440px;margin:80px auto;background:var(--card);border:1px solid var(--line);border-radius:16px;padding:30px;text-align:center;box-shadow:var(--shadow)}
+  .locked h2{margin:0 0 8px}.locked p{color:var(--muted)}
+
+  @media(max-width:720px){
+    .stats{grid-template-columns:repeat(2,1fr)}
+    .grid{grid-template-columns:1fr}
+    .hd-right{width:100%;margin-left:0;justify-content:space-between;margin-top:12px}
+    .row .lbl{min-width:56px}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand">
+      <div class="logo">B</div>
+      <div>
+        <h1>Despachos del día</h1>
+        <div class="sub" id="sub">Pedidos por despachar · BOUN + KAT</div>
+      </div>
+      <div class="hd-right">
+        <span class="updated" id="updated"></span>
+        <button class="refresh" id="refreshBtn" onclick="load(true)">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M23 4v6h-6M1 20v-6h6"/><path d="M3.5 9a9 9 0 0 1 14.9-3.4L23 10M1 14l4.6 4.4A9 9 0 0 0 20.5 15"/></svg>
+          Actualizar
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <div id="app">
+    <div class="stats">
+      <div class="stat p"><div class="k">Por despachar</div><div class="v" id="stPend">—</div></div>
+      <div class="stat u"><div class="k">Unidades</div><div class="v" id="stUni">—</div></div>
+      <div class="stat i"><div class="k">Ingresos</div><div class="v" id="stIng">—</div></div>
+      <div class="stat d"><div class="k">Despachados</div><div class="v" id="stDone">—</div></div>
+    </div>
+
+    <div class="toolbar">
+      <div class="search">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+        <input id="q" type="text" placeholder="Buscar cliente, pedido, ciudad…" oninput="render()">
+      </div>
+      <div class="chips" id="chips">
+        <div class="chip on" data-f="all" onclick="setFilter('all')">Todos</div>
+        <div class="chip" data-f="BOUN" onclick="setFilter('BOUN')">BOUN</div>
+        <div class="chip kat" data-f="KAT" onclick="setFilter('KAT')">KAT</div>
+        <div class="chip done" id="chipHide" onclick="toggleHide()">Ocultar despachados</div>
+      </div>
+    </div>
+
+    <div class="grid" id="grid"></div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<input type="file" id="guiaFile" accept="image/*" capture="environment" style="display:none">
+<div class="viewer" id="viewer" onclick="this.classList.remove('show')"><button class="close">✕</button><img id="viewerImg" src="" alt="Guía de envío"></div>
+
+<script>
+// ── Config / auth ───────────────────────────────────────────────
+const params = new URLSearchParams(location.search);
+let TOKEN = params.get("t") || localStorage.getItem("despachos_t") || "";
+if (params.get("t")) localStorage.setItem("despachos_t", params.get("t"));
+
+let DATA = {ordenes:[], resumen:{}, marcas:{}};
+let FILTER = "all";
+let HIDE_DONE = false;
+let loading = false;
+
+// Colores por línea / variante
+const LINE_COLOR = {sleep:"#8B7BD8", moto:"#FF8A1F", music:"#FF2D7B", swim:"#2DC6FF", industrial:"#FFD60A"};
+const VAR_COLOR = {
+  negro:"#222", black:"#222", lila:"#B39CE8", morado:"#7B5AD8", violeta:"#7B5AD8",
+  blanco:"#F2F2F2", white:"#F2F2F2", azul:"#2D8CFF", rojo:"#E23", naranja:"#FF8A1F",
+  amarillo:"#FFD60A", verde:"#2BB673", rosa:"#F48CB6", rosado:"#F48CB6",
+  cafe:"#8B5E3C", "café":"#8B5E3C", gris:"#9AA5B1"
+};
+function colorFor(item){
+  const v = (item.variante||"").toLowerCase();
+  for(const k in VAR_COLOR){ if(v.includes(k)) return VAR_COLOR[k]; }
+  const sku=(item.sku||"").toLowerCase(), t=(item.titulo||"").toLowerCase();
+  for(const k in VAR_COLOR){ if(sku.includes(k)) return VAR_COLOR[k]; }
+  for(const k in LINE_COLOR){ if(t.includes(k)) return LINE_COLOR[k]; }
+  return "#C9D3DE";
+}
+function fmt(n){ return "$"+Math.round(Number(n)||0).toLocaleString("es-CO"); }
+function esc(s){ return (s==null?"":String(s)).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c])); }
+function horaCO(iso){
+  try{ return new Date(iso).toLocaleTimeString("es-CO",{hour:"numeric",minute:"2-digit",hour12:true,timeZone:"America/Bogota"}); }
+  catch(e){ return ""; }
+}
+function toast(m){ const t=document.getElementById("toast"); t.textContent=m; t.classList.add("show"); clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove("show"),1600); }
+
+// ── Data ────────────────────────────────────────────────────────
+async function load(manual){
+  if(loading) return;
+  if(!TOKEN){ lock(); return; }
+  loading=true;
+  const btn=document.getElementById("refreshBtn"); btn.classList.add("spin");
+  try{
+    const r = await fetch("/api/despachos/data?t="+encodeURIComponent(TOKEN)+"&_="+Date.now(), {cache:"no-store"});
+    if(r.status===401){ lock(); loading=false; btn.classList.remove("spin"); return; }
+    const d = await r.json();
+    DATA.ordenes = d.ordenes||[];
+    DATA.resumen = d.resumen||{};
+    DATA.marcas = d.marcas||{};
+    document.getElementById("updated").textContent = "Actualizado "+horaCO(new Date().toISOString());
+    render();
+    if(manual) toast("Actualizado");
+  }catch(e){ toast("Error al cargar"); }
+  loading=false; btn.classList.remove("spin");
+}
+
+function lock(){
+  document.getElementById("app").innerHTML =
+    '<div class="locked"><div style="font-size:40px">🔒</div><h2>Enlace sin acceso</h2>'+
+    '<p>Este tablero necesita el enlace completo con el token de acceso que te compartió Sebastián.</p></div>';
+}
+
+let PENDING_MARK = null; // {numero,tienda,oid} esperando foto de guía
+
+function marcar(numero, tienda, despachado, btn, oid){
+  if(despachado){
+    // La foto de la guía es el comprobante: pedirla ANTES de marcar.
+    PENDING_MARK = {numero, tienda, btn, oid};
+    const f = document.getElementById("guiaFile");
+    f.value = ""; f.click();
+    return;
+  }
+  enviarMarca(numero, tienda, false, "", btn, oid);
+}
+
+document.getElementById("guiaFile").addEventListener("change", async function(){
+  const f = this.files && this.files[0];
+  if(!f || !PENDING_MARK){ PENDING_MARK=null; return; }
+  const {numero, tienda, btn, oid} = PENDING_MARK; PENDING_MARK = null;
+  if(btn){ btn.disabled = true; btn.textContent = "Subiendo guía…"; }
+  try{
+    const foto = await comprimir(f);
+    await enviarMarca(numero, tienda, true, foto, btn, oid);
+  }catch(e){
+    toast("No se pudo leer la foto");
+    if(btn){ btn.disabled=false; btn.textContent="✓ Marcar despachado"; }
+  }
+});
+
+function comprimir(file){
+  // Reduce la foto a máx 1280px JPEG (~150-350KB) para subirla rápido.
+  return new Promise((res, rej)=>{
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = ()=>{
+      const MAX = 1280;
+      let w = img.naturalWidth, h = img.naturalHeight;
+      if(Math.max(w,h) > MAX){ const k = MAX/Math.max(w,h); w=Math.round(w*k); h=Math.round(h*k); }
+      const cv = document.createElement("canvas"); cv.width=w; cv.height=h;
+      cv.getContext("2d").drawImage(img,0,0,w,h);
+      URL.revokeObjectURL(url);
+      res(cv.toDataURL("image/jpeg", 0.72));
+    };
+    img.onerror = ()=>{ URL.revokeObjectURL(url); rej(new Error("img")); };
+    img.src = url;
+  });
+}
+
+async function enviarMarca(numero, tienda, despachado, foto, btn, oid){
+  try{
+    const r = await fetch("/api/despachos/marcar?t="+encodeURIComponent(TOKEN),{
+      method:"POST", headers:{"Content-Type":"application/json"},
+      body: JSON.stringify({numero, tienda, despachado, foto: foto||"", order_id: String(oid||"")})
+    });
+    if(!r.ok){
+      const e = await r.json().catch(()=>({}));
+      toast(e.error==="falta la foto de la guía" ? "Falta la foto de la guía" : "No se pudo guardar");
+      if(btn){ btn.disabled=false; btn.textContent="✓ Marcar despachado"; }
+      return;
+    }
+    const d = await r.json();
+    DATA.marcas = d.marcas||DATA.marcas;
+    render();
+    if(despachado){
+      toast(d.fulfill ? "✓ Despachado · cliente notificado por Shopify"
+                      : "Guía guardada · ⚠ no se pudo marcar en Shopify");
+    } else toast("Reabierto (en Shopify sigue enviada si ya se notificó)");
+  }catch(e){
+    toast("Error de conexión");
+    if(btn){ btn.disabled=false; btn.textContent="✓ Marcar despachado"; }
+  }
+}
+
+function verGuia(numero, tienda){
+  const img = document.getElementById("viewerImg");
+  img.src = "/api/despachos/guia?numero="+encodeURIComponent(numero)+"&tienda="+encodeURIComponent(tienda)+"&t="+encodeURIComponent(TOKEN)+"&_="+Date.now();
+  document.getElementById("viewer").classList.add("show");
+}
+function markKey(o){ return (o.tienda||"")+"|"+(o.numero||""); }
+function isDone(o){
+  if(DATA.marcas[markKey(o)] && DATA.marcas[markKey(o)].despachado) return true;
+  return (o.envio||"").toLowerCase()==="fulfilled"; // ya enviada en Shopify
+}
+
+// ── Render ──────────────────────────────────────────────────────
+function setFilter(f){ FILTER=f; document.querySelectorAll(".chip[data-f]").forEach(c=>c.classList.toggle("on",c.dataset.f===f)); render(); }
+function toggleHide(){ HIDE_DONE=!HIDE_DONE; document.getElementById("chipHide").classList.toggle("on",HIDE_DONE); render(); }
+
+function copyText(el, text){
+  navigator.clipboard.writeText(text).then(()=>{
+    el.classList.add("copied"); setTimeout(()=>el.classList.remove("copied"),1100);
+  }).catch(()=>toast("No se pudo copiar"));
+}
+
+function render(){
+  const q = (document.getElementById("q").value||"").toLowerCase().trim();
+  let list = DATA.ordenes.slice();
+
+  // stats (sobre todo el set, no el filtrado)
+  const pend = DATA.ordenes.filter(o=>!isDone(o));
+  document.getElementById("stPend").textContent = pend.length;
+  document.getElementById("stUni").textContent = pend.reduce((s,o)=>s+(o.unidades||0),0);
+  document.getElementById("stIng").innerHTML = fmt(pend.reduce((s,o)=>s+(Number(o.total)||0),0));
+  document.getElementById("stDone").textContent = DATA.ordenes.length - pend.length;
+
+  if(FILTER!=="all") list = list.filter(o=>o.tienda===FILTER);
+  if(HIDE_DONE) list = list.filter(o=>!isDone(o));
+  if(q) list = list.filter(o=>{
+    const hay=(o.cliente+" "+o.numero+" "+(o.direccion&&o.direccion.ciudad||"")+" "+(o.items||[]).map(i=>i.titulo+" "+i.sku).join(" ")).toLowerCase();
+    return hay.includes(q);
+  });
+  // pendientes primero, luego por hora desc
+  list.sort((a,b)=> (isDone(a)-isDone(b)) || (new Date(b.creado)-new Date(a.creado)) );
+
+  const grid = document.getElementById("grid");
+  if(!list.length){
+    grid.innerHTML = '<div class="empty" style="grid-column:1/-1"><div class="big">📦</div><h2>Nada por aquí</h2><p>'+
+      (DATA.ordenes.length? "No hay pedidos que coincidan con el filtro." : "No hay pedidos por despachar ahora mismo.")+'</p></div>';
+    return;
+  }
+  grid.innerHTML = list.map(card).join("");
+}
+
+function card(o){
+  const done = isDone(o);
+  const dir = o.direccion||{};
+  const dirStr = [dir.linea1,dir.linea2,dir.ciudad,dir.provincia,dir.zip,dir.pais].filter(Boolean).join(", ");
+  const pagado = (o.pago||"").toLowerCase()==="paid";
+  const cp = (label, val, big) => val ? (
+    '<span class="copyable'+(big?'':'')+'" onclick=\'copyText(this,'+JSON.stringify(val)+')\'>'+esc(val)+
+    '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></span>'
+  ) : "—";
+
+  const prods = (o.items||[]).map(it=>{
+    const img = it.imagen
+      ? '<img class="thumb" src="'+esc(it.imagen)+'" loading="lazy" onerror="this.outerHTML=\'<div class=&quot;noimg&quot;>sin foto</div>\'">'
+      : '<div class="noimg">sin foto</div>';
+    const varTxt = it.variante ? " ("+esc(it.variante)+")" : "";
+    return '<div class="prod">'+img+
+      '<div class="prod-info"><div class="prod-tit"><span class="dot" style="background:'+colorFor(it)+'"></span>'+
+      '<span class="qty">'+(it.cantidad||1)+'×</span> '+esc(it.titulo)+varTxt+'</div>'+
+      '<div class="prod-meta">SKU '+esc(it.sku||"—")+' · '+fmt(it.precio_unit)+'</div></div></div>';
+  }).join("");
+
+  return '<div class="card'+(done?' done':'')+'">'+
+    '<div class="badge-done">✓ DESPACHADO</div>'+
+    '<div class="c-head"><span class="tienda '+esc(o.tienda)+'">'+esc(o.tienda)+'</span>'+
+      '<span class="pedido">'+esc(o.numero)+'</span>'+
+      '<span class="hora">'+horaCO(o.creado)+'</span></div>'+
+    '<div class="c-body">'+
+      '<div class="row"><span class="lbl">Cliente</span><span class="val">'+esc(o.cliente||"—")+'</span></div>'+
+      '<div class="row"><span class="lbl">Teléfono</span><span class="val">'+cp("tel",o.telefono)+'</span></div>'+
+      (o.email?'<div class="row"><span class="lbl">Email</span><span class="val">'+cp("mail",o.email)+'</span></div>':'')+
+      '<div class="row"><span class="lbl">Dirección</span><span class="val">'+cp("dir",dirStr)+'</span></div>'+
+      prods+
+      '<div class="money"><span class="total">'+fmt(o.total)+'</span>'+
+        '<span class="pill '+(pagado?'paid':'pend')+'">'+(pagado?'Pagado':esc(o.pago||'—'))+'</span></div>'+
+      (o.pago_metodo?'<div class="meta-line">Pago: '+esc(o.pago_metodo)+'</div>':'')+
+      (o.envio_metodo?'<div class="meta-line">Entrega: '+esc(o.envio_metodo)+'</div>':'')+
+      (o.nota?'<div class="nota">'+esc(o.nota)+'</div>':'')+
+    '</div>'+
+    (done && (DATA.marcas[markKey(o)]||{}).guia
+      ? '<div style="padding:0 15px"><div class="guia" onclick=\'verGuia('+JSON.stringify(o.numero)+','+JSON.stringify(o.tienda)+')\'>'+
+        '<img src="/api/despachos/guia?numero='+encodeURIComponent(o.numero)+'&tienda='+encodeURIComponent(o.tienda)+'&t='+encodeURIComponent(TOKEN)+'" loading="lazy" onerror="this.style.display=\'none\'">'+
+        '<div><div class="g-txt">📋 Guía de envío adjunta</div><div class="g-sub">'+
+        ((DATA.marcas[markKey(o)]||{}).fulfill ? 'Cliente notificado por Shopify ✓' : 'Toca para ver el comprobante')+
+        '</div></div></div></div>'
+      : '')+
+    '<div class="c-foot">'+
+      (done
+        ? (DATA.marcas[markKey(o)]
+            ? '<button class="mark doneb" onclick=\'marcar('+JSON.stringify(o.numero)+','+JSON.stringify(o.tienda)+',false,this,'+JSON.stringify(String(o.id||""))+')\'>↩ Reabrir en el tablero</button>'
+            : '<div class="mark doneb" style="cursor:default">✓ Enviado desde Shopify</div>')
+        : '<button class="mark todo" onclick=\'marcar('+JSON.stringify(o.numero)+','+JSON.stringify(o.tienda)+',true,this,'+JSON.stringify(String(o.id||""))+')\'>✓ Marcar despachado</button>')+
+    '</div></div>';
+}
+
+// ── Init ────────────────────────────────────────────────────────
+if(window.__SEED__){ DATA=window.__SEED__; document.getElementById("updated").textContent="Vista previa"; render(); }
+else { load(); setInterval(()=>{ if(!document.hidden) load(); }, 90000); }
+</script>
+</body>
+</html>
