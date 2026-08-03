@@ -4871,10 +4871,13 @@ def _despachos_marcas():
         return {}
 
 
-def _despachos_snapshot(days=3):
+def _despachos_snapshot(days=10):
     """Lista plana de pedidos SIN despachar (unfulfilled) de los últimos
-    `days` días, BOUN+KAT, deduplicada por (tienda,numero). Cacheada 45s
-    para no golpear Shopify en cada refresco de cada miembro del equipo."""
+    `days` días, BOUN+KAT, deduplicada por (tienda,numero). 10 días para que
+    un pendiente viejo NO se caiga de la ventana mientras siga sin despachar
+    (con 3 días se perdían: caso #1016-#1018 del 31-jul visto el 3-ago).
+    Excluye reembolsadas/anuladas. Cacheada 45s para no golpear Shopify en
+    cada refresco de cada miembro del equipo."""
     now = time.time()
     c = _DESPACHOS_CACHE
     if c["data"] is not None and (now - c["ts"]) < _DESPACHOS_TTL:
@@ -4898,6 +4901,14 @@ def _despachos_snapshot(days=3):
             for o in (info.get("ordenes") or []):
                 key = (marca, o.get("numero"))
                 if key in vistos:
+                    continue
+                # Regla de Sebastián (3-ago): "Reembolsado" o preparación
+                # "No se requiere" = cancelada, NO se envía ni se lista.
+                # (ej. #1001 refunded/test). Parcialmente reembolsada SÍ se
+                # lista (puede tener items pendientes por despachar).
+                if (o.get("pago") or "").lower() in ("refunded", "voided"):
+                    continue
+                if (o.get("envio") or "").lower() == "restocked":
                     continue
                 vistos.add(key)
                 o = dict(o)
