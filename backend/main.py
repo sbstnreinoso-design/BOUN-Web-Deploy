@@ -3502,16 +3502,15 @@ def _shopify_abandoned_checkouts_rest(shop: str, token: str) -> list:
 
 
 def _shopify_abandoned_checkouts(shop: str, token: str) -> list:
-    # GraphQL PRIMERO: la REST /checkouts.json quedó poco fiable (Shopify la
-    # está descontinuando y devolvía vacío → el webhook Wompi nunca casaba el
-    # carrito). La REST queda solo como respaldo si GraphQL falla.
+    # REST /checkouts.json es la PRINCIPAL: devuelve email + line_items con
+    # variant_id y sí funciona (14 carritos verificados 5-ago). GraphQL
+    # abandonedCheckouts queda solo de respaldo por si la REST fallara, aunque
+    # exige "protected customer data access" para leer el email del cliente
+    # (hoy da "Access denied for customer field" con el token actual).
     try:
-        out = _shopify_abandoned_checkouts_gql(shop, token)
-        if out:
-            return out
+        return _shopify_abandoned_checkouts_rest(shop, token)
     except Exception:
-        pass
-    return _shopify_abandoned_checkouts_rest(shop, token)
+        return _shopify_abandoned_checkouts_gql(shop, token)
 
 
 def _shopify_create_paid_order(shop: str, token: str, checkout: dict,
