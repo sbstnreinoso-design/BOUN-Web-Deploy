@@ -3415,7 +3415,83 @@ def _wompi_match_checkout(checkouts: list, email: str, amount_cop: float):
     return best
 
 
-def _shopify_abandoned_checkouts(shop: str, token: str) -> list:
+def _shopify_gql(shop: str, token: str, query: str, variables: dict = None):
+    import requests as _rq
+    r = _rq.post("https://%s/admin/api/2025-01/graphql.json" % shop,
+                 headers={"X-Shopify-Access-Token": token,
+                          "Content-Type": "application/json"},
+                 json={"query": query, "variables": variables or {}}, timeout=25)
+    if r.status_code != 200:
+        raise Exception("gql HTTP %d" % r.status_code)
+    j = r.json()
+    if j.get("errors"):
+        raise Exception("gql errors: %s" % str(j["errors"])[:200])
+    return j.get("data") or {}
+
+
+def _norm_gql_checkout(node: dict) -> dict:
+    """Normaliza un AbandonedCheckout de GraphQL al MISMO shape que usaba la
+    REST /checkouts.json (para que _wompi_match_checkout y
+    _shopify_create_paid_order sigan funcionando sin cambios)."""
+    lis = []
+    for e in ((node.get("lineItems") or {}).get("edges") or []):
+        n = e.get("node") or {}
+        vid = ((n.get("variant") or {}).get("legacyResourceId"))
+        if vid:
+            try:
+                vid = int(vid)
+            except Exception:
+                pass
+        lis.append({"variant_id": vid, "quantity": n.get("quantity") or 0,
+                    "title": n.get("title") or "", "variant_title": ""})
+
+    def _addr(a):
+        if not a:
+            return None
+        return {"name": a.get("name"), "address1": a.get("address1"),
+                "address2": a.get("address2"), "city": a.get("city"),
+                "province": a.get("province"), "zip": a.get("zip"),
+                "country": a.get("country"), "phone": a.get("phone")}
+
+    cust = node.get("customer") or {}
+    cid = None
+    gid = cust.get("id") or ""
+    if "/" in str(gid):
+        try:
+            cid = int(str(gid).rsplit("/", 1)[1])
+        except Exception:
+            cid = None
+    money = ((node.get("totalPriceSet") or {}).get("shopMoney") or {})
+    return {
+        "id": node.get("id"),
+        "token": node.get("name") or node.get("id") or "",
+        "created_at": node.get("createdAt") or "",
+        "completed_at": node.get("completedAt"),
+        "email": cust.get("email") or "",
+        "customer": {"id": cid, "email": cust.get("email") or ""},
+        "currency": money.get("currencyCode") or "COP",
+        "total_price": money.get("amount") or "0",
+        "line_items": lis,
+        "shipping_address": _addr(node.get("shippingAddress")),
+        "billing_address": _addr(node.get("billingAddress")),
+    }
+
+
+def _shopify_abandoned_checkouts_gql(shop: str, token: str) -> list:
+    q = """query { abandonedCheckouts(first: 100, reverse: true) { edges { node {
+      id name createdAt completedAt
+      totalPriceSet { shopMoney { amount currencyCode } }
+      customer { id email }
+      shippingAddress { name address1 address2 city province zip country phone }
+      billingAddress { name address1 address2 city province zip country phone }
+      lineItems(first: 20) { edges { node { title quantity variant { legacyResourceId } } } }
+    } } } }"""
+    data = _shopify_gql(shop, token, q)
+    edges = ((data.get("abandonedCheckouts") or {}).get("edges") or [])
+    return [_norm_gql_checkout(e.get("node") or {}) for e in edges]
+
+
+def _shopify_abandoned_checkouts_rest(shop: str, token: str) -> list:
     import requests as _rq
     url = "https://%s/admin/api/2025-01/checkouts.json" % shop
     r = _rq.get(url, params={"limit": 250},
@@ -3423,6 +3499,19 @@ def _shopify_abandoned_checkouts(shop: str, token: str) -> list:
     if r.status_code != 200:
         raise Exception("checkouts HTTP %d" % r.status_code)
     return r.json().get("checkouts", []) or []
+
+
+def _shopify_abandoned_checkouts(shop: str, token: str) -> list:
+    # GraphQL PRIMERO: la REST /checkouts.json quedó poco fiable (Shopify la
+    # está descontinuando y devolvía vacío → el webhook Wompi nunca casaba el
+    # carrito). La REST queda solo como respaldo si GraphQL falla.
+    try:
+        out = _shopify_abandoned_checkouts_gql(shop, token)
+        if out:
+            return out
+    except Exception:
+        pass
+    return _shopify_abandoned_checkouts_rest(shop, token)
 
 
 def _shopify_create_paid_order(shop: str, token: str, checkout: dict,
@@ -3603,6 +3692,88 @@ async def webhook_wompi(request: Request):
 
     threading.Thread(target=_work, daemon=True).start()
     return Response(status_code=200)
+
+
+class WompiReconcileIn(BaseModel):
+    email: str = ""
+    amount: float = 0
+    tienda: Optional[str] = None   # "boun" | "kat" | None = ambas tiendas
+    tx: Optional[str] = None       # id de la transacción Wompi (para el candado)
+    dry: bool = True               # True = solo diagnostica, NO crea la orden
+    force: bool = False            # ignora el candado wompi_tx_done
+
+
+@app.post("/api/wompi/reconciliar")
+def wompi_reconciliar(data: WompiReconcileIn, user: dict = Depends(_admin)):
+    """Concilia MANUALMENTE un pago Wompi con su carrito abandonado y crea el
+    pedido pagado en Shopify (misma lógica que el webhook, disparable a mano).
+    Sirve para: (1) recuperar un pago que el webhook no atrapó, y (2) PROBAR el
+    pipeline en `dry=true` (reporta cuántos carritos ve por GraphQL vs REST y si
+    hay match, SIN crear nada). Admin. Idempotente por wompi_tx_done::<tx>."""
+    email = (data.email or "").strip().lower()
+    amount = round(float(data.amount or 0), 2)
+    if not email or amount <= 0:
+        raise HTTPException(400, "email y amount (monto en COP) son obligatorios")
+    txid = ((data.tx or "").strip()
+            or "manual-%s" % datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S"))
+    diag = []
+    result = {"ok": True, "tx": txid, "dry": data.dry,
+              "email": email, "amount": amount, "matched": None,
+              "order": None, "shops": diag}
+    if not data.force and db.get_setting("wompi_tx_done::%s" % txid, ""):
+        result["skipped"] = ("ya procesado (candado wompi_tx_done::%s = %s)"
+                             % (txid, db.get_setting("wompi_tx_done::%s" % txid, "")))
+        return result
+    shops = list(_SHOPIFY_SHOPS.items())
+    if data.tienda:
+        key = "shopify_%s" % data.tienda.strip().lower()
+        shops = [(key, _SHOPIFY_SHOPS[key])] if key in _SHOPIFY_SHOPS else []
+    for ckey, shop in shops:
+        tok = db.get_setting("shopify_token::%s" % shop, "")
+        if not tok:
+            diag.append({"shop": shop, "err": "sin token"})
+            continue
+        try:
+            gql_n = len(_shopify_abandoned_checkouts_gql(shop, tok))
+        except Exception as e:
+            gql_n = "err:%s" % str(e)[:80]
+        try:
+            rest_n = len(_shopify_abandoned_checkouts_rest(shop, tok))
+        except Exception as e:
+            rest_n = "err:%s" % str(e)[:80]
+        try:
+            chks = _shopify_abandoned_checkouts(shop, tok)
+        except Exception as e:
+            diag.append({"shop": shop, "gql": gql_n, "rest": rest_n,
+                         "err": str(e)[:120]})
+            continue
+        m = _wompi_match_checkout(chks, email, amount)
+        diag.append({"shop": shop, "gql": gql_n, "rest": rest_n,
+                     "checkouts_vistos": len(chks), "match": bool(m)})
+        if not m:
+            continue
+        result["matched"] = {
+            "shop": shop, "token": m.get("token"), "email": m.get("email"),
+            "total": m.get("total_price"), "line_items": m.get("line_items"),
+            "shipping_address": m.get("shipping_address"),
+        }
+        if data.dry:
+            result["would_create"] = True
+            return result
+        order = _shopify_create_paid_order(shop, tok, m, amount, txid,
+                                           data.tx or "manual")
+        if order.get("id"):
+            db.set_setting("wompi_tx_done::%s" % txid,
+                           str(order.get("name") or order.get("id")))
+            result["order"] = {"id": order.get("id"), "name": order.get("name")}
+            return result
+        result["ok"] = False
+        result["err"] = "no se pudo crear la orden en Shopify"
+        return result
+    if not result.get("matched"):
+        result["ok"] = False
+        result["err"] = "sin carrito abandonado que coincida por email+monto"
+    return result
 
 
 # ── Poller Falabella (cada SYNC_FALABELLA_POLL_SEC) ──────────────────────────
