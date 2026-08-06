@@ -595,11 +595,22 @@ def _fetch_channel_items() -> tuple:
         ch_status["mercadolibre"] = {"ok": False, "error": str(e)[:160]}
 
     # ── MercadoLibre KAT (segunda cuenta) ──
+    # Este canal NO se salta en silencio. Antes, cualquier fallo de token dejaba
+    # a KAT fuera del escaneo etiquetada como "no conectada", confundiendo dos
+    # cosas muy distintas. Ahora se separan:
+    #   · nunca autorizada   → ausencia esperada (no es falla)
+    #   · autorizada + falla → ERROR REAL con el motivo, para que la auditoría lo
+    #     marque como canal caído y Cerebro lo avise.
+    # ml_scraper ya intenta refrescar y reintentar antes de rendirse.
     try:
-        from ml_scraper import get_my_items_basic as _gmi_kat
-        from ml_scraper import _ml_kat_session_auth as _kat_auth
-        _ks, _kuid = _kat_auth()
-        if _ks:
+        from ml_scraper import (get_my_items_basic as _gmi_kat,
+                                kat_is_authorized as _kat_autorizada,
+                                get_kat_auth_error as _kat_error)
+        if not _kat_autorizada():
+            ch_status["mercadolibre_kat"] = {"ok": False,
+                                             "error": "kat_no_conectada",
+                                             "nunca_conectada": True}
+        else:
             rk = _gmi_kat(acct="kat")
             if rk.get("ok"):
                 for it in rk["items"]:
@@ -607,12 +618,10 @@ def _fetch_channel_items() -> tuple:
                     items.append(it)
                 ch_status["mercadolibre_kat"] = {"ok": True, "n": len(rk["items"])}
             else:
-                ch_status["mercadolibre_kat"] = {"ok": False,
-                                                 "error": rk.get("error")}
-        else:
-            # Cuenta KAT no conectada aún: canal ausente sin marcar error.
-            ch_status["mercadolibre_kat"] = {"ok": False,
-                                             "error": "kat_no_conectada"}
+                _kerr = rk.get("error") or _kat_error() or "fallo desconocido"
+                ch_status["mercadolibre_kat"] = {
+                    "ok": False, "error": _kerr,
+                    "requiere_reconexion": bool(_kat_error())}
     except Exception as e:
         ch_status["mercadolibre_kat"] = {"ok": False, "error": str(e)[:160]}
 
@@ -1026,15 +1035,26 @@ def ml_disconnect(user: dict = Depends(_admin), account: str = ""):
 
 @app.get("/api/ml/kat-status")
 def ml_kat_status(user: dict = Depends(_current_user)):
-    """Estado de la conexión de la SEGUNDA cuenta ML (KAT)."""
+    """Estado de la conexión de la SEGUNDA cuenta ML (KAT).
+
+    Devuelve además POR QUÉ está caída y si hace falta reconectarla por OAuth:
+    antes solo decía connected true/false y no había forma de saber si el motivo
+    era recuperable (token vencido, se refresca solo) o terminal (autorización
+    revocada → hay que volver a autorizar)."""
     try:
-        from ml_scraper import _ml_kat_session_auth
+        from ml_scraper import (_ml_kat_session_auth, get_kat_auth_error,
+                                kat_is_authorized)
         s, uid = _ml_kat_session_auth()
+        err = get_kat_auth_error()
         return {"connected": bool(s),
+                "authorized": kat_is_authorized(),
+                "error": err,
+                "requiere_reconexion": bool(err) and not bool(s),
                 "username": db.get_setting("ml_kat_username", ""),
-                "user_id": db.get_setting("ml_kat_user_id", "")}
-    except Exception:
-        return {"connected": False, "username": "", "user_id": ""}
+                "user_id": str(uid or db.get_setting("ml_kat_user_id", ""))}
+    except Exception as e:
+        return {"connected": False, "authorized": False, "error": str(e)[:160],
+                "requiere_reconexion": False, "username": "", "user_id": ""}
 
 
 # ── Dashboard ────────────────────────────────────────────────────────────────
@@ -2061,7 +2081,9 @@ def _ml_request(method: str, path: str, json_body=None, timeout: int = 20,
                             _ml_kat_session_auth, _kat_try_refresh)
     if acct == "kat":
         s, _uid = _ml_kat_session_auth()
-        _refresh = _kat_try_refresh
+        # force=True: si ML acaba de rechazar ESTE token, un refresh "perezoso"
+        # podría devolver el mismo y el reintento fallaría igual.
+        _refresh = lambda: _kat_try_refresh(force=True)
     else:
         s, _uid = _ml_session_auth()
         _refresh = _try_refresh

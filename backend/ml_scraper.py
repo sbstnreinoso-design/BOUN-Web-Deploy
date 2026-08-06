@@ -329,67 +329,272 @@ def _load_token():
 # ── Segunda cuenta ML (KAT) — token paralelo bajo settings ml_kat_* ──────────
 # Misma app de ML (ml_app_id/ml_client_secret): un token por usuario que
 # autoriza. El de BOUN vive en ml_access_token; el de KAT en ml_kat_*.
+#
+# ENDURECIDO (ago-2026) — el motor NO debe volver a saltarse el canal KAT.
+# Antes bastaba cualquiera de estos para que KAT desapareciera del escaneo en
+# silencio (y se "arreglara solo" en la corrida siguiente, sin dejar rastro):
+#   1. El access token guardado dejaba de servir ANTES de su TTL (revocado, o el
+#      ml_kat_token_ts quedó desfasado tras un reinicio): /users/me devolvía 401
+#      y la función se rendía sin intentar refrescar.  ← causa principal
+#   2. El access token estaba vacío pero SÍ había refresh_token: se devolvía ""
+#      sin intentar recuperarlo.
+#   3. Un hipo de red o un 5xx de ML en el refresh tumbaba el canal por completo.
+#   4. Dos escaneos concurrentes (mapeo + stock) refrescaban a la vez; los
+#      refresh_token de ML son de UN SOLO USO, así que el segundo se topaba con
+#      invalid_grant y perdía el canal.
+# Ahora: refresh serializado y con reintentos, reintento forzado ante 401/403,
+# y solo `invalid_grant` se considera terminal (ahí sí hay que reconectar a
+# mano, y queda registrado en ml_kat_auth_error para que la app lo avise).
 
-def _kat_try_refresh():
-    """Refresca el token de la cuenta KAT usando su refresh_token propio."""
-    refresh = get_setting("ml_kat_refresh_token", "")
-    app_id  = get_setting("ml_app_id", "")
-    secret  = get_setting("ml_client_secret", "")
-    if not refresh or not app_id or not secret:
-        return ""
+_KAT_REFRESH_LOCK = threading.Lock()
+_KAT_REFRESH_MIN_GAP = 20     # s: si otro hilo acaba de refrescar, reusar el suyo
+_KAT_TOKEN_TTL_CACHE = 45     # s: caché en proceso del token (settings pega a la nube)
+_KAT_VERIFY_TTL = 300         # s: caché de /users/me (evita 1 roundtrip por petición)
+
+# Caché en proceso. Clave = el propio token, así un refresh la invalida solo.
+_KAT_TOK_CACHE = {"token": "", "ts": 0.0}
+_KAT_VERIFIED  = {"token": "", "uid": None, "ts": 0.0}
+_KAT_ERR_CACHE = {"msg": None}
+
+
+def _kat_f(v, default=0.0):
+    """float() tolerante: settings puede traer '', None o basura."""
     try:
-        s = _get_session()
-        r = s.post(
-            "%s/oauth/token" % ML_API,
-            data={
-                "grant_type":    "refresh_token",
-                "client_id":     app_id,
-                "client_secret": secret,
-                "refresh_token": refresh,
-            },
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            timeout=15,
-        )
-        if r.status_code == 200:
-            data = r.json()
-            token = data.get("access_token", "")
-            set_setting("ml_kat_access_token",  token)
-            set_setting("ml_kat_refresh_token", data.get("refresh_token", refresh))
-            set_setting("ml_kat_token_ts",      str(time.time()))
-            return token
+        return float(v or 0)
+    except (TypeError, ValueError):
+        return default
+
+
+def _kat_set_error(msg: str):
+    """Registra (o limpia) el motivo por el que la cuenta KAT no está operativa.
+    Escribe en settings SOLO si cambió: esto corre dentro del escaneo y cada
+    set_setting es un viaje a Supabase."""
+    msg = msg or ""
+    if _KAT_ERR_CACHE["msg"] == msg:
+        return
+    try:
+        if get_setting("ml_kat_auth_error", "") != msg:
+            set_setting("ml_kat_auth_error", msg)
+            set_setting("ml_kat_auth_error_ts",
+                        str(time.time()) if msg else "")
+        _KAT_ERR_CACHE["msg"] = msg
     except Exception:
         pass
-    return ""
 
 
-def _kat_load_token():
-    """Token de la cuenta KAT; refresca solo si está por vencer. Sin fallback a
-    client_credentials (ese token no representa al usuario KAT)."""
-    token = get_setting("ml_kat_access_token", "")
-    ts    = float(get_setting("ml_kat_token_ts", "0") or 0)
-    if not token:
+def get_kat_auth_error() -> str:
+    """Último motivo conocido de fallo de la cuenta KAT ('' si está sana)."""
+    if _KAT_ERR_CACHE["msg"] is not None:
+        return _KAT_ERR_CACHE["msg"]
+    try:
+        return get_setting("ml_kat_auth_error", "")
+    except Exception:
         return ""
-    age = time.time() - ts
-    if age > TOKEN_TTL - 300:
-        refreshed = _kat_try_refresh()
-        return refreshed or ""
+
+
+def kat_is_authorized() -> bool:
+    """True si la cuenta KAT alguna vez se autorizó (hay refresh_token guardado).
+    Sirve para distinguir 'nunca conectada' de 'conectada pero con el token
+    caído' — que son problemas MUY distintos y antes se reportaban igual."""
+    try:
+        return bool(get_setting("ml_kat_refresh_token", "")
+                    or get_setting("ml_kat_access_token", ""))
+    except Exception:
+        return False
+
+
+def _kat_cache_token(token: str):
+    _KAT_TOK_CACHE.update({"token": token or "", "ts": time.time()})
+
+
+def _kat_try_refresh(force: bool = False) -> str:
+    """Refresca el token de la cuenta KAT usando su refresh_token propio.
+
+    Serializado con un lock: los refresh_token de ML son de un solo uso, así que
+    dos escaneos simultáneos se invalidaban mutuamente. El hilo que llega
+    segundo reusa el token que acaba de guardar el primero.
+
+    Reintenta los fallos transitorios (red, 429, 5xx). Devuelve '' solo si la
+    autorización está realmente muerta o si ML no respondió tras los reintentos.
+    """
+    with _KAT_REFRESH_LOCK:
+        # ¿Otro hilo refrescó mientras esperábamos el lock? Reusar su token.
+        if not force:
+            tok_prev = get_setting("ml_kat_access_token", "")
+            if tok_prev and (time.time() - _kat_f(
+                    get_setting("ml_kat_token_ts", "0"))) < _KAT_REFRESH_MIN_GAP:
+                _kat_cache_token(tok_prev)
+                return tok_prev
+
+        refresh = get_setting("ml_kat_refresh_token", "")
+        app_id  = get_setting("ml_app_id", "")
+        secret  = get_setting("ml_client_secret", "")
+        if not refresh:
+            # Sin refresh_token no hay nada que recuperar. Si tampoco hay access
+            # token, es que la cuenta nunca se autorizó: no es una falla.
+            if get_setting("ml_kat_access_token", ""):
+                _kat_set_error("La cuenta KAT no tiene refresh_token guardado; "
+                               "hay que reconectarla por OAuth.")
+            else:
+                _kat_set_error("")
+            return ""
+        if not app_id or not secret:
+            _kat_set_error("Faltan las credenciales de la app de ML "
+                           "(ml_app_id / ml_client_secret).")
+            return ""
+
+        detalle = "sin respuesta"
+        for intento in range(3):
+            try:
+                s = _get_session()
+                r = s.post(
+                    "%s/oauth/token" % ML_API,
+                    data={
+                        "grant_type":    "refresh_token",
+                        "client_id":     app_id,
+                        "client_secret": secret,
+                        "refresh_token": refresh,
+                    },
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    timeout=15,
+                )
+            except Exception as e:
+                detalle = "red: %s" % str(e)[:120]
+                time.sleep(1.5 * (intento + 1))
+                continue
+
+            if r.status_code == 200:
+                try:
+                    data = r.json()
+                except Exception:
+                    detalle = "respuesta no-JSON de ML"
+                    break
+                token = data.get("access_token", "")
+                if not token:
+                    detalle = "ML respondió 200 sin access_token"
+                    break
+                set_setting("ml_kat_access_token", token)
+                # ML ROTA el refresh_token en cada uso: guardar el nuevo es
+                # obligatorio, si no el siguiente refresh muere con invalid_grant.
+                set_setting("ml_kat_refresh_token",
+                            data.get("refresh_token", refresh))
+                set_setting("ml_kat_token_ts", str(time.time()))
+                _kat_cache_token(token)
+                _kat_set_error("")
+                return token
+
+            cuerpo = (r.text or "")[:200]
+            if r.status_code in (400, 401) and "invalid_grant" in cuerpo:
+                # Terminal: la autorización fue revocada o el refresh ya se usó.
+                _kat_set_error("La autorización de la cuenta KAT expiró o fue "
+                               "revocada: hay que reconectarla por OAuth "
+                               "(/api/ml/exchange con account=kat).")
+                return ""
+            detalle = "HTTP %s %s" % (r.status_code, cuerpo)
+            if r.status_code in (429, 500, 502, 503, 504):
+                time.sleep(1.5 * (intento + 1))
+                continue
+            break
+
+        _kat_set_error("No se pudo refrescar el token de KAT (%s)." % detalle)
+        return ""
+
+
+def _kat_load_token(force_refresh: bool = False) -> str:
+    """Token de la cuenta KAT; refresca si falta o está por vencer. Sin fallback
+    a client_credentials (ese token no representaría al usuario KAT)."""
+    if force_refresh:
+        return _kat_try_refresh(force=True)
+
+    # Caché en proceso: get_setting pega a Supabase y esto corre por petición.
+    c = _KAT_TOK_CACHE
+    if c["token"] and (time.time() - c["ts"]) < _KAT_TOKEN_TTL_CACHE:
+        return c["token"]
+
+    token = get_setting("ml_kat_access_token", "")
+    ts    = _kat_f(get_setting("ml_kat_token_ts", "0"))
+    # Sin access token pero con refresh_token → recuperable. Antes se devolvía ""
+    # y el canal quedaba "no conectado" hasta reconectarlo a mano.
+    if not token:
+        return _kat_try_refresh()
+    if (time.time() - ts) > TOKEN_TTL - 300:   # refresca 5 min antes de vencer
+        return _kat_try_refresh() or ""
+    _kat_cache_token(token)
     return token
 
 
-def _ml_kat_session_auth():
-    """Sesión autenticada + user_id de la cuenta KAT, o (None, None)."""
-    tok = _kat_load_token()
+def _kat_session_for(token: str):
+    s = _get_session()
+    s.headers["Authorization"] = "Bearer " + token
+    return s
+
+
+def _kat_verify(token: str):
+    """(user_id, http_status) de /users/me con ese token. Reintenta los fallos
+    transitorios; un 401/403 se devuelve de inmediato (se arregla refrescando,
+    no reintentando con el mismo token)."""
+    status = None
+    for intento in range(2):
+        try:
+            r = _kat_session_for(token).get("%s/users/me" % ML_API, timeout=12)
+            status = r.status_code
+            if status == 200:
+                try:
+                    return r.json().get("id"), status
+                except Exception:
+                    return None, status
+            if status in (401, 403):
+                return None, status
+        except Exception:
+            status = None
+        if intento == 0:
+            time.sleep(1.0)
+    return None, status
+
+
+def _ml_kat_session_auth(force_refresh: bool = False):
+    """Sesión autenticada + user_id de la cuenta KAT, o (None, None).
+
+    Si ML rechaza el token guardado, lo REFRESCA y reintenta una vez antes de
+    darse por vencida: sin eso, un token invalidado antes de su TTL sacaba a KAT
+    del escaneo en silencio hasta reconectarla a mano.
+    `force_refresh=True` ignora las cachés y pide un token nuevo (lo usan los
+    llamadores que ya se comieron un 401 a mitad de corrida).
+    """
+    tok = _kat_load_token(force_refresh=force_refresh)
     if not tok:
         return None, None
-    s = _get_session()
-    s.headers["Authorization"] = "Bearer " + tok
+
+    # Caché de verificación: evita un GET /users/me por cada una de las >100
+    # peticiones de un escaneo. Va cifrada por token → un refresh la invalida.
+    c = _KAT_VERIFIED
+    if (not force_refresh and c["token"] == tok and c["uid"]
+            and (time.time() - c["ts"]) < _KAT_VERIFY_TTL):
+        return _kat_session_for(tok), c["uid"]
+
+    uid, status = _kat_verify(tok)
+    if not uid:
+        # Token rechazado (401/403) o verificación caída → refrescar y reintentar.
+        nuevo = _kat_try_refresh(force=True)
+        if nuevo and nuevo != tok:
+            uid, status = _kat_verify(nuevo)
+            if uid:
+                tok = nuevo
+        if not uid:
+            if not get_kat_auth_error():
+                _kat_set_error(
+                    "ML no validó la cuenta KAT (HTTP %s) y el refresh no lo "
+                    "resolvió." % (status if status is not None else "sin respuesta"))
+            return None, None
+
+    _KAT_VERIFIED.update({"token": tok, "uid": uid, "ts": time.time()})
+    _kat_set_error("")
     try:
-        me = s.get(f"{ML_API}/users/me", timeout=12)
-        if me.status_code == 200:
-            return s, me.json().get("id")
+        if str(get_setting("ml_kat_user_id", "")) != str(uid):
+            set_setting("ml_kat_user_id", str(uid))
     except Exception:
         pass
-    return None, None
+    return _kat_session_for(tok), uid
 
 
 def is_connected():
@@ -1730,17 +1935,42 @@ def get_my_items_basic(progress=None, acct="boun") -> dict:
 
     s, uid = (_ml_kat_session_auth() if acct == "kat" else _ml_session_auth())
     if not s:
-        return {"ok": False, "error": "No hay conexión con MercadoLibre%s."
-                % (" (cuenta KAT)" if acct == "kat" else "")}
+        motivo = get_kat_auth_error() if acct == "kat" else ""
+        return {"ok": False,
+                "error": ("No hay conexión con MercadoLibre%s.%s"
+                          % (" (cuenta KAT)" if acct == "kat" else "",
+                             " " + motivo if motivo else "")),
+                "auth_error": bool(motivo),
+                "nunca_autorizada": (acct == "kat" and not kat_is_authorized())}
+
+    def _reauth():
+        """Renueva la sesión tras un 401 a mitad de corrida. Una sola vez."""
+        if acct == "kat":
+            return _ml_kat_session_auth(force_refresh=True)
+        return _ml_session_auth()
 
     _say("Obteniendo tus publicaciones…")
     item_ids = []
     offset = 0
+    fallo = ""
+    reintento_auth = False
     while True:
         try:
             r = s.get(f"{ML_API}/users/{uid}/items/search"
                       f"?limit=100&offset={offset}", timeout=15)
+            # 401/403 a mitad de listado: el token venció DURANTE la corrida.
+            # Antes se cortaba el listado en silencio y el canal quedaba corto o
+            # vacío; ahora se refresca y se repite la MISMA página.
+            if r.status_code in (401, 403) and not reintento_auth:
+                reintento_auth = True
+                s2, uid2 = _reauth()
+                if s2:
+                    s, uid = s2, (uid2 or uid)
+                    continue
+                fallo = "ML rechazó el token (HTTP %s)" % r.status_code
+                break
             if r.status_code != 200:
+                fallo = "HTTP %s al listar las publicaciones" % r.status_code
                 break
             d = r.json()
             ids = d.get("results", [])
@@ -1749,9 +1979,14 @@ def get_my_items_basic(progress=None, acct="boun") -> dict:
             offset += 100
             if offset >= total or not ids:
                 break
-        except Exception:
+        except Exception as e:
+            fallo = "error de red: %s" % str(e)[:120]
             break
     if not item_ids:
+        # Distinguir "no tiene publicaciones" de "no pudimos leerlas": tratar un
+        # fallo de lectura como catálogo vacío es lo que dejaba a KAT fuera.
+        if fallo:
+            return {"ok": False, "error": fallo, "auth_error": True}
         return {"ok": False, "error": "No se encontraron publicaciones."}
 
     def _sku_of(b):
@@ -1783,6 +2018,15 @@ def get_my_items_basic(progress=None, acct="boun") -> dict:
         try:
             r = s.get(f"{ML_API}/items?ids={','.join(batch)}"
                       f"&attributes={attrs}", timeout=20)
+            # Mismo caso que arriba: si el token vence a mitad del multiget, se
+            # refresca y se repite el lote en vez de perder esas publicaciones.
+            if r.status_code in (401, 403) and not reintento_auth:
+                reintento_auth = True
+                s2, uid2 = _reauth()
+                if s2:
+                    s, uid = s2, (uid2 or uid)
+                    r = s.get(f"{ML_API}/items?ids={','.join(batch)}"
+                              f"&attributes={attrs}", timeout=20)
             if r.status_code == 200:
                 for entry in r.json():
                     if entry.get("code") == 200:
