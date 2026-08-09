@@ -1138,18 +1138,24 @@ def _ml_thumbs(s, item_ids: list) -> dict:
 
 
 def _ml_daily_sales(days: int = 14, date_from: str = None,
-                    date_to: str = None) -> dict:
+                    date_to: str = None, kat: bool = False) -> dict:
     """Ventas diarias de ML por fecha {ordenes, unidades, ingresos}.
 
     Rango personalizado date_from/date_to ('YYYY-MM-DD') si se pasan;
     si no, los últimos `days` días.
+
+    Con kat=True consulta la SEGUNDA cuenta de ML (KAT) usando su token
+    propio (_ml_kat_session_auth), no la de BOUN COLOMBIA.
     """
     try:
         import datetime as _dt
-        from ml_scraper import _ml_session_auth, ML_API
-        s, uid = _ml_session_auth()
+        from ml_scraper import (_ml_session_auth, _ml_kat_session_auth,
+                                 ML_API)
+        s, uid = (_ml_kat_session_auth() if kat else _ml_session_auth())
         if not s:
-            return {"ok": False, "error": "MercadoLibre sin conexión"}
+            return {"ok": False,
+                    "error": ("MercadoLibre KAT sin conexión" if kat
+                              else "MercadoLibre sin conexión")}
         co = _dt.timezone(_dt.timedelta(hours=-5))
         d_from = d_to = None
         if date_from:
@@ -1246,19 +1252,24 @@ def _ml_daily_sales(days: int = 14, date_from: str = None,
                 # Conservar item_id: la web de ofertas relámpago lo usa para
                 # cruzar ventas por día con campañas/variantes (Sección 4).
                 t["img"] = thumbs.get(t.get("item_id"), "")
-        # ROAS/ACOS por día desde Product Ads (si hay publicidad activa)
-        try:
-            ads = _ml_ads_daily([x["fecha"] for x in dias])
-            for x in dias:
-                a = ads.get(x["fecha"])
-                if a:
-                    x["roas"] = a.get("roas")
-                    x["acos"] = a.get("acos")
-        except Exception:
-            pass
+        # ROAS/ACOS por día desde Product Ads (si hay publicidad activa).
+        # Solo para BOUN: _ml_ads_daily usa la sesión BOUN, así que para la
+        # cuenta KAT se omite (no mezclar la publicidad de una con las
+        # ventas de la otra).
+        if not kat:
+            try:
+                ads = _ml_ads_daily([x["fecha"] for x in dias])
+                for x in dias:
+                    a = ads.get(x["fecha"])
+                    if a:
+                        x["roas"] = a.get("roas")
+                        x["acos"] = a.get("acos")
+            except Exception:
+                pass
         return {"ok": True, "dias": dias}
     except Exception as e:
-        return {"ok": False, "error": "MercadoLibre: %s" % str(e)[:120]}
+        _pfx = "MercadoLibre KAT" if kat else "MercadoLibre"
+        return {"ok": False, "error": "%s: %s" % (_pfx, str(e)[:120])}
 
 
 def _shopify_orders(shop: str, token: str, since_iso: str,
@@ -1492,6 +1503,7 @@ _FAL_LAST_GOOD = {}      # rango -> {"ts": epoch, "dias": [...]} última lectura
 
 def _build_sales(days: int, date_from: str = None, date_to: str = None) -> dict:
     ml = _ml_daily_sales(days, date_from, date_to)
+    mlk = _ml_daily_sales(days, date_from, date_to, kat=True)
     try:
         import falabella as fb
         fa = fb.daily_sales(days, date_from, date_to)
@@ -1525,29 +1537,33 @@ def _build_sales(days: int, date_from: str = None, date_to: str = None) -> dict:
         if src.get("ok"):
             for d in src.get("dias", []):
                 b = combo.setdefault(d["fecha"], {
-                    "fecha": d["fecha"], "ml": _empty(),
+                    "fecha": d["fecha"], "ml": _empty(), "ml_kat": _empty(),
                     "falabella": _empty(), "shopify": _empty()})
                 b[key] = {"ordenes": d["ordenes"], "unidades": d["unidades"],
                           "ingresos": d["ingresos"], "roas": d.get("roas"),
                           "acos": d.get("acos"), "top": d.get("top", [])}
     _add(ml, "ml")
+    _add(mlk, "ml_kat")
     _add(fa, "falabella")
     _add(sh, "shopify")
     dias = []
     for f in sorted(combo):
         b = combo[f]
+        b.setdefault("ml_kat", _empty())
         b.setdefault("shopify", _empty())
         b["total"] = {
-            "ordenes": b["ml"]["ordenes"] + b["falabella"]["ordenes"]
-            + b["shopify"]["ordenes"],
-            "unidades": b["ml"]["unidades"] + b["falabella"]["unidades"]
-            + b["shopify"]["unidades"],
-            "ingresos": round(b["ml"]["ingresos"] + b["falabella"]["ingresos"]
+            "ordenes": b["ml"]["ordenes"] + b["ml_kat"]["ordenes"]
+            + b["falabella"]["ordenes"] + b["shopify"]["ordenes"],
+            "unidades": b["ml"]["unidades"] + b["ml_kat"]["unidades"]
+            + b["falabella"]["unidades"] + b["shopify"]["unidades"],
+            "ingresos": round(b["ml"]["ingresos"] + b["ml_kat"]["ingresos"]
+                              + b["falabella"]["ingresos"]
                               + b["shopify"]["ingresos"], 2)}
         dias.append(b)
     return {"ok": True, "days": days, "dias": dias,
             "date_from": date_from or "", "date_to": date_to or "",
             "ml_ok": bool(ml.get("ok")), "ml_error": ml.get("error", ""),
+            "mlk_ok": bool(mlk.get("ok")), "mlk_error": mlk.get("error", ""),
             "fal_ok": fal_ok, "fal_error": fal_error,
             "fal_stale": fal_stale, "fal_as_of": fal_as_of,
             "shop_ok": bool(sh.get("ok")), "shop_error": sh.get("error", "")}
@@ -5833,7 +5849,7 @@ def _mj_ml_release(s, oid, od, co):
             pass
     best, released = None, False
     cg = {"ok": False, "descuento": 0.0, "retencion": 0.0,
-          "comision": 0.0, "envio": 0.0, "neto": 0.0}
+          "comision": 0.0, "envio": 0.0, "neto": 0.0, "refunded": 0.0}
     for pid in pids:
         mr, st = "", ""
         try:
@@ -5844,6 +5860,17 @@ def _mj_ml_release(s, oid, od, co):
                 mr = b.get("money_release_date") or ""
                 st = b.get("money_release_status") or ""
                 _mj_ml_charges(b, cg)
+                # Devolución: monto reembolsado al comprador (COP). El pago de
+                # MercadoPago trae el acumulado en transaction_amount_refunded;
+                # respaldo: sumar los reembolsos del arreglo `refunds`.
+                try:
+                    _ref = float(b.get("transaction_amount_refunded") or 0)
+                    if _ref <= 0 and isinstance(b.get("refunds"), list):
+                        _ref = sum(float(x.get("amount") or 0)
+                                   for x in b.get("refunds") or [])
+                    cg["refunded"] += _ref
+                except Exception:
+                    pass
         except Exception:
             pass
         if not mr:
@@ -5985,6 +6012,8 @@ def _mj_sync(window_days=None) -> dict:
     since_d, until_d = from_d.date().isoformat(), to_d.date().isoformat()
     today = to_d.date()
     rows, errores = [], []
+    # Devoluciones ML por orden: {order_id: fracción_reembolsada (0..1)}.
+    ml_refund = {}
 
     # ── MercadoLibre (comisión real = sale_fee · liberación = money_release_date) ──
     ml_set = tg["ml"]
@@ -6004,8 +6033,10 @@ def _mj_sync(window_days=None) -> dict:
                     pass
                 ad_cost = _mj_ml_ad_cost(s, list(ml_set.keys()),
                                          since_d, until_d)
-                _NO = {"cancelled", "invalid", "payment_required",
-                       "payment_in_process"}
+                # 'cancelled' NO va aquí: una orden cancelada puede traer un
+                # reembolso (devolución) que hay que reflejar como línea
+                # negativa. Se filtra más abajo solo si además NO hubo dinero.
+                _NO = {"invalid", "payment_required", "payment_in_process"}
                 tmp, units_by_item = [], {}
                 offset, seen = 0, set()
                 while True:
@@ -6049,6 +6080,20 @@ def _mj_sync(window_days=None) -> dict:
                             float(x.get("unit_price") or 0)
                             * int(x.get("quantity") or 0)
                             for x in (od.get("order_items") or [])) or 0.0
+                        # ── Devolución ──────────────────────────────────────
+                        # Fracción reembolsada del bruto de la orden. Si la
+                        # orden está CANCELADA y no hubo reembolso (nunca se
+                        # pagó), se ignora como antes. Si hubo reembolso, la
+                        # venta se procesa igual y más abajo se le agrega una
+                        # línea negativa de devolución.
+                        refunded = float(cg.get("refunded") or 0)
+                        frac_ref = (max(0.0, min(refunded / gross_ord, 1.0))
+                                    if gross_ord else 0.0)
+                        if ((od.get("status") or "") == "cancelled"
+                                and refunded <= 0):
+                            continue
+                        if frac_ref > 0:
+                            ml_refund[oid] = frac_ref
                         if cg["ok"] and cg["envio"]:
                             env = cg["envio"]
                         else:
@@ -6417,6 +6462,39 @@ def _mj_sync(window_days=None) -> dict:
         consumed_map[pid] = consumed
         if consumed >= float(qty):
             clear_pids.append(pid)
+
+    # ── Devoluciones (ML) ───────────────────────────────────────────────────
+    # Por cada venta atribuida a María cuyo pago fue reembolsado, se agrega una
+    # línea NEGATIVA (item_id …#DEV) que revierte la parte reembolsada de sus
+    # cifras. Así el saldo deja de sobre-acreditar ventas devueltas y la
+    # devolución queda visible y auditable en la tabla. Se genera DESPUÉS del
+    # reparto por cupo para revertir solo la porción realmente atribuida a ella.
+    _NEG_K = ("unidades", "precio_venta", "descuentos", "comision",
+              "retencion", "costo_envio", "costo_publicidad", "neto_mj")
+    dev_rows = []
+    for r in final_rows:
+        if r.get("plataforma") != "mercadolibre":
+            continue
+        fr = ml_refund.get(str(r.get("order_id") or ""), 0.0)
+        if fr <= 0:
+            continue
+        iid = str(r.get("item_id") or "")
+        if iid.endswith("#DEV"):
+            continue
+        dv = {
+            "plataforma": "mercadolibre", "order_id": r.get("order_id"),
+            "item_id": iid + "#DEV", "product_id": r.get("product_id"),
+            "codigo": r.get("codigo", ""),
+            "nombre": "Devolución · " + (r.get("nombre") or ""),
+            "thumb": r.get("thumb", ""),
+            "fecha_venta": r.get("fecha_venta"),
+            "release_date": r.get("release_date"),
+            "liberado": bool(r.get("liberado")),
+            "estado_pago": "devuelto"}
+        for kk in _NEG_K:
+            dv[kk] = -round(float(r.get(kk) or 0) * fr, 2)
+        dev_rows.append(dv)
+    final_rows.extend(dev_rows)
 
     n = 0
     for row in final_rows:

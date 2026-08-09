@@ -5,6 +5,7 @@
   --side:#1C1B1E; --border:#3B3A3F; --hov:#343338;
   --text:#F5F1EA; --muted:#9B9A96; --dim:#5A595E;
   --green:#3FCB82; --amber:#E0A23C; --red:#E11D48; --blue:#7FB3E0;
+  --violet:#B48BE0;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{
@@ -115,6 +116,7 @@ a{color:inherit}
 .badge-full{background:var(--green);color:#0A0A0A}
 .muted{color:var(--muted)}.green{color:var(--green)}.red{color:var(--red)}
 .amber{color:var(--amber)}.acc{color:var(--acc)}.text{color:var(--text)}
+.blue{color:var(--blue)}.violet{color:var(--violet)}
 .note{color:var(--muted);font-size:10px;margin:6px 0}
 
 /* ── Tabla genérica ────────────────────────────────────────────────── */

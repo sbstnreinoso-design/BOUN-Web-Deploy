@@ -818,7 +818,7 @@ async function renderSales(force){
   v.innerHTML=`<div class="row-between">
       <div>
         <div class="page-title">Ventas</div>
-        <div class="page-sub">Ventas diarias de MercadoLibre y Falabella, con total combinado.</div>
+        <div class="page-sub">Ventas diarias de MercadoLibre (BOUN y KAT), Falabella y Shopify, con total combinado.</div>
       </div>
       <div class="filters" style="margin:0;align-items:center">
         <select id="salSel" class="field fmini" onchange="salMode(this.value)">
@@ -842,11 +842,12 @@ async function renderSales(force){
     const r=await api("/sales?"+salesQ(force));
     const dias=r.dias||[];
     const sum=(arr,src,m)=>arr.reduce((a,d)=>a+(d[src]?d[src][m]:0),0);
-    const tIng=sum(dias,"total","ingresos"), mIng=sum(dias,"ml","ingresos"), fIng=sum(dias,"falabella","ingresos"), sIng=sum(dias,"shopify","ingresos");
+    const tIng=sum(dias,"total","ingresos"), mIng=sum(dias,"ml","ingresos"), kIng=sum(dias,"ml_kat","ingresos"), fIng=sum(dias,"falabella","ingresos"), sIng=sum(dias,"shopify","ingresos");
     const tUni=sum(dias,"total","unidades");
     document.getElementById("salKpis").innerHTML=[
-      ["Ingresos totales",cop(tIng),"acc",`${periodo} · ML + Falabella + Shopify`],
+      ["Ingresos totales",cop(tIng),"acc",`${periodo} · ML + ML KAT + Falabella + Shopify`],
       ["MercadoLibre",cop(mIng),"amber",sum(dias,"ml","unidades")+" unidades"],
+      ["MercadoLibre KAT",cop(kIng),"violet",sum(dias,"ml_kat","unidades")+" unidades"],
       ["Falabella",cop(fIng),"blue",sum(dias,"falabella","unidades")+" unidades"],
       ["Shopify",cop(sIng),"green",sum(dias,"shopify","unidades")+" unidades"],
       ["Unidades totales",tUni,"acc",dias.length+" días con datos"],
@@ -854,6 +855,7 @@ async function renderSales(force){
     // avisos de conexión
     let notes="";
     if(!r.ml_ok) notes+=`<div class="note red">⚠ MercadoLibre: ${esc(r.ml_error||"sin conexión")}</div>`;
+    if(r.mlk_ok===false) notes+=`<div class="note red">⚠ MercadoLibre KAT: ${esc(r.mlk_error||"sin conexión")}</div>`;
     if(!r.fal_ok){
       if(r.fal_stale) notes+=`<div class="note">⚠ Falabella: su API no responde ahora (503); mostrando la <b>última lectura de hace ${r.fal_as_of} min</b>.</div>`;
       else notes+=`<div class="note red">⚠ Falabella: ${esc(r.fal_error||"sin conexión")}</div>`;
@@ -884,6 +886,7 @@ async function renderSales(force){
         <th style="width:18px"></th>
         <th>Fecha</th>
         <th><span class="amber">● MercadoLibre</span></th>
+        <th><span class="violet">● ML KAT</span></th>
         <th><span class="blue">● Falabella</span></th>
         <th><span class="green">● Shopify</span></th>
         <th>Total del día</th>
@@ -895,13 +898,15 @@ async function renderSales(force){
         <td class="expand" id="sx-${d.fecha}">▸</td>
         <td style="border-left:3px solid ${c}"><span style="color:${c};font-weight:700">${WD[w]||""}</span> <b>${esc(d.fecha)}</b></td>
         <td class="amber">${cel(d.ml)}</td>
+        <td class="violet">${cel(d.ml_kat)}</td>
         <td class="blue">${cel(d.falabella)}</td>
         <td class="green">${cel(d.shopify)}</td>
         <td class="acc"><b>${d.total.unidades} u · ${cop(d.total.ingresos)}</b></td>
       </tr>
-      <tr class="sdetail" id="sd-${d.fecha}" style="display:none"><td></td><td colspan="5">
+      <tr class="sdetail" id="sd-${d.fecha}" style="display:none"><td></td><td colspan="6">
         <div style="display:flex;gap:28px;flex-wrap:wrap;padding:4px 0 8px">
           ${detail(d.ml,"MercadoLibre","amber")}
+          ${detail(d.ml_kat,"MercadoLibre KAT","violet")}
           ${detail(d.falabella,"Falabella","blue")}
           ${detail(d.shopify,"Shopify","green")}
         </div>
@@ -912,6 +917,7 @@ async function renderSales(force){
         <td></td>
         <td><b>TOTAL${SALES_MODE==="range"?"":` ${SALES_DAYS}d`}</b></td>
         <td class="amber">${sum(dias,"ml","unidades")} u · <b>${cop(mIng)}</b></td>
+        <td class="violet">${sum(dias,"ml_kat","unidades")} u · <b>${cop(kIng)}</b></td>
         <td class="blue">${sum(dias,"falabella","unidades")} u · <b>${cop(fIng)}</b></td>
         <td class="green">${sum(dias,"shopify","unidades")} u · <b>${cop(sIng)}</b></td>
         <td class="acc"><b>${tUni} u · ${cop(tIng)}</b></td>
@@ -1009,9 +1015,15 @@ function drawMJ(){
 
   const ventas=r.ventas||[];
   const filas=ventas.map(vv=>{
-    const foto=vv.thumb?`<img src="${esc(vv.thumb)}" loading="lazy" style="width:42px;height:42px;border-radius:7px;object-fit:cover;background:var(--surf);border:1px solid var(--border)">`
-      :`<span style="width:42px;height:42px;border-radius:7px;background:var(--surf);border:1px solid var(--border);display:inline-flex;align-items:center;justify-content:center;font-size:16px">📦</span>`;
-    const lib=vv.liberado
+    // ↩ Devolución: fila que revierte una venta reembolsada por ML. Se pinta en
+    // rojo y con chip para que se distinga de las ventas normales.
+    const isDev=(vv.estado_pago==="devuelto")||String(vv.item_id||"").endsWith("#DEV");
+    const netoColor=isDev?"#E06A6A":"var(--green)";
+    const foto=vv.thumb?`<img src="${esc(vv.thumb)}" loading="lazy" style="width:42px;height:42px;border-radius:7px;object-fit:cover;background:var(--surf);border:1px solid var(--border)${isDev?';filter:grayscale(.5);opacity:.7':''}">`
+      :`<span style="width:42px;height:42px;border-radius:7px;background:var(--surf);border:1px solid var(--border);display:inline-flex;align-items:center;justify-content:center;font-size:16px">${isDev?"↩":"📦"}</span>`;
+    const lib=isDev
+      ?`<span style="color:#E06A6A;font-weight:700">↩ Devuelto</span>${vv.release_date?`<div class="cap" style="font-size:9.5px;color:#E06A6A">${mjDate(vv.release_date)}</div>`:""}`
+      :vv.liberado
       ?`<span style="color:var(--green);font-weight:700">● Liberado</span>${vv.release_date?`<div class="cap" style="font-size:9.5px;color:var(--green)">${mjDate(vv.release_date)}</div>`:""}`
       :`<span style="color:var(--amber);font-weight:700">○ Libera</span><div class="cap" style="font-size:9.5px;color:var(--amber)">${mjDate(vv.release_date)}</div>`;
     const ads=(vv.roas||vv.acos)?`<div class="cap" style="font-size:9.5px">ROAS ${vv.roas?vv.roas+"x":"—"} · ACOS ${vv.acos?vv.acos+"%":"—"}</div>`:"";
@@ -1021,13 +1033,14 @@ function drawMJ(){
     const cupChip=vv.descuentos
       ?`<span title="El comprador aplicó un cupón. BOUN financia este descuento." style="display:inline-block;margin-left:5px;padding:1px 6px;border-radius:999px;font-size:9px;font-weight:700;background:rgba(224,138,138,.16);color:#E08A8A;border:1px solid rgba(224,138,138,.35);white-space:nowrap">🎟 Cupón −${cop(vv.descuentos)}</span>`
       :`<span title="Sin cupón: el comprador pagó precio pleno." style="display:inline-block;margin-left:5px;padding:1px 6px;border-radius:999px;font-size:9px;font-weight:700;background:rgba(155,154,150,.12);color:var(--muted);border:1px solid var(--border);white-space:nowrap">sin cupón</span>`;
-    return `<tr>
+    const devChip=isDev?`<span title="Venta reembolsada por MercadoLibre. Esta línea revierte lo que se le había acreditado a María José." style="display:inline-block;margin-left:5px;padding:1px 6px;border-radius:999px;font-size:9px;font-weight:700;background:rgba(224,106,106,.16);color:#E06A6A;border:1px solid rgba(224,106,106,.4);white-space:nowrap">↩ Devolución</span>`:"";
+    return `<tr${isDev?' style="background:rgba(224,106,106,.06)"':''}>
       <td style="display:flex;align-items:center;gap:9px">${foto}<div><div style="font-weight:600;font-size:12px;line-height:1.25">${esc((vv.nombre||"").slice(0,46))}</div><div class="cap" style="font-size:10px">${esc(vv.codigo||"")} · ${mjDate(vv.fecha_venta)}</div>${vv.order_id?`<div class="cap" style="font-size:9.5px;opacity:.75">#${esc(String(vv.order_id))}</div>`:""}</div></td>
-      <td>${mjPlatChip(vv.plataforma)}${cupChip}</td>
+      <td>${mjPlatChip(vv.plataforma)}${devChip||cupChip}</td>
       <td style="text-align:center">${vv.unidades}</td>
       <td style="text-align:right;font-weight:700">${cop(vv.precio_venta)}${vv.descuentos?`<div class="cap" style="font-size:9px;color:#E08A8A">cupón −${cop(vv.descuentos)} (${pctCup.toFixed(1)}%)</div>`:""}</td>
-      <td style="text-align:right;color:#E08A8A;font-size:11px">−${cop((vv.descuentos||0)+(vv.comision||0)+(vv.retencion||0)+(vv.costo_envio||0)+(vv.costo_publicidad||0))}<div class="cap" style="font-size:9px">${vv.descuentos?`desc ${cop(vv.descuentos)} · `:""}com ${cop(vv.comision||0)} · ret ${cop(vv.retencion||0)}${vv.costo_envio?` · env ${cop(vv.costo_envio)}`:""}${vv.costo_publicidad?` · ads ${cop(vv.costo_publicidad)}`:""}</div></td>
-      <td style="text-align:right;font-weight:800;color:var(--green)">${cop(vv.neto_mj)}</td>
+      <td style="text-align:right;color:#E08A8A;font-size:11px">${isDev?"—":`−${cop((vv.descuentos||0)+(vv.comision||0)+(vv.retencion||0)+(vv.costo_envio||0)+(vv.costo_publicidad||0))}<div class="cap" style="font-size:9px">${vv.descuentos?`desc ${cop(vv.descuentos)} · `:""}com ${cop(vv.comision||0)} · ret ${cop(vv.retencion||0)}${vv.costo_envio?` · env ${cop(vv.costo_envio)}`:""}${vv.costo_publicidad?` · ads ${cop(vv.costo_publicidad)}`:""}</div>`}</td>
+      <td style="text-align:right;font-weight:800;color:${netoColor}">${cop(vv.neto_mj)}</td>
       <td style="text-align:right;font-size:11px">${lib}${ads}</td>
     </tr>`;
   }).join("");
