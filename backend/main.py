@@ -6014,6 +6014,15 @@ def _mj_sync(window_days=None) -> dict:
     rows, errores = [], []
     # Devoluciones ML por orden: {order_id: fracción_reembolsada (0..1)}.
     ml_refund = {}
+    # Completitud POR CANAL: la limpieza de filas obsoletas (más abajo) SOLO
+    # puede borrar las ventas de un canal si ese canal devolvió un corte
+    # COMPLETO y sin errores en esta corrida. Si un canal falla o pagina
+    # parcial (token vencido, 5xx, rate-limit), su historial NO se toca; así un
+    # fallo transitorio deja de borrar ventas y hundir el saldo. Por defecto
+    # cada canal es "incompleto" y solo se marca completo al terminar OK.
+    ml_complete = False
+    fa_complete = False
+    shopify_ok = set()
 
     # ── MercadoLibre (comisión real = sale_fee · liberación = money_release_date) ──
     ml_set = tg["ml"]
@@ -6039,6 +6048,7 @@ def _mj_sync(window_days=None) -> dict:
                 _NO = {"invalid", "payment_required", "payment_in_process"}
                 tmp, units_by_item = [], {}
                 offset, seen = 0, set()
+                ml_paged_ok = True   # se vuelve False si una página falla
                 while True:
                     r = s.get(f"{_MLAPI}/orders/search?seller={uid}"
                               f"&order.date_created.from={since}"
@@ -6046,6 +6056,9 @@ def _mj_sync(window_days=None) -> dict:
                               f"&sort=date_desc&limit=50&offset={offset}",
                               timeout=20)
                     if r.status_code != 200:
+                        errores.append("ML orders HTTP %d (offset %d)"
+                                       % (r.status_code, offset))
+                        ml_paged_ok = False
                         break
                     d = r.json()
                     res = d.get("results", [])
@@ -6195,6 +6208,10 @@ def _mj_sync(window_days=None) -> dict:
                         "release_date": (rel.isoformat() if rel else None),
                         "liberado": libre,
                         "estado_pago": "liberado" if libre else "pendiente"})
+                # ML solo se considera COMPLETO si la sesión existía y todas
+                # las páginas se leyeron OK. Un corte parcial deja ml_complete
+                # en False y la limpieza no borrará su historial.
+                ml_complete = ml_paged_ok
         except Exception as e:
             errores.append("ML: %s" % str(e)[:90])
 
@@ -6213,6 +6230,7 @@ def _mj_sync(window_days=None) -> dict:
             # nunca recibía ninguna venta Falabella. Se consulta por tramos de
             # 30 días (CreatedAfter+CreatedBefore) y se deduplica por OrderId.
             orders, _seen_o = [], set()
+            fa_chunk_err = False   # algún tramo de fechas falló → corte parcial
             _cur, _step = from_d, _dt.timedelta(days=30)
             while _cur < to_d:
                 _nxt = min(_cur + _step, to_d)
@@ -6220,6 +6238,7 @@ def _mj_sync(window_days=None) -> dict:
                     _chunk = fb.get_orders(_cur.isoformat(), _nxt.isoformat())
                 except Exception:
                     _chunk = []
+                    fa_chunk_err = True
                 for _o in _chunk:
                     _oid = str(_o.get("OrderId") or "")
                     if _oid and _oid not in _seen_o:
@@ -6331,6 +6350,9 @@ def _mj_sync(window_days=None) -> dict:
                     "neto_mj": round(neto, 2), "release_date": rel.isoformat(),
                     "liberado": libre,
                     "estado_pago": "liberado" if libre else "pendiente"})
+            # Falabella completo solo si ningún tramo de fechas falló (su API es
+            # inconsistente; ante duda NO se borra su historial).
+            fa_complete = not fa_chunk_err
         except Exception as e:
             errores.append("Falabella: %s" % str(e)[:90])
 
@@ -6348,6 +6370,8 @@ def _mj_sync(window_days=None) -> dict:
             except Exception as e:
                 errores.append("%s: %s" % (ch, str(e)[:70]))
                 continue
+            # Este canal Shopify sí devolvió su corte → se puede limpiar.
+            shopify_ok.add(ch)
             for od in orders:
                 ca = od.get("created_at") or ""
                 try:
@@ -6510,15 +6534,28 @@ def _mj_sync(window_days=None) -> dict:
     # duplicaba la venta), o ventas que quedaron fuera del anchor/cupo. Sin esto,
     # las filas viejas se quedaban pegadas e inflaban el total.
     try:
+        # SOLO se limpian las ventas de los canales que devolvieron un corte
+        # COMPLETO en esta corrida. Si ML/Falabella/Shopify falló o paginó
+        # parcial, su plataforma NO entra en ok_plats y su historial se
+        # conserva intacto (antes, un fallo transitorio borraba esas ventas y
+        # el saldo se hundía a negativo hasta la próxima corrida completa).
+        ok_plats = set()
+        if ml_complete:
+            ok_plats.add("mercadolibre")
+        if fa_complete:
+            ok_plats.add("falabella")
+        ok_plats |= shopify_ok
         keep = set((r.get("plataforma"), str(r.get("order_id") or ""),
                     str(r.get("item_id") or "")) for r in final_rows)
         _mj_pids = [int(p) for p in meta.keys()]
-        if _mj_pids:
+        if _mj_pids and ok_plats:
             _existing = db._sb_get(
                 "mj_ventas?product_id=in.(%s)"
                 "&select=id,plataforma,order_id,item_id"
                 % ",".join(str(p) for p in _mj_pids)) or []
             for e in _existing:
+                if (e.get("plataforma") or "") not in ok_plats:
+                    continue   # canal sin corte completo → no tocar
                 key = (e.get("plataforma"), str(e.get("order_id") or ""),
                        str(e.get("item_id") or ""))
                 if key not in keep:
