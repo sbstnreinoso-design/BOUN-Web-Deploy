@@ -5915,6 +5915,18 @@ def _mj_ml_charges(pago: dict, cg: dict) -> None:
         if monto <= 0:
             continue
         if typ == "coupon":
+            # SOLO `coupon_fee` es el "Descuento a tu contraparte": lo que ML le
+            # cobra al vendedor por el cupón que BOUN financia. Los otros cargos
+            # type=coupon NO son costo del vendedor y NO deben restarse:
+            #   • coupon_code   → el valor del cupón que ve el comprador.
+            #   • coupon_rebate → la parte que subsidia MercadoLibre (va a favor
+            #                     del vendedor, no en contra).
+            # Sumarlos todos inflaba el descuento (p.ej. mostraba −$56.260 en vez
+            # de −$19.400, o −$4.321 cuando el costo real era $0) y hundía el
+            # neto de María. Verificado contra transaction_details.net_received_amount
+            # de MercadoPago en 3 órdenes (ago-2026): solo coupon_fee cuadra.
+            if name != "coupon_fee":
+                continue
             cg["descuento"] += monto
         elif typ == "tax":
             # inscription_iva NO lo descuenta ML del neto (es el IVA a declarar).
