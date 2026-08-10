@@ -6068,6 +6068,14 @@ def _mj_sync(window_days=None) -> dict:
                               f"&sort=date_desc&limit=50&offset={offset}",
                               timeout=20)
                     if r.status_code != 200:
+                        # ML tope duro: offset máx 10.000 (offset+limit>10000 →
+                        # 400). Es el FIN de resultados legibles, NO un fallo:
+                        # las órdenes de María caen dentro del rango leído (van
+                        # date_desc), así que se considera COMPLETO y la limpieza
+                        # de filas obsoletas SÍ debe correr. Solo un no-200 ANTES
+                        # del tope es un error real que bloquea la limpieza.
+                        if offset >= 10000:
+                            break                 # ml_paged_ok queda True
                         errores.append("ML orders HTTP %d (offset %d)"
                                        % (r.status_code, offset))
                         ml_paged_ok = False
