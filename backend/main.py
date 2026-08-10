@@ -6125,16 +6125,27 @@ def _mj_sync(window_days=None) -> dict:
                         # venta real ya entra por el order_id reemitido.
                         # Detección: cancelada + motivo con "split" en
                         # cancel_detail (p.ej. "Purchases has splitted the pack").
-                        _cd = od.get("cancel_detail") or {}
-                        _cd_txt = " ".join(
-                            str(_cd.get(k) or "") for k in
-                            ("code", "description", "group", "reason")).lower()
-                        if ((od.get("status") or "") == "cancelled"
-                                and "split" in _cd_txt):
-                            continue
-                        if ((od.get("status") or "") == "cancelled"
-                                and refunded <= 0):
-                            continue
+                        # OJO: /orders/search NO trae cancel_detail; si la orden
+                        # está cancelada y el campo no viene, se pide el detalle
+                        # /orders/{id} (solo para canceladas, que son pocas).
+                        if (od.get("status") or "") == "cancelled":
+                            _cd = od.get("cancel_detail") or {}
+                            if not _cd:
+                                try:
+                                    _ro = s.get("%s/orders/%s" % (_MLAPI, oid),
+                                                timeout=12)
+                                    if _ro.status_code == 200:
+                                        _cd = (_ro.json().get("cancel_detail")
+                                               or {})
+                                except Exception:
+                                    _cd = {}
+                            _cd_txt = " ".join(
+                                str(_cd.get(k) or "") for k in
+                                ("code", "description", "group", "reason")).lower()
+                            if "split" in _cd_txt:
+                                continue          # reemisión de pack, no venta
+                            if refunded <= 0:
+                                continue          # cancelada sin cobro
                         if frac_ref > 0:
                             ml_refund[oid] = frac_ref
                         if cg["ok"] and cg["envio"]:
