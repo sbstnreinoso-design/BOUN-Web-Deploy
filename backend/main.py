@@ -6129,19 +6129,26 @@ def _mj_sync(window_days=None) -> dict:
                         # está cancelada y el campo no viene, se pide el detalle
                         # /orders/{id} (solo para canceladas, que son pocas).
                         if (od.get("status") or "") == "cancelled":
+                            # OJO: /orders/search devuelve cancel_detail vacío o
+                            # reducido, así que se pide SIEMPRE el detalle
+                            # /orders/{id} (cancel_detail.code = "pack_splitted").
                             _cd = od.get("cancel_detail") or {}
-                            if not _cd:
+                            _cd_txt = " ".join(
+                                str(_cd.get(k) or "") for k in
+                                ("code", "description", "group", "reason")).lower()
+                            if "split" not in _cd_txt:
                                 try:
                                     _ro = s.get("%s/orders/%s" % (_MLAPI, oid),
                                                 timeout=12)
                                     if _ro.status_code == 200:
-                                        _cd = (_ro.json().get("cancel_detail")
-                                               or {})
+                                        _cd2 = (_ro.json().get("cancel_detail")
+                                                or {})
+                                        _cd_txt += " " + " ".join(
+                                            str(_cd2.get(k) or "") for k in
+                                            ("code", "description",
+                                             "group", "reason")).lower()
                                 except Exception:
-                                    _cd = {}
-                            _cd_txt = " ".join(
-                                str(_cd.get(k) or "") for k in
-                                ("code", "description", "group", "reason")).lower()
+                                    pass
                             if "split" in _cd_txt:
                                 continue          # reemisión de pack, no venta
                             if refunded <= 0:
