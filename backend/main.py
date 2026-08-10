@@ -6114,6 +6114,24 @@ def _mj_sync(window_days=None) -> dict:
                         refunded = float(cg.get("refunded") or 0)
                         frac_ref = (max(0.0, min(refunded / gross_ord, 1.0))
                                     if gross_ord else 0.0)
+                        # ── Reemisión por DIVISIÓN DE PACK (NO es devolución) ──
+                        # Cuando el comprador divide el pack, ML CANCELA esta
+                        # orden y REEMITE la venta con OTRO order_id. El pago
+                        # queda con transaction_amount_refunded > 0 aunque el
+                        # cliente NUNCA devolvió nada (el cobro se mueve a la
+                        # orden nueva). Antes esto se contaba como una devolución
+                        # FALSA (línea #DEV) sobre una venta que en realidad se
+                        # recreó con id nuevo. Se DESCARTA la orden entera: la
+                        # venta real ya entra por el order_id reemitido.
+                        # Detección: cancelada + motivo con "split" en
+                        # cancel_detail (p.ej. "Purchases has splitted the pack").
+                        _cd = od.get("cancel_detail") or {}
+                        _cd_txt = " ".join(
+                            str(_cd.get(k) or "") for k in
+                            ("code", "description", "group", "reason")).lower()
+                        if ((od.get("status") or "") == "cancelled"
+                                and "split" in _cd_txt):
+                            continue
                         if ((od.get("status") or "") == "cancelled"
                                 and refunded <= 0):
                             continue
