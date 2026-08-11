@@ -6576,6 +6576,29 @@ def _mj_sync(window_days=None) -> dict:
         dev_rows.append(dv)
     final_rows.extend(dev_rows)
 
+    # ── Ajustes manuales (settings) ──────────────────────────────────────────
+    # 1) mj_excluir_ordenes: order_ids (coma-separados) que NO le corresponden a
+    #    María aunque el canal los devuelva (p. ej. una 3ª venta cuando ella
+    #    solo puso 2 unidades). Se filtran ANTES del upsert, así la limpieza de
+    #    filas obsoletas los borra de mj_ventas y desaparecen de la tabla.
+    # 2) mj_manual_rows: JSON con filas que el sync NO puede ver (órdenes fuera
+    #    del alcance de la API, reembolsos excepcionales reconocidos por ML,
+    #    etc.). Se agregan al corte en cada corrida con su fecha real, de modo
+    #    que el upsert las mantenga y la limpieza no las toque.
+    try:
+        _exc = set(x.strip() for x in
+                   (db.get_setting("mj_excluir_ordenes", "") or "").split(",")
+                   if x.strip())
+        if _exc:
+            final_rows = [r for r in final_rows
+                          if str(r.get("order_id") or "") not in _exc]
+        _man_raw = db.get_setting("mj_manual_rows", "") or "[]"
+        for _m in (json.loads(_man_raw) or []):
+            if isinstance(_m, dict) and _m.get("order_id"):
+                final_rows.append(dict(_m))
+    except Exception:
+        pass
+
     n = 0
     for row in final_rows:
         try:
@@ -6880,6 +6903,39 @@ def mj_saldo_inicial_set(data: MJSaldoIniIn, user: dict = Depends(_admin)):
         db.set_setting("mj_saldo_inicial_nota", (data.nota or "").strip())
     _MJ_CACHE["ts"] = 0
     return {"ok": True, "monto": round(float(data.monto), 2)}
+
+
+class MJAjustesIn(BaseModel):
+    excluir: Optional[str] = None      # order_ids coma-separados
+    manual: Optional[List[dict]] = None  # filas manuales completas
+
+
+@app.get("/api/mj/ajustes")
+def mj_ajustes_get(user: dict = Depends(_admin)):
+    """Lee los ajustes manuales de la liquidación: órdenes excluidas y filas
+    manuales que el sync agrega en cada corrida (solo admin)."""
+    try:
+        man = json.loads(db.get_setting("mj_manual_rows", "") or "[]")
+    except Exception:
+        man = []
+    return {"ok": True,
+            "excluir": db.get_setting("mj_excluir_ordenes", ""),
+            "manual": man}
+
+
+@app.post("/api/mj/ajustes")
+def mj_ajustes_set(data: MJAjustesIn, user: dict = Depends(_admin)):
+    """Fija los ajustes manuales (solo admin). `excluir`: order_ids
+    coma-separados que se sacan de la liquidación (la limpieza del sync borra
+    sus filas). `manual`: lista de filas de mj_ventas que el sync no puede ver
+    (se upsertean en cada corrida con su fecha real). Cada campo que venga
+    None se deja como está; para limpiar, mandar "" o []."""
+    if data.excluir is not None:
+        db.set_setting("mj_excluir_ordenes", (data.excluir or "").strip())
+    if data.manual is not None:
+        db.set_setting("mj_manual_rows", json.dumps(data.manual))
+    _MJ_CACHE["ts"] = 0
+    return {"ok": True}
 
 
 def _money(v) -> str:
