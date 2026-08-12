@@ -982,5 +982,83 @@ var act=items.filter(function(i){return i.estado==='activa';}),blo=items.filter(
  },5*60*1000);
 })();
 </script>
+<style id="fxStyle">
+/* ===== MODO APROBACIÓN (rediseño: solo lo pendiente por aprobar + resumen mínimo) ===== */
+header .sub, .secNote{display:none!important;}
+.fxhide{display:none!important;}
+h2.secTitle{margin-top:22px}
+#fxSummary{margin:16px 28px 6px;padding:18px 20px;border-radius:18px;background:linear-gradient(135deg,#2c2b30,#232227);border:1px solid #3a393f}
+#fxSummary .fxh{font-family:'Anton',sans-serif;font-size:17px;letter-spacing:.6px;text-transform:uppercase;color:#F2ECE0;margin:0 0 14px;display:flex;align-items:center;gap:8px}
+#fxSummary .fxrow{display:flex;gap:10px;flex-wrap:wrap}
+#fxSummary .fxc{flex:1;min-width:120px;background:#1a191d;border-radius:14px;padding:14px 16px;border:1px solid #34333a}
+#fxSummary .fxc b{display:block;font-family:'Anton',sans-serif;font-size:34px;line-height:1;color:#FFD166}
+#fxSummary .fxc.z b{color:#56555c}
+#fxSummary .fxc span{display:block;margin-top:5px;font-size:11px;color:#a5a4ad;text-transform:uppercase;letter-spacing:.4px}
+#fxSummary .fxd{margin-top:14px;padding-top:11px;border-top:1px solid #34333a;font-size:12.5px;color:#8f8e97;display:flex;gap:18px;flex-wrap:wrap}
+#fxSummary .fxd b{color:#7CE38B}#fxSummary .fxd .bl b{color:#FF7A7A}
+#fxSummary.allclear{background:linear-gradient(135deg,#1f3324,#1c2a20);border-color:#2f6a3f}
+#fxSummary.allclear .fxh{color:#9AE66E}
+</style>
+<script>
+/* ── MODO APROBACIÓN ──
+   Capa 100% aditiva: NO toca la carga de datos, las decisiones ni el envío.
+   Solo oculta lo ya resuelto/informativo (métricas, aprobadas·en·curso, KPIs, notas,
+   bloque de estado, no·elegibles) y deja a la vista únicamente las ofertas por aprobar,
+   con un resumen mínimo arriba (pendientes por sección + activas/bloqueadas). */
+(function(){
+  function pendPromos(){ var g4=document.getElementById('grid4'); if(!g4) return 0; var n=0;
+    [].slice.call(g4.querySelectorAll('.op')).forEach(function(r){ if(r.querySelector('.pbap')&&!r.querySelector('.pbun')&&r.offsetParent!==null) n++; }); return n; }
+  function walk(){
+    var main=document.querySelector('main')||document.body;
+    var kids=[].slice.call(main.children);
+    var hideIds=['warnBanner','estadoHost','s1info','emptySug','emptyProp','promoStats','aprobEmpty','gridAprob'];
+    [].slice.call(document.querySelectorAll('#grid .item.approved,#grid .item.rejected,#grid2 .item.approved,#grid2 .item.rejected')).forEach(function(c){c.classList.add('fxhide');});
+    var s1=[].slice.call(document.querySelectorAll('#grid .item')).filter(function(c){return c.offsetParent!==null;}).length;
+    var s2=[].slice.call(document.querySelectorAll('#grid2 > .item')).filter(function(c){return c.offsetParent!==null;}).length;
+    var s3=pendPromos();
+    var mode=null;
+    kids.forEach(function(el){
+      if(el.id&&hideIds.indexOf(el.id)>=0) el.classList.add('fxhide');
+      if(el.classList&&el.classList.contains('kpis')) el.classList.add('fxhide');
+      if(el.tagName==='P'&&el.classList.contains('legend')) el.classList.add('fxhide');
+      if(el.tagName==='H2'&&el.classList.contains('secTitle')){
+        var num=((el.querySelector('.num')||{}).textContent||'').trim();
+        if(num==='✓'||num==='4'){ mode='hidingSec'; el.classList.add('fxhide'); return; }
+        mode=null;
+        if(num==='1'&&s1===0) el.classList.add('fxhide');
+        else if(num==='2'&&s2===0) el.classList.add('fxhide');
+        else if(num==='3'&&s3===0){ el.classList.add('fxhide'); mode='hidingSec'; }
+        else el.classList.remove('fxhide');
+      } else if(mode==='hidingSec'){ el.classList.add('fxhide'); }
+    });
+    var hd=document.querySelector('header');
+    if(hd){ [].slice.call(hd.querySelectorAll('p')).forEach(function(p){ if(!p.querySelector('#lastRead')&&!p.querySelector('#freshTag')) p.classList.add('fxhide'); }); }
+    return {s1:s1,s2:s2,s3:s3};
+  }
+  function summary(c){
+    var eh=document.getElementById('estadoHost'); var src=eh?eh.innerText:'';
+    var act=0,bloq=0; var ma=src.match(/(\d+)\s*activas/); if(ma)act=+ma[1]; var mb=src.match(/(\d+)\s*bloqueadas/); if(mb)bloq=+mb[1];
+    var total=c.s1+c.s2+c.s3;
+    var el=document.getElementById('fxSummary');
+    if(!el){ el=document.createElement('div'); el.id='fxSummary'; var hd=document.querySelector('header'); if(!hd) return; hd.parentNode.insertBefore(el,hd.nextSibling); }
+    el.classList.toggle('allclear', total===0);
+    el.innerHTML='<div class="fxh">'+(total===0?'✅ Todo revisado — nada por aprobar':'⚡ '+total+' por aprobar')+'</div>'+
+      '<div class="fxrow">'+
+      '<div class="fxc '+(c.s1?'':'z')+'"><b>'+c.s1+'</b><span>Sugeridas ML</span></div>'+
+      '<div class="fxc '+(c.s2?'':'z')+'"><b>'+c.s2+'</b><span>Tu oferta propia</span></div>'+
+      '<div class="fxc '+(c.s3?'':'z')+'"><b>'+c.s3+'</b><span>Promos ML</span></div>'+
+      '</div>'+
+      '<div class="fxd"><span>Ya aplicado: <b>'+act+'</b> activas</span><span class="bl">⛔ <b>'+bloq+'</b> bloqueadas</span></div>';
+  }
+  function run(){ try{ summary(walk()); }catch(e){} }
+  window.__fxRun=run;
+  function boot(){ run(); [400,1000,2000,3500].forEach(function(t){setTimeout(run,t);});
+    ['grid','grid2','grid4'].forEach(function(id){ var g=document.getElementById(id); if(g){ var mo=new MutationObserver(function(){ clearTimeout(window.__fxT); window.__fxT=setTimeout(run,250); }); mo.observe(g,{childList:true,subtree:true,attributes:true,attributeFilter:['class','style']}); } });
+    document.addEventListener('click',function(ev){ if(ev.target.closest&&ev.target.closest('#grid,#grid2,#grid4')){ setTimeout(run,120);} },true);
+  }
+  if(document.readyState!=='loading') boot(); else document.addEventListener('DOMContentLoaded',boot);
+  document.addEventListener('boun:main-ready',function(){ setTimeout(run,300); });
+})();
+</script>
 </body>
 </html>
