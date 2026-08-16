@@ -7577,7 +7577,17 @@ class EmbItemIn(BaseModel):
 # Estados en tránsito (la mercancía aún no llega a bodega): mantienen las
 # unidades en "En camino" (qty_transit). 'arribado' se hace por /arribar y
 # 'cancelado' por DELETE; ninguno de esos dos se setea por PATCH de estado.
-_EMB_TRANSIT = ("bodega_agente", "en_camino", "nacionalizacion")
+#
+# Las etapas espejan EXACTAMENTE el tablero del agente de carga (Envío DC ·
+# encargosdc-tracking.productlift.dev), en orden:
+#   bodega_agente  → "Bodega 🏭"
+#   puerto_salida  → "Puerto de salida 🛂"
+#   en_camino      → "Navegando 🛳️"
+#   puerto_llegada → "Puerto de llegada 🚢"
+#   nacionalizacion→ "Nacionalización 🛃"
+# así la etapa se copia tal cual la publica el agente, sin interpretaciones.
+_EMB_TRANSIT = ("bodega_agente", "puerto_salida", "en_camino",
+                "puerto_llegada", "nacionalizacion")
 
 
 class EmbarqueIn(BaseModel):
@@ -7734,7 +7744,10 @@ def embarques_delete(eid: int, user: dict = Depends(_admin)):
     rows = db._sb_get("embarques?id=eq.%d&select=estado" % eid) or []
     if not rows:
         raise HTTPException(404, "Embarque no encontrado")
-    if rows[0].get("estado") == "en_camino":
+    # Cualquier etapa de tránsito tiene las unidades sumadas en qty_transit
+    # (no solo 'en_camino') → al borrar hay que devolverlas siempre, si no el
+    # "En camino" del inventario queda inflado.
+    if rows[0].get("estado") in _EMB_TRANSIT:
         its = db._sb_get("embarque_items?embarque_id=eq.%d&select=*"
                          % eid) or []
         for it in its:

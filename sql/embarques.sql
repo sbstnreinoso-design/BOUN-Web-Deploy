@@ -35,7 +35,9 @@ create table if not exists public.embarques (
   fecha_compra           date,                              -- cuándo se compró
   fecha_entrega_agente   date,                              -- entrega al agente de carga
   eta                    date,                              -- tiempo estimado de arribo (ETA)
-  estado                 text not null default 'en_camino', -- bodega_agente | en_camino | nacionalizacion | arribado | cancelado
+  estado                 text not null default 'en_camino', -- bodega_agente | puerto_salida | en_camino | puerto_llegada | nacionalizacion | arribado | cancelado
+                                                            -- (las 5 de tránsito espejan el tablero del agente Envío DC:
+                                                            --  Bodega 🏭 · Puerto de salida 🛂 · Navegando 🛳️ · Puerto de llegada 🚢 · Nacionalización 🛃)
   contenedor             text,                              -- nº de contenedor que asigna Envío DC (para rastreo)
   arribado_at            timestamptz,                       -- cuándo se marcó arribado
   notas                  text,

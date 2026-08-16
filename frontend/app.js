@@ -2612,17 +2612,23 @@ let EMB_SKU_OPEN=-1;        // índice de la línea con el selector de SKU abier
 const embNum=v=>{ const n=parseFloat(String(v==null?"":v).replace(/[^0-9.\-]/g,"")); return isNaN(n)?0:n; };
 function embFmtDate(d){ if(!d) return "—"; const s=String(d).slice(0,10); const[y,m,da]=s.split("-"); return da?`${da}/${m}/${y}`:s; }
 function embDaysToEta(eta){ if(!eta) return null; const a=new Date(String(eta).slice(0,10)+"T00:00:00"); const b=new Date(_isoDay(0)+"T00:00:00"); return Math.round((a-b)/86400000); }
-// Estados del embarque (etapas). Las 3 primeras son "en tránsito".
-const EMB_STAGES=["bodega_agente","en_camino","nacionalizacion","arribado"];
+// Estados del embarque (etapas). Las 5 primeras son "en tránsito" y espejan
+// EXACTAMENTE el tablero del agente de carga (Envío DC · encargosdc-tracking):
+//   Bodega 🏭 · Puerto de salida 🛂 · Navegando 🛳️ · Puerto de llegada 🚢 ·
+//   Nacionalización 🛃 — para poder copiar la etapa tal cual la publica el
+//   agente. "Arribado" es propio de BOUN (recibido en bodega, suma stock).
+const EMB_STAGES=["bodega_agente","puerto_salida","en_camino","puerto_llegada","nacionalizacion","arribado"];
 const EMB_STATE={
-  bodega_agente:{lbl:"En bodega del agente",short:"Bodega agente",ico:"📦",col:"#E0A23C",fg:"#1A1206"},
-  en_camino:    {lbl:"En camino",          short:"En camino",    ico:"🚢",col:"#2DC6FF",fg:"#06222B"},
-  nacionalizacion:{lbl:"En nacionalización",short:"Nacionalización",ico:"🛃",col:"#C58CE6",fg:"#1A0A24"},
-  arribado:     {lbl:"Arribado",           short:"Arribado",     ico:"✓", col:"#3FCB82",fg:"#06210F"},
-  cancelado:    {lbl:"Cancelado",          short:"Cancelado",    ico:"✕", col:"var(--surf)",fg:"var(--muted)"},
+  bodega_agente: {lbl:"Bodega",            short:"Bodega",       ico:"🏭",col:"#E0A23C",fg:"#1A1206"},
+  puerto_salida: {lbl:"Puerto de salida",  short:"P. salida",    ico:"🛂",col:"#FFD60A",fg:"#241E00"},
+  en_camino:     {lbl:"Navegando",         short:"Navegando",    ico:"🛳️",col:"#2DC6FF",fg:"#06222B"},
+  puerto_llegada:{lbl:"Puerto de llegada", short:"P. llegada",   ico:"🚢",col:"#4D8DF6",fg:"#04102B"},
+  nacionalizacion:{lbl:"Nacionalización",  short:"Nacionalización",ico:"🛃",col:"#C58CE6",fg:"#1A0A24"},
+  arribado:      {lbl:"Arribado",          short:"Arribado",     ico:"✓", col:"#3FCB82",fg:"#06210F"},
+  cancelado:     {lbl:"Cancelado",         short:"Cancelado",    ico:"✕", col:"var(--surf)",fg:"var(--muted)"},
 };
 function embStMeta(st){ return EMB_STATE[st]||EMB_STATE.en_camino; }
-function embIsTransit(st){ return st==="bodega_agente"||st==="en_camino"||st==="nacionalizacion"; }
+function embIsTransit(st){ return EMB_STAGES.indexOf(st)>=0 && st!=="arribado"; }
 function embStateChip(st){
   const m=embStMeta(st);
   const brd=st==="cancelado"?"border:1px solid var(--border);":"";
@@ -2825,9 +2831,11 @@ function embToggle(id){
     ? `<div style="display:flex;align-items:center;gap:8px;margin-top:12px;flex-wrap:wrap">
          <span class="cap">Etapa:</span>
          <select class="field" style="height:34px;max-width:210px;width:auto" onchange="embSetEstado(${id},this.value)">
-           <option value="bodega_agente" ${e.estado==="bodega_agente"?"selected":""}>📦 En bodega del agente</option>
-           <option value="en_camino" ${e.estado==="en_camino"?"selected":""}>🚢 En camino (navegando)</option>
-           <option value="nacionalizacion" ${e.estado==="nacionalizacion"?"selected":""}>🛃 En nacionalización</option>
+           <option value="bodega_agente" ${e.estado==="bodega_agente"?"selected":""}>🏭 Bodega (agente)</option>
+           <option value="puerto_salida" ${e.estado==="puerto_salida"?"selected":""}>🛂 Puerto de salida</option>
+           <option value="en_camino" ${e.estado==="en_camino"?"selected":""}>🛳️ Navegando</option>
+           <option value="puerto_llegada" ${e.estado==="puerto_llegada"?"selected":""}>🚢 Puerto de llegada</option>
+           <option value="nacionalizacion" ${e.estado==="nacionalizacion"?"selected":""}>🛃 Nacionalización</option>
          </select>
          <span class="muted" style="font-size:11px">cambia la etapa según avanza el envío</span>
        </div>`
@@ -2983,9 +2991,11 @@ function embRenderForm(){
     <div class="fcol2"><label>Total de cajas/bultos</label><input class="field" value="${d.total_cajas?Math.round(embNum(d.total_cajas)):""}" placeholder="para verificar al recibir" oninput="embHead('total_cajas',this.value)"></div>
     <div class="fcol2"><label>Etapa</label>
       <select class="field" onchange="embHead('estado',this.value)">
-        <option value="bodega_agente" ${d.estado==="bodega_agente"?"selected":""}>📦 En bodega del agente</option>
-        <option value="en_camino" ${(d.estado==="en_camino"||!d.estado)?"selected":""}>🚢 En camino (navegando)</option>
-        <option value="nacionalizacion" ${d.estado==="nacionalizacion"?"selected":""}>🛃 En nacionalización</option>
+        <option value="bodega_agente" ${d.estado==="bodega_agente"?"selected":""}>🏭 Bodega (agente)</option>
+        <option value="puerto_salida" ${d.estado==="puerto_salida"?"selected":""}>🛂 Puerto de salida</option>
+        <option value="en_camino" ${(d.estado==="en_camino"||!d.estado)?"selected":""}>🛳️ Navegando</option>
+        <option value="puerto_llegada" ${d.estado==="puerto_llegada"?"selected":""}>🚢 Puerto de llegada</option>
+        <option value="nacionalizacion" ${d.estado==="nacionalizacion"?"selected":""}>🛃 Nacionalización</option>
       </select></div>
     <div class="fcol2"><label>Fecha de compra</label><input type="date" class="field" value="${esc(d.fecha_compra)}" max="${_isoDay(0)}" onchange="embHead('fecha_compra',this.value)"></div>
     <div class="fcol2"><label>Entrega al agente</label><input type="date" class="field" value="${esc(d.fecha_entrega_agente)}" onchange="embHead('fecha_entrega_agente',this.value)"></div>
