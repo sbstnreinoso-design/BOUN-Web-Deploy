@@ -8058,9 +8058,27 @@ def relampago_set(clave: str, datos: dict, user: dict = Depends(_current_user)):
 _FRONT = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
 
 
+class _NoCacheStatic(StaticFiles):
+    """Sirve el frontend con `Cache-Control: no-cache` (revalidar siempre).
+
+    Starlette no manda Cache-Control en estáticos, así que el navegador aplica
+    caché HEURÍSTICA: como index.html pide "/app.js" sin ?v=, tras un deploy los
+    usuarios seguían ejecutando el app.js VIEJO durante horas (p. ej. etapas de
+    embarque nuevas que salían mal etiquetadas) hasta forzar recarga.
+    Con `no-cache` el navegador sigue usando el ETag → 304 barato si no cambió,
+    y baja el archivo solo cuando de verdad cambió.
+    """
+
+    async def get_response(self, path, scope):
+        resp = await super().get_response(path, scope)
+        resp.headers.setdefault("Cache-Control", "no-cache")
+        return resp
+
+
 @app.get("/")
 def index():
-    return FileResponse(os.path.join(_FRONT, "index.html"))
+    return FileResponse(os.path.join(_FRONT, "index.html"),
+                        headers={"Cache-Control": "no-cache"})
 
 
-app.mount("/", StaticFiles(directory=_FRONT), name="static")
+app.mount("/", _NoCacheStatic(directory=_FRONT), name="static")
