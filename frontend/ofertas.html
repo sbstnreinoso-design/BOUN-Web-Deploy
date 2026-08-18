@@ -1018,6 +1018,10 @@ h2.secTitle{margin-top:22px}
     var s3=pendPromos();
     var mode=null;
     kids.forEach(function(el){
+      /* La barra de envío NUNCA se oculta: es el único camino para mandar las
+         decisiones. Antes caía dentro de mode==='hidingSec' (va después de la
+         sección 4) y el botón "Enviar decisiones a Claude" quedaba invisible. */
+      if(el.classList&&el.classList.contains('bar')){ el.classList.remove('fxhide'); return; }
       if(el.id&&hideIds.indexOf(el.id)>=0) el.classList.add('fxhide');
       if(el.classList&&el.classList.contains('kpis')) el.classList.add('fxhide');
       if(el.tagName==='P'&&el.classList.contains('legend')) el.classList.add('fxhide');
@@ -1050,7 +1054,12 @@ h2.secTitle{margin-top:22px}
       '</div>'+
       '<div class="fxd"><span>Ya aplicado: <b>'+act+'</b> activas</span><span class="bl">⛔ <b>'+bloq+'</b> bloqueadas</span></div>';
   }
-  function run(){ try{ summary(walk()); }catch(e){} }
+  /* Red de seguridad: pase lo que pase en walk()/summary(), la barra de envío
+     tiene que quedar visible. Sin ella no hay forma de aprobar nada. */
+  /* OJO: la clase "bar" también la usan las barras del gráfico de métricas, así que
+     hay que llegar a la barra de envío desde el botón, no por querySelector('.bar'). */
+  function unhideBar(){ var s=document.getElementById('btnSend'); var b=s&&s.closest?s.closest('.bar'):null; if(b) b.classList.remove('fxhide'); }
+  function run(){ try{ summary(walk()); }catch(e){} unhideBar(); }
   window.__fxRun=run;
   function boot(){ run(); [400,1000,2000,3500].forEach(function(t){setTimeout(run,t);});
     ['grid','grid2','grid4'].forEach(function(id){ var g=document.getElementById(id); if(g){ var mo=new MutationObserver(function(){ clearTimeout(window.__fxT); window.__fxT=setTimeout(run,250); }); mo.observe(g,{childList:true,subtree:true,attributes:true,attributeFilter:['class','style']}); } });

@@ -1,1 +1,2 @@
 modo aprobacion ofertas.html - solo pendientes + resumen minimo 2026-08-12T20:36:00Z
+fix barra de envio ofertas.html - boton Enviar decisiones quedaba oculto 2026-08-18T20:17:40Z
