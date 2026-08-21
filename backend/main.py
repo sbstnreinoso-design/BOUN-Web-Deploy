@@ -7926,7 +7926,15 @@ def embarque_recibo_delete(rid: int, user: dict = Depends(_current_user)):
 # (app_settings), sin que nadie tenga que copiar el token a mano.
 
 _SHOP_SCOPES = ("read_products,write_products,read_inventory,write_inventory,"
-                "read_orders,write_orders,read_locations")
+                "read_orders,write_orders,read_locations,"
+                # Sin estos scopes, GET /orders/{id}/fulfillment_orders.json
+                # devuelve 403 y el tablero de despachos NO puede marcar la
+                # orden como enviada ni notificar al cliente (bug 16-ago-2026).
+                "read_merchant_managed_fulfillment_orders,"
+                "write_merchant_managed_fulfillment_orders,"
+                "read_assigned_fulfillment_orders,"
+                "write_assigned_fulfillment_orders,"
+                "read_fulfillments,write_fulfillments")
 _SHOP_REDIRECT = "https://boun-web-deploy.onrender.com/shopify/callback"
 
 
