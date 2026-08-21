@@ -1006,8 +1006,16 @@ h2.secTitle{margin-top:22px}
    bloque de estado, no·elegibles) y deja a la vista únicamente las ofertas por aprobar,
    con un resumen mínimo arriba (pendientes por sección + activas/bloqueadas). */
 (function(){
+  /* OJO (21-ago): NO usar offsetParent aquí. La Sección 3 se carga async; si walk()
+     corre antes, s3=0 → se le pone fxhide a #grid4 → offsetParent pasa a null → s3
+     sigue en 0 para siempre y las promos por aprobar quedan invisibles (247 el 21-ago).
+     Se cuenta por clases, que no dependen de que la sección esté visible. */
   function pendPromos(){ var g4=document.getElementById('grid4'); if(!g4) return 0; var n=0;
-    [].slice.call(g4.querySelectorAll('.op')).forEach(function(r){ if(r.querySelector('.pbap')&&!r.querySelector('.pbun')&&r.offsetParent!==null) n++; }); return n; }
+    [].slice.call(g4.querySelectorAll('.op')).forEach(function(r){
+      if(r.classList&&r.classList.contains('fxhide')) return;
+      var it=r.closest?r.closest('.item'):null;
+      if(it&&it.classList&&(it.classList.contains('fxhide')||it.classList.contains('approved')||it.classList.contains('rejected'))) return;
+      if(r.querySelector('.pbap')&&!r.querySelector('.pbun')) n++; }); return n; }
   function walk(){
     var main=document.querySelector('main')||document.body;
     var kids=[].slice.call(main.children);
