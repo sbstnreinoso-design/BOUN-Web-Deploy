@@ -3642,6 +3642,26 @@ def _wompi_alerta(txid: str, email: str, amount_cop: float, ref: str,
     db.set_setting("cerebro_alertas", json.dumps(arr[-50:]))
 
 
+def _wompi_alerta_quitar(txid: str):
+    """Retira la alerta 🔴 de una tx que SÍ terminó con pedido creado.
+
+    La alerta se deja apenas falla el primer intento (para que sobreviva a un
+    reinicio de Render en mitad de los reintentos); si un reintento posterior
+    consigue crear el pedido, hay que borrarla o queda un falso pendiente."""
+    try:
+        raw = db.get_setting("cerebro_alertas", "")
+        arr = json.loads(raw) if raw else []
+        if not isinstance(arr, list):
+            return
+        keep = [a for a in arr
+                if not (isinstance(a, dict) and a.get("wompi_tx") == txid)]
+        if len(keep) != len(arr):
+            db.set_setting("cerebro_alertas", json.dumps(keep[-50:]))
+        db.set_setting("wompi_error::%s" % txid, "")
+    except Exception:
+        pass
+
+
 @app.post("/webhooks/wompi")
 async def webhook_wompi(request: Request):
     raw = await request.body()
@@ -3691,41 +3711,77 @@ async def webhook_wompi(request: Request):
     ref = str(tx.get("reference") or "")
     amount_cop = round(float(tx.get("amount_in_cents") or 0) / 100.0, 2)
 
+    def _intento():
+        """Un barrido por todas las tiendas. Devuelve (creado, matched, err)."""
+        matched = None
+        for _ckey, shop in _SHOPIFY_SHOPS.items():
+            tok = db.get_setting("shopify_token::%s" % shop, "")
+            if not tok:
+                continue
+            try:
+                chks = _shopify_abandoned_checkouts(shop, tok)
+            except Exception:
+                continue
+            m = _wompi_match_checkout(chks, email, amount_cop)
+            if not m:
+                continue
+            matched = m
+            try:
+                order = _shopify_create_paid_order(shop, tok, m,
+                                                   amount_cop, txid, ref)
+            except Exception as ce:
+                return False, matched, str(ce)[:200]
+            if order.get("id"):
+                db.set_setting("wompi_tx_done::%s" % txid,
+                               str(order.get("name") or order.get("id")))
+                return True, matched, ""
+        if not matched:
+            return False, None, ("sin carrito abandonado que coincida por "
+                                 "email+monto")
+        return False, matched, "no se pudo crear el pedido"
+
     def _work():
+        # ⏱️ REINTENTOS (lección 22-ago-2026, tx …-23743 de Jhan Carlos):
+        # Shopify NO publica el checkout en la lista de "abandonados" hasta
+        # varios minutos después de que el cliente lo deja. Con Nequi el pago
+        # se aprueba en segundos, así que el webhook llegaba ANTES que el
+        # carrito, no encontraba nada y alertaba: venta perdida hasta
+        # reconciliarla a mano (el carrito apareció ~10 min más tarde).
+        # Solo la AUSENCIA de carrito se arregla esperando; un error real
+        # (token sin scope, fallo al crear) no mejora con reintentos.
+        esperas = [0, 180, 300, 420]          # intentos a t = 0, 3, 8 y 15 min
         matched = None
         err = ""
-        try:
-            for _ckey, shop in _SHOPIFY_SHOPS.items():
-                tok = db.get_setting("shopify_token::%s" % shop, "")
-                if not tok:
-                    continue
-                try:
-                    chks = _shopify_abandoned_checkouts(shop, tok)
-                except Exception:
-                    continue
-                m = _wompi_match_checkout(chks, email, amount_cop)
-                if not m:
-                    continue
-                matched = m
-                try:
-                    order = _shopify_create_paid_order(shop, tok, m,
-                                                       amount_cop, txid, ref)
-                except Exception as ce:
-                    err = str(ce)[:200]
-                    break
-                if order.get("id"):
-                    db.set_setting("wompi_tx_done::%s" % txid,
-                                   str(order.get("name") or order.get("id")))
-                    return                    # ✅ pedido creado, listo
-            if not matched and not err:
-                err = "sin carrito abandonado que coincida por email+monto"
-        except Exception as e:
-            err = err or str(e)[:200]
-        # No se pudo crear el pedido → red de seguridad: alerta a Cerebro
-        db.set_setting("wompi_error::%s" % txid,
-                       json.dumps({"email": email, "amount": amount_cop,
-                                   "ref": ref, "err": err}))
-        _wompi_alerta(txid, email, amount_cop, ref, matched, err)
+        alertado = False
+        for i, espera in enumerate(esperas):
+            if espera:
+                time.sleep(espera)
+            # ¿lo creó a mano Sebastián (o el endpoint /reconciliar) entretanto?
+            if db.get_setting("wompi_tx_done::%s" % txid, ""):
+                if alertado:
+                    _wompi_alerta_quitar(txid)
+                return
+            try:
+                creado, matched, err = _intento()
+            except Exception as e:
+                creado, err = False, str(e)[:200]
+            if creado:
+                if alertado:
+                    _wompi_alerta_quitar(txid)
+                return                        # ✅ pedido creado, listo
+            if not alertado:
+                # Alertar YA, sin esperar a agotar los reintentos: si Render
+                # reinicia a mitad de camino este thread muere y la venta se
+                # perdería en silencio. Si un reintento lo salva, se retira.
+                db.set_setting("wompi_error::%s" % txid,
+                               json.dumps({"email": email,
+                                           "amount": amount_cop,
+                                           "ref": ref, "err": err}))
+                _wompi_alerta(txid, email, amount_cop, ref, matched, err)
+                alertado = True
+            if matched:
+                return                        # el carrito está: no es cuestión
+                                              # de esperar, es un error real
 
     threading.Thread(target=_work, daemon=True).start()
     return Response(status_code=200)
