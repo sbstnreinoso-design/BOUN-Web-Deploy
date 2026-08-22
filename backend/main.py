@@ -3858,6 +3858,9 @@ def wompi_reconciliar(data: WompiReconcileIn, user: dict = Depends(_admin)):
         if order.get("id"):
             db.set_setting("wompi_tx_done::%s" % txid,
                            str(order.get("name") or order.get("id")))
+            # La venta ya está recuperada: retirar la alerta 🔴 de Cerebro,
+            # o queda un pendiente falso arrastrándose días.
+            _wompi_alerta_quitar(txid)
             result["order"] = {"id": order.get("id"), "name": order.get("name")}
             return result
         result["ok"] = False
