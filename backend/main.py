@@ -3699,9 +3699,73 @@ def _wompi_alerta_quitar(txid: str):
         pass
 
 
+# URL de eventos del plugin OFICIAL Wompi↔Shopify (Conexa). Es la que cierra
+# el checkout y crea el pedido de forma nativa. Wompi solo admite UNA URL de
+# eventos y ahí tenemos la nuestra, así que Conexa se quedó sin recibir nada:
+# por eso ningún pago Wompi generó pedido en toda la historia de la tienda
+# (los 3 hubo que crearlos a mano). Reenviamos cada evento para que las dos
+# cosas convivan: Conexa crea el pedido, nosotros seguimos de red de seguridad.
+# Doc: https://docs.wompi.co/en/docs/colombia/wompi-shopify-plugin/
+_WOMPI_CONEXA_URL = ("https://wompi-event-shopify.conexa.ai"
+                     "/api/v1/shopify/webhooks/event")
+
+
+def _wompi_reenviar_a_conexa(raw: bytes, ctype: str = "application/json"):
+    """Reenvía el evento TAL CUAL al plugin oficial, en segundo plano."""
+    def _go():
+        import requests as _rq
+        try:
+            r = _rq.post(_WOMPI_CONEXA_URL, data=raw,
+                         headers={"Content-Type": ctype or "application/json"},
+                         timeout=20)
+            if r.status_code >= 300:
+                db.set_setting("wompi_conexa_last_err",
+                               "HTTP %d: %s" % (r.status_code, r.text[:200]))
+            else:
+                db.set_setting("wompi_conexa_last_ok",
+                               datetime.now(timezone.utc).isoformat())
+        except Exception as e:
+            db.set_setting("wompi_conexa_last_err", str(e)[:200])
+    threading.Thread(target=_go, daemon=True).start()
+
+
+def _shopify_pedido_ya_existe(shop: str, token: str, email: str,
+                              amount_cop: float) -> str:
+    """¿Ya hay un pedido reciente de ese email por ese monto? Devuelve su nombre.
+
+    Con el reenvío a Conexa el pedido lo crea el plugin oficial, así que antes
+    de crear NADA hay que mirar si ya está o generaríamos un duplicado."""
+    import requests as _rq
+    # Ventana corta a propósito: el pedido nace del mismo pago, así que basta
+    # con unas horas. Mirar 2 días haría que una compra idéntica del cliente
+    # el día anterior nos hiciera creer que este pago ya tiene pedido.
+    desde = (datetime.now(timezone.utc) - timedelta(hours=6)).isoformat()
+    try:
+        r = _rq.get("https://%s/admin/api/2025-01/orders.json" % shop,
+                    headers={"X-Shopify-Access-Token": token},
+                    params={"email": email, "status": "any",
+                            "created_at_min": desde, "limit": 50},
+                    timeout=20)
+        if r.status_code != 200:
+            return ""
+        for o in (r.json() or {}).get("orders", []) or []:
+            try:
+                if abs(float(o.get("total_price") or 0) - amount_cop) < 1:
+                    return str(o.get("name") or o.get("id") or "")
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return ""
+
+
 @app.post("/webhooks/wompi")
 async def webhook_wompi(request: Request):
     raw = await request.body()
+    # Lo PRIMERO, y pase lo que pase con nuestra propia validación: darle el
+    # evento al plugin oficial. Si nuestro secreto estuviera mal, Conexa no
+    # tiene por qué quedarse sin su notificación.
+    _wompi_reenviar_a_conexa(raw, request.headers.get("content-type", ""))
     try:
         body = json.loads(raw or b"{}")
     except Exception:
@@ -3755,6 +3819,13 @@ async def webhook_wompi(request: Request):
             tok = db.get_setting("shopify_token::%s" % shop, "")
             if not tok:
                 continue
+            # ¿El plugin de Conexa ya creó el pedido? Entonces no tocamos nada:
+            # nuestro papel es de respaldo, no de segunda fuente de pedidos.
+            ya = _shopify_pedido_ya_existe(shop, tok, email, amount_cop)
+            if ya:
+                db.set_setting("wompi_tx_done::%s" % txid,
+                               "%s (creado por el plugin Wompi)" % ya)
+                return True, None, ""
             try:
                 chks = _shopify_abandoned_checkouts(shop, tok)
             except Exception:
@@ -3786,7 +3857,14 @@ async def webhook_wompi(request: Request):
         # reconciliarla a mano (el carrito apareció ~10 min más tarde).
         # Solo la AUSENCIA de carrito se arregla esperando; un error real
         # (token sin scope, fallo al crear) no mejora con reintentos.
-        esperas = [0, 180, 300, 420]          # intentos a t = 0, 3, 8 y 15 min
+        # Desde que reenviamos el evento a Conexa, el pedido lo debe crear el
+        # plugin oficial: por eso ya NO miramos a t=0 —le damos aire para que
+        # cierre el checkout— y cada intento comprueba antes si el pedido ya
+        # existe. Solo entramos a crear si a los 15 min no lo hizo nadie.
+        # El margen es deliberadamente amplio: Conexa responde en segundos, y
+        # si creásemos antes de que él termine tendríamos DOS pedidos del mismo
+        # pago. Vale más que el respaldo tarde a que duplique.
+        esperas = [900, 600, 900]             # intentos a t = 15, 25 y 40 min
         matched = None
         err = ""
         alertado = False
