@@ -3583,6 +3583,43 @@ def _shopify_create_paid_order(shop: str, token: str, checkout: dict,
         "send_receipt": True,
         "send_fulfillment_receipt": False,
     }
+    # 🚚 ENVÍO Y DESCUENTOS — sin esto el pedido se arma SOLO con el precio de
+    # los productos y no cuadra con lo que el cliente pagó de verdad (caso
+    # #1036, 22-ago-2026: pedido $60.000 contra $70.000 cobrados por Wompi,
+    # porque los $10.000 de flete no se copiaban). Replicamos el checkout.
+    ship = []
+    for sl in checkout.get("shipping_lines", []) or []:
+        try:
+            precio = float(sl.get("price") or 0)
+        except Exception:
+            precio = 0.0
+        ship.append({"title": sl.get("title") or "Envío",
+                     "price": "%.2f" % precio,
+                     "code": sl.get("code") or sl.get("title") or "Envio"})
+    if not ship:
+        # Sin shipping_lines explícitas: reconstruir el flete como la
+        # diferencia entre el total del checkout y el subtotal de productos.
+        try:
+            sub = float(checkout.get("subtotal_price") or 0)
+            tot = float(checkout.get("total_price") or 0) or amount_cop
+        except Exception:
+            sub = tot = 0.0
+        flete = round(tot - sub, 2)
+        if sub > 0 and flete >= 1:
+            ship.append({"title": "Envío", "price": "%.2f" % flete,
+                         "code": "Envio"})
+    if ship:
+        order["shipping_lines"] = ship
+    # Los descuentos van aparte: si el cliente usó un cupón y no lo copiamos,
+    # el pedido sale MÁS caro que lo cobrado (el error simétrico al del flete).
+    dcs = []
+    for dc in checkout.get("discount_codes", []) or []:
+        if dc.get("code") and dc.get("amount") is not None:
+            dcs.append({"code": dc.get("code"),
+                        "amount": "%.2f" % float(dc.get("amount") or 0),
+                        "type": dc.get("type") or "fixed_amount"})
+    if dcs:
+        order["discount_codes"] = dcs
     sa = checkout.get("shipping_address")
     if sa:
         order["shipping_address"] = sa
