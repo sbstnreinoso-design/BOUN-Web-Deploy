@@ -3911,6 +3911,17 @@ class WompiReconcileIn(BaseModel):
     force: bool = False            # ignora el candado wompi_tx_done
 
 
+@app.get("/api/wompi/estado")
+def wompi_estado(user: dict = Depends(_admin)):
+    """Salud del puente a Conexa: sin esto el reenvío es una caja negra.
+
+    Si `ultimo_error` tiene algo y `ultimo_ok` está viejo, el plugin oficial NO
+    está recibiendo los eventos y los pedidos volverán a no crearse solos."""
+    return {"conexa_url": _WOMPI_CONEXA_URL,
+            "ultimo_ok": db.get_setting("wompi_conexa_last_ok", ""),
+            "ultimo_error": db.get_setting("wompi_conexa_last_err", "")}
+
+
 @app.post("/api/wompi/reconciliar")
 def wompi_reconciliar(data: WompiReconcileIn, user: dict = Depends(_admin)):
     """Concilia MANUALMENTE un pago Wompi con su carrito abandonado y crea el
