@@ -15,6 +15,7 @@ import threading
 import hashlib
 import secrets
 from datetime import datetime
+from urllib.parse import quote as _urlquote
 
 import requests
 
@@ -369,7 +370,15 @@ def get_stats() -> dict:
 # ── SETTINGS (compartidos: incl. token ML del equipo) ─────────────────────────
 
 def get_setting(key: str, default="") -> str:
-    rows = _sb_get(f"app_settings?key=eq.{key}&select=value")
+    # La key va DENTRO de un query string: hay que percent-encodearla o
+    # cualquier carácter reservado la parte. En concreto el '#' de las keys
+    # `despachos_guia::BOUN|#1034` cortaba la URL (todo lo que sigue a '#' es
+    # fragmento y nunca llega a PostgREST), así que el filtro quedaba en
+    # `key=eq.despachos_guia::BOUN|`, no encontraba nada y el endpoint
+    # /api/despachos/guia respondía "sin guía" para TODOS los pedidos.
+    # set_setting no sufría el problema porque manda la key en el cuerpo JSON.
+    rows = _sb_get("app_settings?key=eq.%s&select=value"
+                   % _urlquote(key, safe=""))
     if rows is not None:
         if rows:
             try:
