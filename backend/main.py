@@ -4620,6 +4620,44 @@ class HeartbeatIn(BaseModel):
     icon: Optional[str] = None    # box|chat|tag|spark|chart|target|search|star|file|bolt|clock
 
 
+class AlertaDescartarIn(BaseModel):
+    wompi_tx: Optional[str] = None
+    task_id: Optional[str] = None
+    title: Optional[str] = None
+
+
+@app.post("/api/cerebro/alertas/descartar")
+def cerebro_alerta_descartar(data: AlertaDescartarIn,
+                             user: dict = Depends(_admin)):
+    """Retira una alerta MANUAL de `cerebro_alertas` ya resuelta.
+
+    Las alertas con `task_id` desaparecen solas cuando esa tarea reporta ok/run,
+    pero las que no lo tienen (p. ej. las de Wompi, que se identifican por
+    `wompi_tx`) se quedaban pegadas para siempre sin forma de quitarlas: no
+    había endpoint ni botón. Filtra por cualquiera de los tres criterios."""
+    crit = {k: v for k, v in
+            (("wompi_tx", data.wompi_tx), ("task_id", data.task_id),
+             ("title", data.title)) if v}
+    if not crit:
+        raise HTTPException(400, "indica wompi_tx, task_id o title")
+    try:
+        raw = db.get_setting("cerebro_alertas", "")
+        arr = json.loads(raw) if raw else []
+        if not isinstance(arr, list):
+            arr = []
+    except Exception:
+        arr = []
+    keep = [a for a in arr
+            if not (isinstance(a, dict)
+                    and any(a.get(k) == v for k, v in crit.items()))]
+    quitadas = len(arr) - len(keep)
+    if quitadas:
+        db.set_setting("cerebro_alertas", json.dumps(keep[-50:]))
+    if data.wompi_tx:
+        db.set_setting("wompi_error::%s" % data.wompi_tx, "")
+    return {"ok": True, "quitadas": quitadas, "quedan": len(keep)}
+
+
 @app.post("/api/cerebro/heartbeat")
 def cerebro_heartbeat(data: HeartbeatIn, key: str = "",
                       authorization: Optional[str] = Header(None)):

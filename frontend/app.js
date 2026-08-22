@@ -2456,6 +2456,26 @@ function cbCopy(el){
   if(navigator.clipboard&&navigator.clipboard.writeText){navigator.clipboard.writeText(txt).then(done).catch(()=>{cbFallbackCopy(txt);done();});}
   else{cbFallbackCopy(txt);done();}
 }
+// Criterio con el que el backend identifica una alerta manual para quitarla.
+// Las derivadas de una tarea (task_id) se limpian solas cuando esa tarea
+// reporta ok/run, así que esas NO llevan botón: solo las manuales encalladas.
+function cbAlertCrit(a){
+  if(a.wompi_tx) return {wompi_tx:a.wompi_tx};
+  if(a.title&&!a.task_id) return {title:a.title};
+  return null;
+}
+function cbAlertDescartable(a){ return !!cbAlertCrit(a); }
+async function cbDescartar(el){
+  const crit=JSON.parse(decodeURIComponent(el.dataset.c||'{}'));
+  if(!crit||!Object.keys(crit).length) return;
+  const prev=el.textContent;
+  el.disabled=true; el.textContent='Descartando…';
+  try{
+    const r=await api('/cerebro/alertas/descartar',{method:'POST',body:JSON.stringify(crit)});
+    if(r&&r.ok){ el.textContent='✓ Descartada'; setTimeout(renderCerebro,700); }
+    else { el.textContent=prev; el.disabled=false; }
+  }catch(e){ el.textContent=prev; el.disabled=false; }
+}
 async function renderCerebro(){
   if(CEREBRO_TIMER){clearInterval(CEREBRO_TIMER);CEREBRO_TIMER=null;}
   if(CB_CLOCK_TIMER){clearInterval(CB_CLOCK_TIMER);CB_CLOCK_TIMER=null;}
@@ -2566,7 +2586,7 @@ function drawCerebro(data){
 
   // — pendientes —
   const alertsHtml=`<div class="cb-sec err">${cbSvg("alert",16)}<h3>Pendientes de la IA · requieren solución</h3><span class="cb-tag">detectar y resolver</span></div>
-    <div class="cb-grid al">${alertas.map(a=>{const w=a.sev==="warn";return `<div class="cb-alert ${w?"w":""}"><div class="cb-ah"><div class="cb-aic">${cbSvg("alert",16,2)}</div><h4>${a.title}</h4><span class="cb-sev">${w?"Atención":"Bloqueado"}</span></div><p>${a.txt}</p><button class="cb-open" data-p="${encodeURIComponent(cbAlertPromptFor(a))}" onclick="cbCopy(this)">⧉ Abrir en Claude</button></div>`;}).join("")||'<div class="muted" style="padding:10px">Sin pendientes. Todo en orden. ✅</div>'}</div>`;
+    <div class="cb-grid al">${alertas.map(a=>{const w=a.sev==="warn";return `<div class="cb-alert ${w?"w":""}"><div class="cb-ah"><div class="cb-aic">${cbSvg("alert",16,2)}</div><h4>${a.title}</h4><span class="cb-sev">${w?"Atención":"Bloqueado"}</span></div><p>${a.txt}</p><button class="cb-open" data-p="${encodeURIComponent(cbAlertPromptFor(a))}" onclick="cbCopy(this)">⧉ Abrir en Claude</button>${cbAlertDescartable(a)?`<button class="cb-open" style="margin-top:6px;opacity:.75" data-c="${encodeURIComponent(JSON.stringify(cbAlertCrit(a)))}" onclick="cbDescartar(this)">✕ Ya está resuelto — descartar</button>`:""}</div>`;}).join("")||'<div class="muted" style="padding:10px">Sin pendientes. Todo en orden. ✅</div>'}</div>`;
 
   const offline = (data&&data.ok===false)?'<div class="cb-offline">⚠ No se pudo leer el estado del motor (la web puede estar despertando). Mostrando estado por horario.</div>':'';
 
