@@ -2672,14 +2672,13 @@ def _ml_active_pubs(product_id: int, include_paused_oos: bool = False) -> tuple:
     return activas, excl
 
 
-def _reparto_por_userproduct(disp: int, pubs: list) -> dict:
-    """Reparte `disp` entre publicaciones ML AGRUPANDO por user_product: las que
-    comparten upid comparten stock, así que cuentan como UN solo grupo y se
-    escriben UNA vez. Por grupo elige un representante ESCRIBIBLE (no-catálogo,
-    mayor ventas) para mandarle el write por /items; ML propaga al resto del upid
-    (incluida la de catálogo). Los grupos solo-catálogo igual reciben un rep
-    (su write se saltará/bloqueará y se reporta)."""
-    import sync as _sync
+def _reps_por_userproduct(pubs: list) -> list:
+    """Agrupa publicaciones ML por user_product y devuelve UN representante por
+    grupo: las que comparten upid comparten stock en ML, así que cuentan como UN
+    solo grupo y se escriben UNA vez. Por grupo elige un representante
+    ESCRIBIBLE (no-catálogo, mayor ventas) para mandarle el write por /items; ML
+    propaga al resto del upid (incluida la de catálogo). Los grupos solo-catálogo
+    igual reciben un rep (su write se saltará/bloqueará y se reporta)."""
     groups = {}
     for p in pubs:
         gk = p.get("upid") or ("__solo__:" + str(p.get("key")))
@@ -2691,15 +2690,25 @@ def _reparto_por_userproduct(disp: int, pubs: list) -> dict:
         rep = max(pool, key=lambda x: int(x.get("ventas") or 0))
         reps.append({"key": rep["key"],
                      "ventas": sum(int(x.get("ventas") or 0) for x in members)})
-    return _sync.reparto(disp, reps)
+    return reps
+
+
+def _reparto_por_userproduct(disp: int, pubs: list) -> dict:
+    """Reparte `disp` entre publicaciones ML agrupando por user_product.
+    (Se mantiene por compatibilidad; el plan usa el pool ML unificado.)"""
+    import sync as _sync
+    return _sync.reparto(disp, _reps_por_userproduct(pubs))
 
 
 def _compute_plan(codigo: str, disponible: int, reactivate: bool = False) -> dict:
-    """Reparto del disponible entre publicaciones activas de los 4 canales.
-    Si reactivate=True, ML incluye también las pausadas por falta de stock.
-    REGLA TEMPORAL `ml_solo_bogota`: cuando está activa, MercadoLibre reparte
-    SOLO el stock de Bogotá (disponible − Yopal); los demás canales siguen
-    usando el disponible completo (ambas bodegas)."""
+    """Reparto del disponible entre las publicaciones activas de TODOS los
+    canales, con un POOL ÚNICO: el inventario físico es uno solo, así que la
+    suma de lo publicado en ML BOUN + ML KAT + Falabella + Shopify ×2 nunca
+    supera el disponible. Si reactivate=True, ML incluye también las pausadas
+    por falta de stock.
+    REGLA TEMPORAL `ml_solo_bogota`: cuando está activa, MercadoLibre (ambas
+    cuentas) no puede llevarse más de (disponible − Yopal); su parte del pool se
+    capa a ese tope y el excedente no se reasigna."""
     import sync as _sync
     out = {}
     prows = db._sb_get("inventory_products?code=eq.%s&select=id,qty_yopal"
@@ -2711,16 +2720,30 @@ def _compute_plan(codigo: str, disponible: int, reactivate: bool = False) -> dic
             disp_ml = _combo_armable(codigo)[0]   # combo: solo armables en Bogotá
         else:
             disp_ml = max(0, disponible - int(prows[0].get("qty_yopal") or 0))
-    # MercadoLibre (usa disp_ml: solo Bogotá si la regla temporal está activa)
+    # ── POOL ÚNICO DE INVENTARIO PARA TODOS LOS CANALES ──────────────────────
+    # TODOS los canales (ML BOUN, ML KAT, Falabella y los 2 Shopify) venden del
+    # MISMO inventario físico, así que NO puede dárseles el disponible completo a
+    # cada uno por separado: eso publicaba varias veces las mismas unidades
+    # (23-ago-2026: GD 018 GRIS, 247 en bodega → 247 ofertadas en ML BOUN + 247
+    # en ML KAT = 494 comprables). Ahora se reparte UNA sola vez entre los grupos
+    # de todos los canales y después se separa el plan por canal.
+    # Las claves del reparto van prefijadas "canal|id" para que dos canales con
+    # el mismo identificador (p. ej. un seller_sku de Falabella igual al código)
+    # no se pisen entre sí.
+    grupos = []
+
+    def _add_grupos(canal, items):
+        for it in items:
+            grupos.append({"key": "%s|%s" % (canal, it["key"]),
+                           "ventas": int(it.get("ventas") or 0)})
+
+    # MercadoLibre BOUN (agrupado por user_product: las hermanas sincronizadas
+    # comparten stock en ML, así que cuentan como UN grupo).
+    ml_act, ml_excl = ([], [])
     if pid:
         ml_act, ml_excl = _ml_active_pubs(pid, include_paused_oos=reactivate)
-        out["mercadolibre"] = {"reparto": _reparto_por_userproduct(disp_ml, ml_act),
-                               "excluidas": ml_excl}
-    else:
-        out["mercadolibre"] = {"reparto": {}, "excluidas": []}
-    # MercadoLibre KAT (2ª cuenta): reparte disp_ml (misma regla de bodega que
-    # ML BOUN: solo Bogotá mientras ml_solo_bogota esté activa) entre las
-    # publicaciones MAPEADAS en inventory_links (channel=mercadolibre_kat).
+    _add_grupos("mercadolibre", _reps_por_userproduct(ml_act))
+    # MercadoLibre KAT (2ª cuenta): publicaciones MAPEADAS en inventory_links.
     kat_ids = []
     if pid and db.channel_supported():
         try:
@@ -2732,8 +2755,8 @@ def _compute_plan(codigo: str, disponible: int, reactivate: bool = False) -> dic
                     kat_ids.append(_ext)
         except Exception:
             pass
-    out["mercadolibre_kat"] = {"reparto": _sync.reparto(
-        disp_ml, [{"key": k, "ventas": 0} for k in sorted(set(kat_ids))])}
+    _add_grupos("mercadolibre_kat",
+                [{"key": k, "ventas": 0} for k in sorted(set(kat_ids))])
     # Falabella: SKUs del CSV histórico + las publicaciones MAPEADAS en
     # inventory_links (sección Mapeo). Antes el reparto usaba SOLO el CSV
     # estático, así que una publicación de Falabella mapeada por Mapeo y que no
@@ -2750,13 +2773,42 @@ def _compute_plan(codigo: str, disponible: int, reactivate: bool = False) -> dic
                     fal_skus.add(_ext)
         except Exception:
             pass
-    out["falabella"] = {"reparto": _sync.reparto(
-        disponible, [{"key": sk, "ventas": 0} for sk in sorted(fal_skus)])}
+    _add_grupos("falabella",
+                [{"key": sk, "ventas": 0} for sk in sorted(fal_skus)])
     # Shopify ×2
+    _shop_vs = {}
     for ckey, shop in _SHOPIFY_SHOPS.items():
-        vs = _shopify_variants_by_sku(shop, codigo)
-        out[ckey] = {"reparto": _sync.reparto(disponible, vs),
-                     "variantes": len(vs)}
+        _shop_vs[ckey] = _shopify_variants_by_sku(shop, codigo)
+        _add_grupos(ckey, _shop_vs[ckey])
+
+    plan = _sync.reparto(disponible, grupos)
+
+    # REGLA `ml_solo_bogota`: MercadoLibre (ambas cuentas) solo puede despachar
+    # lo que hay en Bogotá, así que su parte del pool se capa a `disp_ml`. El
+    # excedente NO se reasigna a los otros canales (criterio conservador: mejor
+    # publicar de menos que arriesgar una sobreventa).
+    if disp_ml < disponible:
+        _mlk = [k for k in plan
+                if k.startswith("mercadolibre|") or k.startswith("mercadolibre_kat|")]
+        _exceso = sum(plan[k] for k in _mlk) - disp_ml
+        for k in sorted(_mlk, key=lambda x: -plan[x]):
+            if _exceso <= 0:
+                break
+            _quita = min(plan[k], _exceso)
+            plan[k] -= _quita
+            _exceso -= _quita
+
+    def _plan_de(canal):
+        _pref = canal + "|"
+        return {k[len(_pref):]: v for k, v in plan.items() if k.startswith(_pref)}
+
+    out["mercadolibre"] = {"reparto": _plan_de("mercadolibre"),
+                           "excluidas": ml_excl}
+    out["mercadolibre_kat"] = {"reparto": _plan_de("mercadolibre_kat")}
+    out["falabella"] = {"reparto": _plan_de("falabella")}
+    for ckey in _SHOPIFY_SHOPS:
+        out[ckey] = {"reparto": _plan_de(ckey),
+                     "variantes": len(_shop_vs.get(ckey) or [])}
     return out
 
 
