@@ -307,7 +307,7 @@ if(__R.ultima_lectura){const e=document.getElementById('lastRead');if(e)e.textCo
   } else { ft.className='freshTag ok'; ft.textContent='plan actualizado '+txt; }
  }
 })();
-const CAT={sleep:['SLEEP','#8B7BD8'],moto:['MOTO','#FF8A1F'],music:['MUSIC','#FF2D7B'],swim:['SWIM','#2DC6FF'],ind:['INDUSTRIAL','#FFD60A'],tech:['TECH / OTROS','#9BA7B8']};
+const CAT={sleep:['SLEEP','#8B7BD8'],moto:['MOTO','#FF8A1F'],music:['MUSIC','#FF2D7B'],swim:['SWIM','#2DC6FF'],ind:['INDUSTRIAL','#FFD60A'],kat:['KAT 🐱','#9AE66E'],tech:['TECH / OTROS','#9BA7B8']};
 const ITEMS_FB=[
 {id:'1565206225139155',t:'Convertidor OTG 10A tipo C a USB macho datos alta velocidad',img:'https://http2.mlstatic.com/D_801505-MCO96050797098_102025-I.webp',cat:'tech',lista:'$ 20.000',promo:'BOUN JUNIO · $ 19.000',rel:'$ 17.400',desc:'$ 2.600 (13%)',delta:-8.4,def:1,warn:['Sin stock Full'],day:'Viernes',hour:'12:00 – 24:00',why:'<b>Ventas propias:</b> su mejor día es viernes (10 u) seguido de jueves (9 u) en los últimos 15 días. <b>Hora:</b> compra impulso tech de tarde-noche; la franja 12–24 h captura el pico de tráfico nocturno de ML. <b>Precio:</b> queda solo 8,4% bajo la promo del mes — margen sano.'},
 {id:'979524848',t:'Tapones para dormir con cancelación de ruido negro',img:'https://http2.mlstatic.com/D_624877-MCO100591546493_122025-O.jpg',cat:'sleep',lista:'$ 39.999',promo:'AON Home · $ 29.999',rel:'$ 22.571',desc:'$ 17.428 (44%)',delta:-24.8,def:0,warn:['Descuento exigido 44%'],day:'Jueves',hour:'12:00 – 24:00',why:'<b>Si se aprueba:</b> jueves es día pico general (50,5 u/día) y el comprador de sueño decide de noche (se acuesta, no duerme, compra). <b>Ojo precio:</b> ML exige 44% de descuento → queda 24,8% por debajo de la promo del mes. Rompe el piso de precio BOUN — por eso viene pre-rechazada.'},
@@ -375,7 +375,8 @@ ITEMS.forEach((it,i)=>{
   state[i]=null;
   /* Sin acción posible (13-jul): ya programadas por ML o no elegibles NO se muestran como aprobables — van al bloque informativo plegado, sin botones. */
   const sinAccion=(it.warn||[]).some(w=>/YA PROGRAMADA|Sin stock Full|no elegible|⛔/.test(w));
-  const c=CAT[it.cat];
+  /* Blindaje: una categoría desconocida NUNCA debe romper el render de la Sección 1 (bug 23-ago: it.cat='kat' no existía en CAT y la excepción dejaba las tarjetas sin botones ✓/✗). */
+  const c=CAT[it.cat]||CAT.tech;
   const el=document.createElement('div');
   el.className='item'; el.id='card'+i;
   el.dataset.mlid=String(it.id).replace(/\D/g,'');
@@ -390,10 +391,10 @@ ITEMS.forEach((it,i)=>{
     </div>
   </div>
   <div class="prices">
-    <div class="pr"><small>Lista</small><b class="strike">${it.lista}</b></div>
-    <div class="pr"><small>Promo del mes</small><b>${it.promo.split('· ')[1]||it.promo}</b><span style="font-size:10px;color:var(--muted)">${it.promo.split(' ·')[0]}</span></div>
-    <div class="pr hero"><small>⚡ Relámpago</small><b>${it.rel}</b><span class="delta ${Math.abs(it.delta)>18?'bad':(Math.abs(it.delta)>10?'mid':'good')}">${it.delta}% vs promo</span></div>
-    <div class="pr"><small>Dcto. exigido</small><b style="font-size:12.5px">${it.desc}</b></div>
+    <div class="pr"><small>Lista</small><b class="strike">${it.lista||'—'}</b></div>
+    <div class="pr"><small>Promo del mes</small><b>${String(it.promo||'—').split('· ')[1]||it.promo||'—'}</b><span style="font-size:10px;color:var(--muted)">${String(it.promo||'').split(' ·')[0]}</span></div>
+    <div class="pr hero"><small>⚡ Relámpago</small><b>${it.rel||'—'}</b>${it.delta?`<span class="delta ${Math.abs(it.delta)>18?'bad':(Math.abs(it.delta)>10?'mid':'good')}">${it.delta}% vs promo</span>`:''}</div>
+    <div class="pr"><small>Dcto. exigido</small><b style="font-size:12.5px">${it.desc||'—'}</b></div>
   </div>
   <div class="sched">
     <span style="font-size:11px;color:var(--muted);letter-spacing:.8px;text-transform:uppercase">Salida sugerida</span>

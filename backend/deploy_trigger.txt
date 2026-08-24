@@ -1,1 +1,2 @@
 Fri Aug 21 17:28:37 -05 2026
+2026-08-24T02:47:18Z - fix CAT.kat en ofertas.html (Seccion 1 no renderizaba botones)
