@@ -538,7 +538,7 @@ function buildDecisiones(){
    rechazar:ITEMS.filter((_,i)=>state[i]===0).map(it=>it.id)
   },
   propias:{
-   crear:OFFERS.filter((_,i)=>state2[i]===1).map(o=>({fecha:o.fecha,franja:o.franja,pubs:o.prods.map(function(x){var id=POOL[x].id;var rm=(window.__realMap||{})[String(id).replace(/\D/g,'')]||{};var precio=(rm.precio!=null?rm.precio:nice(POOL[x].price));return {id:id,precio:precio,precio_real:(rm.precio!=null?rm.precio:null),pct_real:(rm.pct!=null?rm.pct:null),estado:((rm.estado==='activa'||rm.estado==='bloqueada')?rm.estado:'aprobada'),motivo:(rm.motivo||null)};})})),
+   crear:OFFERS.filter((_,i)=>state2[i]===1).map(o=>({fecha:o.fecha,franja:o.franja,offer_ml:(o.offer_ml||null),pubs:o.prods.map(function(x){var id=POOL[x].id;var dm=(window.__realMapByDay||{})[String(o.fecha||'').toLowerCase().trim()];var rm=(dm?dm[String(id).replace(/\D/g,'')]:null)||{};var precio=(rm.precio!=null?rm.precio:nice(POOL[x].price));return {id:id,precio:precio,precio_real:(rm.precio!=null?rm.precio:null),pct_real:(rm.pct!=null?rm.pct:null),estado:((rm.estado==='activa'||rm.estado==='bloqueada')?rm.estado:'aprobada'),motivo:(rm.motivo||null)};})})),
    no_crear:OFFERS.filter((_,i)=>state2[i]===0).map(o=>o.fecha)
   },
   promos_ml:(window.__buildPromos&&window.__buildPromos())||{aprobar:[],rechazar:[]}
@@ -613,9 +613,18 @@ var act=items.filter(function(i){return i.estado==='activa';}),blo=items.filter(
   try{
    var tk=localStorage.getItem('boun_token'); if(!tk) return;
    var r=await fetch('/api/relampago/decisiones',{headers:{Authorization:'Bearer '+tk}}); if(!r.ok) return;
-   var j=await r.json(); var d=(j&&j.datos)||{}; var map={};
-   ((d.propias&&d.propias.crear)||[]).forEach(function(o){(o.pubs||[]).forEach(function(p){ var k=String(p.id).replace(/\D/g,''); var m=map[k]||{}; if(p.precio_real!=null){m.precio=p.precio_real;m.pct=p.pct_real;} if(p.estado){m.estado=p.estado;m.motivo=p.motivo;} map[k]=m; });});
-   window.__realMap=map;
+   var j=await r.json(); var d=(j&&j.datos)||{}; var map={}, byDay={};
+   /* BUG 23-ago: el mapa se armaba SOLO por id, fusionando todos los días. Una pub que salió
+      antes pisaba el precio y el estado del día actual (una pendiente aparecía como 'activa' y
+      con el precio de otra fecha). Ahora se indexa fecha→id; __realMap queda solo de respaldo. */
+   ((d.propias&&d.propias.crear)||[]).forEach(function(o){
+     var fk=String(o.fecha||'').toLowerCase().trim(); byDay[fk]=byDay[fk]||{};
+     (o.pubs||[]).forEach(function(p){ var k=String(p.id).replace(/\D/g,'');
+       var m={}; if(p.precio_real!=null){m.precio=p.precio_real;m.pct=p.pct_real;} if(p.estado){m.estado=p.estado;m.motivo=p.motivo;}
+       byDay[fk][k]=m;
+       var g=map[k]||{}; if(p.precio_real!=null){g.precio=p.precio_real;g.pct=p.pct_real;} if(p.estado){g.estado=p.estado;g.motivo=p.motivo;} map[k]=g;
+     });});
+   window.__realMap=map; window.__realMapByDay=byDay;
    if(!Object.keys(map).length) return;
    document.querySelectorAll('#grid2 .op').forEach(function(row){
      var id=row.dataset.mlid||((row.innerText.match(/\d{9,}/)||[])[0]||'').replace(/\D/g,'');
@@ -657,9 +666,19 @@ var act=items.filter(function(i){return i.estado==='activa';}),blo=items.filter(
    });
    var enCurso=[];
    apSug.forEach(function(x){ if(x.estado==='bloqueada') return; var id=String(x.id).replace(/\D/g,''); var info=byId[id]||{}; enCurso.push({id:id,t:info.t||('#'+id),img:info.img,dia:fmtFecha(x.dia),franja:x.franja,precio:(x.precio_aplicado!=null?x.precio_aplicado:(x.precio_rel||x.precio)),estado:x.estado||(x.aplicada?'activa':'aprobada'),vendidas:(x.vendidas!=null?x.vendidas:null),pct:x.pct_real,origen:'ml'}); });
-   var apDays={};
-   ((d.propias&&d.propias.crear)||[]).forEach(function(o){ var anyAp=(o.pubs||[]).some(function(q){return q.estado==='activa'||q.estado==='aprobada'||q.aplicada;}); if(anyAp) apDays[String(o.fecha).toLowerCase().trim()]=1; (o.pubs||[]).forEach(function(p){ if(!(p.estado==='activa'||p.estado==='aprobada'||p.aplicada)) return; var id=String(p.id).replace(/\D/g,''); var info=byId[id]||{}; enCurso.push({id:id,t:info.t||('#'+id),img:info.img,dia:fmtFecha(o.fecha),franja:o.franja,precio:(p.precio_real!=null?p.precio_real:p.precio),estado:((p.estado==='activa'||p.aplicada)?'activa':'aprobada'),vendidas:(p.vendidas!=null?p.vendidas:null),pct:p.pct_real,origen:'propia'}); }); });
-   try{ document.querySelectorAll('#grid2 > *').forEach(function(card){ var dd=card.querySelector('.d'); if(dd && apDays[String(dd.textContent).toLowerCase().trim()]) card.style.display='none'; }); }catch(e){}
+   var apDays={}; var apPubs={};
+   ((d.propias&&d.propias.crear)||[]).forEach(function(o){ var anyAp=(o.pubs||[]).some(function(q){return q.estado==='activa'||q.estado==='aprobada'||q.aplicada;}); if(anyAp) apDays[String(o.fecha).toLowerCase().trim()]=1; (o.pubs||[]).forEach(function(q){ if(q.estado==='activa'||q.estado==='aprobada'||q.aplicada) apPubs[String(o.fecha).toLowerCase().trim()+'|'+String(q.id).replace(/\D/g,'')]=1; }); (o.pubs||[]).forEach(function(p){ if(!(p.estado==='activa'||p.estado==='aprobada'||p.aplicada)) return; var id=String(p.id).replace(/\D/g,''); var info=byId[id]||{}; enCurso.push({id:id,t:info.t||('#'+id),img:info.img,dia:fmtFecha(o.fecha),franja:o.franja,precio:(p.precio_real!=null?p.precio_real:p.precio),estado:((p.estado==='activa'||p.aplicada)?'activa':'aprobada'),vendidas:(p.vendidas!=null?p.vendidas:null),pct:p.pct_real,origen:'propia'}); }); });
+   /* 31-ago: antes se ocultaba el DÍA COMPLETO si UNA sola pub estaba aplicada, y las
+      pendientes del mismo día quedaban invisibles (6 del martes 1-sep). Ahora se oculta
+      variante por variante y el día solo desaparece si TODAS sus pubs ya están resueltas. */
+   try{ document.querySelectorAll('#grid2 > *').forEach(function(card){
+     var dd=card.querySelector('.d'); if(!dd) return;
+     var f=String(dd.textContent).toLowerCase().trim();
+     var ops=[].slice.call(card.querySelectorAll('.op')); var hid=0;
+     ops.forEach(function(op){ var id=(op.dataset&&op.dataset.mlid)||''; if(id && apPubs[f+'|'+id]){ op.style.display='none'; hid++; } });
+     if(!ops.length){ if(apDays[f]) card.style.display='none'; }
+     else if(hid===ops.length) card.style.display='none';
+   }); }catch(e){}
    /* Solo vigentes o próximas (pedido de Sebastián 13-jul): los días ya pasados salen de esta sección (quedan en las métricas de la Sección 4). */
    function esPasada(s){ if(!s) return false; var m=String(s).toLowerCase().match(/(\d{1,2})\s*(?:de\s*)?(ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)/); if(!m) return false; var day=parseInt(m[1],10), mo=MESES.indexOf(m[2]); if(!day||mo<0) return false; var t=new Date(); t.setHours(0,0,0,0); var best=null; [t.getFullYear()-1,t.getFullYear(),t.getFullYear()+1].forEach(function(yr){var c=new Date(yr,mo,day); if(best===null||Math.abs(c-t)<Math.abs(best-t)) best=c;}); return best<t; }
    enCurso=enCurso.filter(function(e){ return !esPasada(e.dia); });
@@ -1043,6 +1062,16 @@ h2.secTitle{margin-top:22px}
         else if(num==='3'&&s3===0){ el.classList.add('fxhide'); mode='hidingSec'; }
         else el.classList.remove('fxhide');
       } else if(mode==='hidingSec'){ el.classList.add('fxhide'); }
+      /* 31-ago: fxhide era PEGAJOSO. La Sección 3 carga async; el primer walk() corría
+         con s3=0, marcaba el h2 y ponía mode='hidingSec' → #grid4 quedaba con fxhide
+         para siempre, aunque después llegaran 396 promos (el contador subía pero la
+         sección seguía en blanco). Ahora, cuando la sección SÍ va visible, se le quita
+         el fxhide a su contenido. */
+      else if(!(el.id&&hideIds.indexOf(el.id)>=0)
+              && !(el.classList&&el.classList.contains('kpis'))
+              && !(el.tagName==='P'&&el.classList.contains('legend'))){
+        el.classList.remove('fxhide');
+      }
     });
     var hd=document.querySelector('header');
     if(hd){ [].slice.call(hd.querySelectorAll('p')).forEach(function(p){ if(!p.querySelector('#lastRead')&&!p.querySelector('#freshTag')) p.classList.add('fxhide'); }); }

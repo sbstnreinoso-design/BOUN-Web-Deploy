@@ -1,2 +1,4 @@
 Fri Aug 21 17:28:37 -05 2026
 2026-08-24T02:47:18Z - fix CAT.kat en ofertas.html (Seccion 1 no renderizaba botones)
+2026-08-24T02:55:02Z - fix realMap por dia + offer_ml en decisiones
+2026-08-31 15:58 — fix seccion2 apPubs + seccion3 fxhide pegajoso
