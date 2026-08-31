@@ -279,10 +279,30 @@ async function doLogin(){
   else{document.getElementById('lerr').textContent=j.detail||'Usuario o clave incorrectos';}
  }catch(e){document.getElementById('lerr').textContent='Sin conexión con la web BOUN';}
 }
+/* Auto-login admin (31-ago, pedido de Sebastián): mismo mecanismo que app.js.
+   Si la URL trae ?k=<token> se guarda como boun_admin_k; si existe la llave y la
+   sesión murió (redeploy de Render), se renueva sola contra /api/admin-login y
+   la página NUNCA vuelve a pedir usuario/clave en este navegador. */
+async function tryAdminAutologin(){
+ try{
+  const urlK=new URLSearchParams(location.search).get('k');
+  if(urlK){localStorage.setItem('boun_admin_k',urlK);history.replaceState({}, '', location.pathname);}
+  const k=localStorage.getItem('boun_admin_k');
+  if(!k) return false;
+  const r=await fetch('/api/admin-login?k='+encodeURIComponent(k));
+  if(!r.ok){if(r.status===401)localStorage.removeItem('boun_admin_k');return false;}
+  const j=await r.json();
+  localStorage.setItem('boun_token',j.token);
+  localStorage.setItem('boun_user',(j.user&&j.user.username)||'admin');
+  return true;
+ }catch(e){return false;}
+}
 async function checkAuth(){
- if(!TK()){document.getElementById('loginOv').classList.add('show');return;}
+ if(!TK()){ if(await tryAdminAutologin()){location.reload();return;} document.getElementById('loginOv').classList.add('show');return;}
  try{const r=await fetch('/api/relampago/plan',{headers:{Authorization:'Bearer '+TK()}});
-  if(r.status===401){localStorage.removeItem('boun_token');document.getElementById('loginOv').classList.add('show');}
+  if(r.status===401){localStorage.removeItem('boun_token');
+   if(await tryAdminAutologin()){location.reload();return;}
+   document.getElementById('loginOv').classList.add('show');}
  }catch(e){}
 }
 checkAuth();
