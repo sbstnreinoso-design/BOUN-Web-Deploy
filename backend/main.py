@@ -5413,7 +5413,10 @@ def _despachos_snapshot(days=10):
 _TRACKING_URLS = {
     # Transportadoras Colombia → URL de rastreo con la guía. Shopify pone el
     # link en el correo de envío del cliente.
-    "interrapidisimo": "https://interrapidisimo.com/sigue-tu-envio/?guia={n}",
+    # OJO (11-oct-2026): interrapidisimo.com/sigue-tu-envio/?guia= ya da 404.
+    # No existe enlace directo por guía: el rastreador es un buscador donde
+    # el cliente escribe el número (que va en el mismo correo de envío).
+    "interrapidisimo": "https://siguetuenvio.interrapidisimo.com/",
     "servientrega": ("https://mobile.servientrega.com/WebSitePortal/"
                      "RastreoEnvioDetalle.aspx?Guia={n}"),
     "coordinadora": ("https://coordinadora.com/rastreo/"
