@@ -8339,6 +8339,345 @@ def relampago_set(clave: str, datos: dict, user: dict = Depends(_current_user)):
     return {"ok": True, "clave": clave}
 
 
+# ── ENVÍOS FLEX · UNILOGIX ───────────────────────────────────────────────────
+# Cuenta corriente con la mensajería de última milla que entrega los envíos
+# Mercado Envíos Flex (logistic_type=self_service) de la cuenta ML BOUN.
+#
+# • Envíos: se leen de MercadoLibre (órdenes BOUN → envío self_service), sin
+#   tocar el portal de Unilogix. Un cargo por ENVÍO (shipment), no por orden:
+#   las órdenes de un mismo pack comparten envío y se cobran una sola vez.
+# • Corte diario 1:00 p. m. (hora Colombia, por hora de VENTA en ML): lo vendido
+#   antes de la 1 entra al corte de ese día; lo de después, al del día siguiente.
+# • Tarifa Same Day PM de la propuesta Unilogix (vigente a 31-dic-2026) por
+#   ciudad de entrega y rango de peso facturable = max(físico, A×L×A/5000).
+# • Persistencia sin migraciones SQL: app_settings
+#     flex_corte::YYYY-MM-DD → JSON del corte (lista de envíos)
+#     flex_pagos             → JSON con los pagos hechos a Unilogix
+#     flex_desde             → inicio del servicio (default 13-oct-2026 1 p. m.)
+#   Solo cuenta envíos que salen de la bodega de Bogotá (sender_address).
+#   Los últimos 3 cortes se recalculan en cada sync; los anteriores quedan
+#   congelados tal como se guardaron.
+
+_FLEX_TZ = timezone(timedelta(hours=-5))
+_FLEX_CUT_HOUR = 13
+_FLEX_DESDE_DEF = "2026-10-13T13:00:00"
+_FLEX_CITIES = ["Bogotá", "Soacha", "Medellín", "Cali", "Chía"]
+_FLEX_TIERS = [  # (nombre, desde_kg, hasta_kg, [Bogotá, Soacha, Medellín, Cali, Chía])
+    ("Liviano", 0.0, 5.0, [8600, 9200, 9600, 9600, 12800]),
+    ("Semipesado", 5.0, 13.0, [11200, 12200, 11200, 11200, 13600]),
+    ("Pesado", 13.0, 25.0, [13200, 14200, 13200, 13200, 15200]),
+    ("Extrapesado", 25.0, 40.0, [32600, 43200, 32600, 32600, 53800]),
+]
+_FLEX_MED_METRO = ("medell", "envigado", "itag", "sabaneta", "bello", "la estrella",
+                   "caldas", "copacabana", "girardota", "rionegro")
+_FLEX_CACHE = {"ts": 0.0}
+_FLEX_TTL = 600
+_FLEX_LOCK = threading.Lock()
+_FLEX_SHIP = {}   # cache en memoria de envíos ML ya consultados {sid: dict}
+
+
+def _flex_norm(s):
+    import unicodedata
+    s = unicodedata.normalize("NFKD", str(s or "")).encode("ascii", "ignore").decode()
+    return s.lower().strip()
+
+
+def _flex_city(state, city, municipality):
+    """Ciudad de la TARIFA (una de _FLEX_CITIES) o '' si no hay tarifa."""
+    blob = " | ".join(_flex_norm(x) for x in (city, municipality, state))
+    if "soacha" in blob:
+        return "Soacha"
+    if "chia" in _flex_norm(city) or "chia" in _flex_norm(municipality):
+        return "Chía"
+    if "bogot" in blob:
+        return "Bogotá"
+    if "cali" == _flex_norm(city) or "santiago de cali" in blob:
+        return "Cali"
+    if any(k in blob for k in _FLEX_MED_METRO) and "antioquia" in blob:
+        return "Medellín"
+    return ""
+
+
+def _flex_price(city, bill_kg):
+    ci = _FLEX_CITIES.index(city) if city in _FLEX_CITIES else -1
+    for name, lo, hi, prices in _FLEX_TIERS:
+        if bill_kg <= hi:
+            return name, (prices[ci] if ci >= 0 else None)
+    return "Fuera de tarifa (>40 kg)", None
+
+
+def _flex_cut_of(dt_co):
+    d = dt_co.date()
+    if dt_co.hour >= _FLEX_CUT_HOUR:
+        d = d + timedelta(days=1)
+    return d.isoformat()
+
+
+def _flex_parse_dims(sh):
+    """(alto, largo, ancho, kg) desde el envío ML. ML da 'HxWxL,peso_g'."""
+    cands = []
+    for it in (sh.get("shipping_items") or []):
+        if it.get("dimensions"):
+            cands.append(it.get("dimensions"))
+    if isinstance(sh.get("dimensions"), str):
+        cands.append(sh.get("dimensions"))
+    for raw in cands:
+        try:
+            dims, w = str(raw).split(",")
+            a, b, c = [float(x) for x in dims.lower().split("x")]
+            return a, b, c, float(w) / 1000.0
+        except Exception:
+            continue
+    d = sh.get("dimensions") if isinstance(sh.get("dimensions"), dict) else {}
+    try:
+        return (float(d.get("height") or 0), float(d.get("length") or 0),
+                float(d.get("width") or 0), float(d.get("weight") or 0) / 1000.0)
+    except Exception:
+        return 0.0, 0.0, 0.0, 0.0
+
+
+def _flex_shipment(sid):
+    if sid in _FLEX_SHIP:
+        return _FLEX_SHIP[sid]
+    r = _ml_request("GET", "/shipments/%s" % sid)
+    if r is None or r.status_code != 200:
+        return None
+    sh = r.json() or {}
+    _FLEX_SHIP[sid] = sh
+    return sh
+
+
+def _flex_envio_from(order, sh):
+    """Fila de envío Flex (dict) a partir de la orden y su envío ML."""
+    ra = sh.get("receiver_address") or {}
+    state = (ra.get("state") or {}).get("name", "")
+    city = (ra.get("city") or {}).get("name", "")
+    muni = (ra.get("municipality") or {}).get("name", "")
+    barrio = (ra.get("neighborhood") or {}).get("name", "")
+    ciudad = _flex_city(state, city, muni)
+    # Localidad: el primer nombre que no sea la ciudad/estado ("Suba", "Usme"…).
+    loc = ""
+    for cand in (muni, city):
+        if cand and "bogot" not in _flex_norm(cand) and _flex_norm(cand) != _flex_norm(state):
+            loc = cand
+            break
+    if not loc:
+        loc = barrio or city or state
+    h, l, w, kg = _flex_parse_dims(sh)
+    vol = (h * l * w) / 5000.0 if (h and l and w) else 0.0
+    bill = max(kg, vol)
+    rango, tarifa = _flex_price(ciudad, bill)
+    items = order.get("order_items") or []
+    prod = " + ".join(((oi.get("item") or {}).get("title") or "")[:60] for oi in items) or "—"
+    sku = ", ".join(filter(None, ((oi.get("item") or {}).get("seller_sku") or "" for oi in items)))
+    qty = sum(int(oi.get("quantity") or 0) for oi in items)
+    sold = order.get("date_created", "")
+    try:
+        sdt = datetime.fromisoformat(sold.replace("Z", "+00:00")).astimezone(_FLEX_TZ)
+        sold_co = sdt.strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        sdt, sold_co = None, sold[:16].replace("T", " ")
+    return {
+        "ship": str(sh.get("id") or (order.get("shipping") or {}).get("id") or ""),
+        "orders": [str(order.get("id"))],
+        "pack": str(order.get("pack_id") or ""),
+        "sold": sold_co, "cut": _flex_cut_of(sdt) if sdt else "",
+        "prod": prod, "sku": sku, "qty": qty,
+        "value": float(order.get("total_amount") or 0),
+        "estado": sh.get("status") or "", "subestado": sh.get("substatus") or "",
+        "ciudad": ciudad, "loc": loc, "barrio": barrio, "state": state,
+        "addr": ra.get("address_line") or "",
+        "h": round(h, 1), "l": round(l, 1), "w": round(w, 1),
+        "kg": round(kg, 3), "vol": round(vol, 3), "bill": round(bill, 3),
+        "rango": rango, "tarifa": tarifa,
+        "cobrable": (sh.get("status") or "") != "cancelled",
+    }
+
+
+def _flex_desde():
+    raw = db.get_setting("flex_desde", "") or _FLEX_DESDE_DEF
+    try:
+        return datetime.strptime(raw[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=_FLEX_TZ)
+    except Exception:
+        return datetime.strptime(_FLEX_DESDE_DEF, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=_FLEX_TZ)
+
+
+def _flex_sync():
+    """Relee de ML los envíos Flex de los últimos 3 cortes y los guarda."""
+    from ml_scraper import _ml_session_auth, ML_API
+    s, uid = _ml_session_auth()
+    if not s:
+        raise RuntimeError("MercadoLibre sin conexión")
+    now = datetime.now(_FLEX_TZ)
+    today_cut = _flex_cut_of(now)
+    first_cut = (datetime.fromisoformat(today_cut) - timedelta(days=2)).date()
+    since = datetime.combine(first_cut - timedelta(days=1), datetime.min.time(),
+                             tzinfo=_FLEX_TZ).replace(hour=_FLEX_CUT_HOUR)
+    since = max(since, _flex_desde())
+    fmt = "%Y-%m-%dT%H:%M:%S.000-05:00"
+    by_ship = {}
+    offset = 0
+    while True:
+        r = s.get("%s/orders/search?seller=%s&order.date_created.from=%s"
+                  "&order.date_created.to=%s&sort=date_asc&limit=50&offset=%d"
+                  % (ML_API, uid, since.strftime(fmt), now.strftime(fmt), offset),
+                  timeout=20)
+        if r.status_code != 200:
+            raise RuntimeError("ML orders/search %s" % r.status_code)
+        d = r.json()
+        res = d.get("results", [])
+        for od in res:
+            if od.get("status") == "cancelled":
+                continue
+            sid = (od.get("shipping") or {}).get("id")
+            if not sid:
+                continue
+            sid = str(sid)
+            if sid in by_ship:   # pack: misma guía, se cobra una sola vez
+                by_ship[sid]["orders"].append(str(od.get("id")))
+                by_ship[sid]["value"] += float(od.get("total_amount") or 0)
+                by_ship[sid]["qty"] += sum(int(oi.get("quantity") or 0)
+                                           for oi in od.get("order_items") or [])
+                continue
+            lt = (od.get("shipping") or {}).get("logistic_type")
+            sh = _flex_shipment(sid)
+            if sh is None:
+                continue
+            lt = lt or sh.get("logistic_type")
+            if lt != "self_service":
+                continue
+            # Unilogix recoge en la bodega de Bogotá: un Flex despachado desde
+            # otra bodega (p. ej. Flex Medellín) no es de esta cuenta.
+            snd = sh.get("sender_address") or {}
+            sblob = _flex_norm(" ".join([(snd.get("city") or {}).get("name", ""),
+                                         (snd.get("state") or {}).get("name", "")]))
+            if sblob.strip() and "bogot" not in sblob:
+                continue
+            by_ship[sid] = _flex_envio_from(od, sh)
+        offset += 50
+        if offset >= d.get("paging", {}).get("total", 0) or not res:
+            break
+    cuts = {}
+    for e in by_ship.values():
+        if e["cut"]:
+            cuts.setdefault(e["cut"], []).append(e)
+    desde_cut = _flex_cut_of(_flex_desde())
+    day = first_cut
+    while day.isoformat() <= today_cut:
+        k = day.isoformat()
+        if k >= desde_cut:
+            envs = sorted(cuts.get(k, []), key=lambda x: x["sold"])
+            prev = db.get_setting("flex_corte::" + k, "")
+            if envs or prev:
+                db.set_setting("flex_corte::" + k, json.dumps(
+                    {"fecha": k, "leido": now.strftime("%Y-%m-%d %H:%M"),
+                     "cerrado": k < today_cut,
+                     "envios": envs}, ensure_ascii=False))
+        day += timedelta(days=1)
+    _FLEX_CACHE["ts"] = time.time()
+
+
+def _flex_summary():
+    rows = db._sb_get("app_settings?key=like.flex_corte::*&select=key,value") or []
+    cortes = []
+    for r in rows:
+        try:
+            c = json.loads(r.get("value") or "{}")
+        except Exception:
+            continue
+        envs = c.get("envios") or []
+        cobr = [e for e in envs if e.get("cobrable", True)]
+        c["n"] = len(cobr)
+        c["total"] = sum((e.get("tarifa") or 0) for e in cobr)
+        c["sin_tarifa"] = sum(1 for e in cobr if e.get("tarifa") is None)
+        cortes.append(c)
+    cortes.sort(key=lambda c: c.get("fecha", ""))
+    try:
+        pagos = json.loads(db.get_setting("flex_pagos", "") or "[]")
+    except Exception:
+        pagos = []
+    costo = sum(c["total"] for c in cortes)
+    pagado = sum(float(p.get("monto") or 0) for p in pagos)
+    return {
+        "cortes": cortes, "pagos": sorted(pagos, key=lambda p: p.get("fecha", "")),
+        "kpis": {"saldo": round(costo - pagado, 2), "costo": round(costo, 2),
+                 "pagado": round(pagado, 2), "envios": sum(c["n"] for c in cortes),
+                 "cortes": len(cortes),
+                 "promedio_dia": round(costo / len(cortes), 2) if cortes else 0},
+        "tarifas": {"ciudades": _FLEX_CITIES,
+                    "rangos": [{"rango": n, "desde": lo, "hasta": hi, "precios": p}
+                               for n, lo, hi, p in _FLEX_TIERS]},
+        "desde": _flex_desde().strftime("%Y-%m-%d %H:%M"),
+        "corte_hora": _FLEX_CUT_HOUR,
+    }
+
+
+@app.get("/api/flex")
+def flex_get(force: bool = False, user: dict = Depends(_current_user)):
+    """Envíos Flex · Unilogix: cortes diarios, costo, pagos y saldo."""
+    err = ""
+    if force or (time.time() - _FLEX_CACHE["ts"]) > _FLEX_TTL:
+        if _FLEX_LOCK.acquire(blocking=False):
+            try:
+                _flex_sync()
+            except Exception as e:
+                err = str(e)[:200]
+            finally:
+                _FLEX_LOCK.release()
+    out = _flex_summary()
+    out["cache_age_min"] = int((time.time() - _FLEX_CACHE["ts"]) / 60) if _FLEX_CACHE["ts"] else None
+    out["sync_error"] = err
+    return out
+
+
+class FlexPagoIn(BaseModel):
+    monto: float
+    fecha: Optional[str] = None
+    nota: Optional[str] = ""
+
+
+@app.post("/api/flex/pago")
+def flex_pago_add(data: FlexPagoIn, user: dict = Depends(_current_user)):
+    """Registra un pago hecho a Unilogix (resta del saldo)."""
+    if not data.monto or data.monto <= 0:
+        raise HTTPException(400, "El monto debe ser mayor a 0.")
+    try:
+        pagos = json.loads(db.get_setting("flex_pagos", "") or "[]")
+    except Exception:
+        pagos = []
+    p = {"id": secrets.token_hex(6), "monto": round(float(data.monto), 2),
+         "fecha": (data.fecha or datetime.now(_FLEX_TZ).strftime("%Y-%m-%d"))[:10],
+         "nota": (data.nota or "").strip()[:200],
+         "created_by": user.get("username", "")}
+    pagos.append(p)
+    db.set_setting("flex_pagos", json.dumps(pagos, ensure_ascii=False))
+    return {"ok": True, "id": p["id"]}
+
+
+@app.delete("/api/flex/pago/{pid}")
+def flex_pago_del(pid: str, user: dict = Depends(_current_user)):
+    try:
+        pagos = json.loads(db.get_setting("flex_pagos", "") or "[]")
+    except Exception:
+        pagos = []
+    keep = [p for p in pagos if p.get("id") != pid]
+    db.set_setting("flex_pagos", json.dumps(keep, ensure_ascii=False))
+    return {"ok": len(keep) != len(pagos)}
+
+
+@app.get("/api/flex/debug-envio")
+def flex_debug_envio(sid: str = "", user: dict = Depends(_admin)):
+    """Diagnóstico (solo admin): envío ML crudo + cómo lo interpreta la sección."""
+    if not sid:
+        return {"ok": False, "error": "falta sid"}
+    _FLEX_SHIP.pop(sid, None)
+    sh = _flex_shipment(sid)
+    if sh is None:
+        return {"ok": False, "error": "no se pudo leer el envío"}
+    return {"ok": True, "envio": sh,
+            "interpretado": _flex_envio_from({"id": "", "order_items": []}, sh)}
+
+
 # ── Frontend estático ────────────────────────────────────────────────────────
 
 _FRONT = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
