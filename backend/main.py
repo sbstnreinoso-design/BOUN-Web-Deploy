@@ -6127,7 +6127,8 @@ def _mj_ml_release(s, oid, od, co):
             pass
     best, released = None, False
     cg = {"ok": False, "descuento": 0.0, "retencion": 0.0,
-          "comision": 0.0, "envio": 0.0, "neto": 0.0, "refunded": 0.0}
+          "comision": 0.0, "envio": 0.0, "neto": 0.0, "refunded": 0.0,
+          "cubierto": 0.0}
     for pid in pids:
         mr, st = "", ""
         try:
@@ -6137,16 +6138,43 @@ def _mj_ml_release(s, oid, od, co):
                 b = r.json()
                 mr = b.get("money_release_date") or ""
                 st = b.get("money_release_status") or ""
-                _mj_ml_charges(b, cg)
+                # Un pago CANCELADO o RECHAZADO (p. ej. el comprador reintento
+                # con otro cupon) nunca se le cobro al vendedor: sus cargos no
+                # cuentan. Sumarlos duplicaba el descuento por cupon.
+                if (b.get("status") or "") not in ("cancelled", "rejected"):
+                    _mj_ml_charges(b, cg)
                 # Devolución: monto reembolsado al comprador (COP). El pago de
                 # MercadoPago trae el acumulado en transaction_amount_refunded;
                 # respaldo: sumar los reembolsos del arreglo `refunds`.
+                #
+                # Reembolso CUBIERTO por MercadoLibre (Compra Protegida /
+                # BPP): status_detail "bpp_covered". ML le devuelve el dinero
+                # al comprador con plata PROPIA y el vendedor conserva su neto
+                # (el panel dice "Descartamos el producto. Te acreditamos el
+                # dinero" y el total de la venta sigue igual). Eso NO es una
+                # devolucion para Maria: no se descuenta. Verificado 21-oct-2026
+                # en la orden 2000018744823108 (net_received 149.033,93 intacto).
+                # OJO: "bpp_refunded" es distinto: el reembolso pasa por el flujo
+                # BPP pero se le cobra al vendedor (total $0) -> SI es devolucion.
                 try:
-                    _ref = float(b.get("transaction_amount_refunded") or 0)
-                    if _ref <= 0 and isinstance(b.get("refunds"), list):
-                        _ref = sum(float(x.get("amount") or 0)
-                                   for x in b.get("refunds") or [])
+                    _ref, _cub = 0.0, 0.0
+                    _pd = str(b.get("status_detail") or "")
+                    _rl = b.get("refunds") if isinstance(
+                        b.get("refunds"), list) else []
+                    for x in _rl:
+                        _a = float(x.get("amount") or 0)
+                        _sd = str(((x.get("metadata") or {})
+                                   .get("status_detail")) or _pd)
+                        if _sd == "bpp_covered":
+                            _cub += _a
+                        else:
+                            _ref += _a
+                    if not _rl:
+                        _ref = float(b.get("transaction_amount_refunded") or 0)
+                        if _pd == "bpp_covered":
+                            _cub, _ref = _ref, 0.0
                     cg["refunded"] += _ref
+                    cg["cubierto"] += _cub
                 except Exception:
                     pass
         except Exception:
@@ -6244,6 +6272,64 @@ def _mj_ml_shipping(s, shipment_id) -> float:
     return 0.0
 
 
+# Costos de un envio ML: {shipment_id: (costo_vendedor, pago_comprador)}. Los
+# costos de un envio ya despachado no cambian, asi que se cachean en memoria
+# para no repetir la consulta en cada corrida (solo respuestas 200).
+_MJ_SHIP_CACHE = {}
+
+
+def _mj_ml_ship_costs(s, shipment_id):
+    """(costo_vendedor, pago_comprador) de un envio ML, o None si no se pudo
+    leer. /shipments/{id}/costs trae `senders[].cost` (lo que asume el
+    vendedor) y `receiver.cost` (lo que pago el comprador por el envio)."""
+    if not shipment_id:
+        return None
+    key = str(shipment_id)
+    if key in _MJ_SHIP_CACHE:
+        return _MJ_SHIP_CACHE[key]
+    try:
+        from ml_scraper import ML_API
+        r = s.get(f"{ML_API}/shipments/{shipment_id}/costs", timeout=12)
+        if r.status_code != 200:
+            return None
+        j = r.json() or {}
+        sc = 0.0
+        for sd in (j.get("senders") or []):
+            sc += float(sd.get("cost") or 0)
+            sc -= float(sd.get("compensation") or 0)
+        rc = float((j.get("receiver") or {}).get("cost") or 0)
+        out = (round(max(sc, 0.0), 2), round(max(rc, 0.0), 2))
+        if len(_MJ_SHIP_CACHE) > 5000:
+            _MJ_SHIP_CACHE.clear()
+        _MJ_SHIP_CACHE[key] = out
+        return out
+    except Exception:
+        return None
+
+
+def _mj_env_real(cg_ok, cg_envio, costs):
+    """Costo de envio que REALMENTE asume el vendedor en una orden ML.
+    Devuelve (envio, fuente) con fuente 'cg' (cargo de MercadoPago) o 'api'.
+
+    MercadoPago cobra en `shp_fulfillment` el envio COMPLETO (parte del
+    vendedor + parte del comprador) y ML abona aparte el "Pago de Mercado
+    Envios a cargo del comprador". Si se resta el cargo completo, al vendedor
+    se le descuenta tambien lo que pago el comprador (p. ej. cobro $28.380,
+    comprador $17.880 -> el costo real es $10.500). Por eso al cargo de MP se
+    le resta lo que pago el comprador, sin bajar nunca del costo del vendedor
+    que reporta ML (asi se conservan otros cargos de envio reales, como el de
+    una devolucion)."""
+    cg_envio = float(cg_envio or 0)
+    if cg_ok and cg_envio:
+        env = cg_envio
+        if costs:
+            sc, rc = costs
+            if rc > 0 and env > sc + 0.5:
+                env = max(env - rc, sc)
+        return round(env, 2), "cg"
+    return (float(costs[0]) if costs else 0.0), "api"
+
+
 def _mj_upsert_row(row: dict) -> bool:
     """Upsert idempotente de una fila de mj_ventas por (plataforma, orden, ítem)."""
     flt = ("mj_ventas?plataforma=eq.%s&order_id=eq.%s&item_id=eq.%s&select=id"
@@ -6282,6 +6368,15 @@ def _mj_sync(window_days=None) -> dict:
         return {"ok": True, "n": 0,
                 "note": "Aún no hay productos marcados como de María José."}
     co = _dt.timezone(_dt.timedelta(hours=-5))
+    # Costos de envio ya consultados (persisten entre reinicios del proceso).
+    if not _MJ_SHIP_CACHE:
+        try:
+            for _k, _v in (json.loads(
+                    db.get_setting("mj_ship_costs", "") or "{}") or {}).items():
+                _MJ_SHIP_CACHE[str(_k)] = (float(_v[0]), float(_v[1]))
+        except Exception:
+            pass
+    _ship_n0 = len(_MJ_SHIP_CACHE)
     wd = int(window_days or _mj_setting_f("mj_window_days", 120))
     # Extender la ventana para cubrir desde la marca (anchor) más antigua de un
     # producto con cupo, así no se subcuenta lo vendido desde que se asignó.
@@ -6437,14 +6532,15 @@ def _mj_sync(window_days=None) -> dict:
                                     pass
                             if "split" in _cd_txt:
                                 continue          # reemisión de pack, no venta
-                            if refunded <= 0:
+                            if refunded <= 0 and not cg.get("cubierto"):
                                 continue          # cancelada sin cobro
+                            # Cancelada pero con reembolso cubierto por ML: la
+                            # venta se le paga igual al vendedor -> sigue contando.
                         if frac_ref > 0:
                             ml_refund[oid] = frac_ref
-                        if cg["ok"] and cg["envio"]:
-                            env = cg["envio"]
-                        else:
-                            env = _mj_ml_shipping(s, ship_id)
+                        env, env_src = _mj_env_real(
+                            cg["ok"], cg["envio"],
+                            _mj_ml_ship_costs(s, ship_id))
                         tot_u = sum(int(oi.get("quantity") or 0)
                                     for oi in oi_mj) or 1
                         for oi in oi_mj:
@@ -6471,7 +6567,8 @@ def _mj_sync(window_days=None) -> dict:
                             units_by_item[iid] = units_by_item.get(iid, 0) + q
                             base = {"oid": oid, "fecha": fecha, "rel": rel,
                                     "rel_done": rel_done, "iid_ad": iid,
-                                    "qad": q}
+                                    "qad": q, "ship": ship_id,
+                                    "envsrc": env_src}
                             cb = (None if iid in ml_set
                                   else ml_combo.get(iid))
                             if cb:
@@ -6511,6 +6608,30 @@ def _mj_sync(window_days=None) -> dict:
                     offset += 50
                     if offset >= total or not res:
                         break
+                # Packs: varias ordenes comparten UN envio. MercadoPago carga
+                # el envio en el pago de una sola; las demas no traen cargo y
+                # caian al respaldo de la API, que devuelve el costo del envio
+                # completo otra vez (se descontaba dos veces). Si alguna orden
+                # del envio ya trae el cargo de MP, las de respaldo van en 0;
+                # si ninguna lo trae, el respaldo se cobra en una sola orden.
+                _by_ship = {}
+                for t in tmp:
+                    if t.get("ship"):
+                        _by_ship.setdefault(str(t["ship"]), []).append(t)
+                for _ts in _by_ship.values():
+                    if len(set(x["oid"] for x in _ts)) < 2:
+                        continue
+                    _hay_cg = any(x.get("envsrc") == "cg" for x in _ts)
+                    _api_oid = None
+                    for x in _ts:
+                        if x.get("envsrc") != "api":
+                            continue
+                        if _hay_cg:
+                            x["env"] = 0.0
+                        elif _api_oid is None:
+                            _api_oid = x["oid"]
+                        elif x["oid"] != _api_oid:
+                            x["env"] = 0.0
                 for t in tmp:
                     iid = t.get("iid_ad") or t["iid"]
                     pub = 0.0
@@ -6584,6 +6705,15 @@ def _mj_sync(window_days=None) -> dict:
             orders.sort(key=lambda o: str(o.get("CreatedAt") or ""), reverse=True)
             oids = [str(o.get("OrderId")) for o in orders if o.get("OrderId")]
             items = fb._all_order_items(oids) if oids else []
+            # _all_order_items se traga los errores (rate-limit) y devuelve
+            # menos ordenes de las pedidas. Si falta alguna, el corte es
+            # PARCIAL: no se puede usar para borrar ventas ya acreditadas.
+            try:
+                _con_items = set(str(it.get("OrderId") or "") for it in items)
+                if any(o not in _con_items for o in set(oids)):
+                    fa_chunk_err = True
+            except Exception:
+                fa_chunk_err = True
             agg = {}
             for it in items:
                 # Falabella devuelve el SKU del vendedor unas veces en 'Sku' y
@@ -6773,6 +6903,38 @@ def _mj_sync(window_days=None) -> dict:
                         "liberado": libre,
                         "estado_pago": "liberado" if libre else "pendiente"})
 
+    # ── Shopify: conservar las ventas que la API ya no alcanza a devolver ──
+    # La API de pedidos de Shopify solo entrega los ultimos ~60 dias. Sin esto,
+    # cada venta Shopify de Maria desaparecia de su liquidacion al cumplir 60
+    # dias (la limpieza de filas obsoletas la borraba) y el saldo bajaba solo.
+    # Las filas Shopify mas viejas que ese alcance se releen de mj_ventas y
+    # vuelven a entrar al corte tal cual, para que sigan contando (y ocupando
+    # su lugar en el cupo). Solo de los canales Shopify que respondieron y de
+    # productos que siguen marcados como de Maria Jose.
+    try:
+        _sh_cut = (to_d - _dt.timedelta(days=50)).date().isoformat()
+        _mjp = [int(p) for p in (tg.get("meta", {}) or {}).keys()]
+        if _mjp and shopify_ok:
+            _viejas = db._sb_get(
+                "mj_ventas?plataforma=in.(%s)&fecha_venta=lt.%s"
+                "&product_id=in.(%s)&select=*"
+                % (",".join(sorted(shopify_ok)), _sh_cut,
+                   ",".join(str(p) for p in _mjp))) or []
+            _ya = set((r.get("plataforma"), str(r.get("order_id") or ""),
+                       str(r.get("item_id") or "")) for r in rows)
+            for _v in _viejas:
+                _k = (_v.get("plataforma"), str(_v.get("order_id") or ""),
+                      str(_v.get("item_id") or ""))
+                if _k in _ya:
+                    continue
+                _v = dict(_v)
+                for _kk in ("id", "created_at", "updated_at"):
+                    _v.pop(_kk, None)
+                rows.append(_v)
+                _ya.add(_k)
+    except Exception:
+        pass
+
     # ── Asignación por cupo (productos compartidos María José / BOUN) ──
     # María vende PRIMERO sus unidades; cuando se agotan, las siguientes ventas
     # son de BOUN.  Para los productos con cupo (mj_qty) se ordenan sus ventas
@@ -6935,6 +7097,12 @@ def _mj_sync(window_days=None) -> dict:
         except Exception:
             pass
 
+    if len(_MJ_SHIP_CACHE) != _ship_n0:
+        try:
+            db.set_setting("mj_ship_costs", json.dumps(
+                {k: list(v) for k, v in _MJ_SHIP_CACHE.items()}))
+        except Exception:
+            pass
     _MJ_CACHE["ts"] = time.time()
     return {"ok": True, "n": n, "filas": len(final_rows),
             "agotados": len(clear_pids),
@@ -8098,7 +8266,11 @@ def embarques_arribar(eid: int, data: ArribarIn = ArribarIn(),
         mj = float(it.get("mj_cantidad") or 0)
         if mj > 0:
             if p.get("owner") == "MARIA_JOSE":
-                patch["mj_qty"] = float(p.get("mj_qty") or 0) + mj
+                # Con cupo -> se le suman las unidades nuevas. Si esta en
+                # "todas las unidades" (mj_qty 0) se deja asi: convertirlo en
+                # cupo dejaba por fuera sus ventas anteriores al inicio.
+                if float(p.get("mj_qty") or 0) > 0:
+                    patch["mj_qty"] = float(p.get("mj_qty") or 0) + mj
             else:
                 patch["owner"] = "MARIA_JOSE"
                 patch["mj_qty"] = mj
