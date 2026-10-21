@@ -8675,14 +8675,16 @@ def _flex_desde():
 
 
 def _flex_sync():
-    """Relee de ML los envíos Flex de los últimos 3 cortes y los guarda."""
+    """Relee de ML los envíos Flex de los últimos 14 días de cortes y los guarda."""
     from ml_scraper import _ml_session_auth, ML_API
     s, uid = _ml_session_auth()
     if not s:
         raise RuntimeError("MercadoLibre sin conexión")
     now = datetime.now(_FLEX_TZ)
     today_cut = _flex_cut_of(now)
-    first_cut = (datetime.fromisoformat(today_cut) - timedelta(days=2)).date()
+    # Ventana de 14 días (antes 2): si nadie abría la sección varios días, los cortes
+    # intermedios quedaban sin guardar (p. ej. el corte del 16-oct, 8 envíos / $73.000).
+    first_cut = (datetime.fromisoformat(today_cut) - timedelta(days=14)).date()
     since = datetime.combine(first_cut - timedelta(days=1), datetime.min.time(),
                              tzinfo=_FLEX_TZ).replace(hour=_FLEX_CUT_HOUR)
     since = max(since, _flex_desde())
@@ -8806,6 +8808,7 @@ class FlexPagoIn(BaseModel):
     monto: float
     fecha: Optional[str] = None
     nota: Optional[str] = ""
+    semana: Optional[str] = None  # lunes (YYYY-MM-DD) de la semana que cubre el pago
 
 
 @app.post("/api/flex/pago")
@@ -8820,6 +8823,7 @@ def flex_pago_add(data: FlexPagoIn, user: dict = Depends(_current_user)):
     p = {"id": secrets.token_hex(6), "monto": round(float(data.monto), 2),
          "fecha": (data.fecha or datetime.now(_FLEX_TZ).strftime("%Y-%m-%d"))[:10],
          "nota": (data.nota or "").strip()[:200],
+         "semana": (data.semana or "")[:10],
          "created_by": user.get("username", "")}
     pagos.append(p)
     db.set_setting("flex_pagos", json.dumps(pagos, ensure_ascii=False))
