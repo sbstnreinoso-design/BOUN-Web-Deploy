@@ -1126,6 +1126,7 @@ function flexShort(s){ try{ return new Date(s+"T12:00:00").toLocaleDateString("e
 function flexWeeks(r){ const W={}; (r.cortes||[]).forEach(c=>{ const w=flexMonday(c.fecha); (W[w] ||= {w,costo:0,n:0,pagado:0,pagos:0}); W[w].costo+=c.total; W[w].n+=c.n; });
   (r.pagos||[]).forEach(p=>{ const w=p.semana||flexMonday(p.fecha); (W[w] ||= {w,costo:0,n:0,pagado:0,pagos:0}); W[w].pagado+=(+p.monto||0); W[w].pagos++; });
   return Object.values(W).sort((a,b)=>a.w.localeCompare(b.w)); }
+function flexCutHoy(){ const x=new Date(Date.now()+6*36e5); while(x.getUTCDay()===6||x.getUTCDay()===0) x.setUTCDate(x.getUTCDate()+1); return x.toISOString().slice(0,10); }
 function flexKg(n){ return (+n||0).toLocaleString("es-CO",{maximumFractionDigits:3})+" kg"; }
 
 async function renderFlex(force){
@@ -1218,7 +1219,7 @@ function drawFlex(){
         <td style="text-align:right;font-weight:800">${tachado?`<s>${cop(e.tarifa||0)}</s><div class="cap" style="font-size:9.5px">no se cobra</div>`:(e.tarifa!=null?cop(e.tarifa):`<span style="color:#E06A6A">Sin tarifa</span>`)}</td>
       </tr>`;}).join("");
     detalle=`<div class="card" style="padding:16px;margin-top:16px">
-      <div class="row-between" style="margin-bottom:10px"><div style="font-weight:800;font-size:14px">Envíos del corte · ${flexDay(c.fecha)} <span class="cap">(vendidos entre ${flexDay(new Date(new Date(c.fecha+"T12:00:00").getTime()-864e5).toISOString().slice(0,10))} 1:00 p. m. y ${flexDay(c.fecha)} 1:00 p. m.)</span></div>
+      <div class="row-between" style="margin-bottom:10px"><div style="font-weight:800;font-size:14px">Envíos del corte · ${flexDay(c.fecha)} <span class="cap">(vendidos entre ${flexDay(new Date(new Date(c.fecha+"T12:00:00").getTime()-(new Date(c.fecha+"T12:00:00").getDay()===1?3:1)*864e5).toISOString().slice(0,10))} 1:00 p. m. y ${flexDay(c.fecha)} 1:00 p. m.)</span></div>
         <div style="font-weight:800;font-size:16px">${cop(c.total)}</div></div>
       ${locChips?`<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">${locChips}</div>`:""}
       ${envs.length?`<div style="overflow-x:auto;-webkit-overflow-scrolling:touch"><table class="sales" style="min-width:760px"><thead><tr><th>Venta</th><th>Localidad / dirección</th><th style="text-align:right">Medidas</th><th>Rango</th><th>Estado ML</th><th style="text-align:right">Tarifa</th></tr></thead><tbody>${rows}</tbody></table></div>`:`<div class="muted" style="font-size:12.5px">Este corte no tiene envíos.</div>`}
@@ -1238,7 +1239,7 @@ function drawFlex(){
     </div>`;
 
   // Resumen por semana + pagos realizados
-  const sem=flexWeeks(r), semHoy=flexMonday(new Date(Date.now()-5*36e5).toISOString().slice(0,10));
+  const sem=flexWeeks(r), semHoy=flexMonday(flexCutHoy());
   const semFilas=sem.map(x=>{ const pend=x.costo-x.pagado, act=x.w===semHoy; const est=pend<=0&&x.costo>0?`<span style="color:var(--green);font-weight:800">Pagada</span>`:(act?`<span style="color:var(--amber);font-weight:800">En curso</span>`:`<span style="color:#E06A6A;font-weight:800">Por pagar</span>`);
     return `<tr${act?' style="background:rgba(226,86,15,.10)"':""}><td><b>Semana ${flexIsoWeek(x.w)}</b><div class="cap" style="font-size:10px">${flexShort(x.w)} – ${flexShort(flexWeekEnd(x.w))}</div></td><td style="text-align:right">${x.n}</td><td style="text-align:right">${cop(x.costo)}</td><td style="text-align:right;color:var(--green)">${x.pagado?"−"+cop(x.pagado):"—"}</td><td style="text-align:right;font-weight:800">${cop(pend)}</td><td>${est}</td></tr>`; }).join("");
   const semBlock=`<div class="card" style="padding:16px;margin-top:16px">

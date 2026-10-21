@@ -8582,6 +8582,10 @@ def _flex_cut_of(dt_co):
     d = dt_co.date()
     if dt_co.hour >= _FLEX_CUT_HOUR:
         d = d + timedelta(days=1)
+    # Unilogix no entrega sábados ni domingos: lo vendido el viernes después de
+    # la 1:00 p. m. (o en fin de semana) es del corte del lunes.
+    while d.weekday() >= 5:
+        d = d + timedelta(days=1)
     return d.isoformat()
 
 
@@ -8701,8 +8705,8 @@ def _flex_sync():
         d = r.json()
         res = d.get("results", [])
         for od in res:
-            if od.get("status") == "cancelled":
-                continue
+            # Una orden cancelada/devuelta DESPUÉS de entregarse igual la cobra
+            # Unilogix: se decide por el estado del envío (cancelled = no cobrable).
             sid = (od.get("shipping") or {}).get("id")
             if not sid:
                 continue
@@ -8764,6 +8768,9 @@ def _flex_summary():
         c["n"] = len(cobr)
         c["total"] = sum((e.get("tarifa") or 0) for e in cobr)
         c["sin_tarifa"] = sum(1 for e in cobr if e.get("tarifa") is None)
+        if not envs and c.get("fecha", "")[:10] and \
+                datetime.strptime(c["fecha"][:10], "%Y-%m-%d").weekday() >= 5:
+            continue   # corte de sábado/domingo ya sin envíos (regla anterior)
         cortes.append(c)
     cortes.sort(key=lambda c: c.get("fecha", ""))
     try:
