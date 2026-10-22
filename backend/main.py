@@ -8939,7 +8939,7 @@ def flex_debug_envio(sid: str = "", user: dict = Depends(_admin)):
 
 # Render solo redespliega cuando cambia algo dentro de backend/ (rootDir). Al subir
 # cambios SOLO del frontend, actualiza esta marca para que el deploy se dispare.
-_FRONT_BUILD = "2026-10-22 rediseño Envíos Flex"
+_FRONT_BUILD = "2026-10-22b cache-busting móvil"
 _FRONT = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
 
 
