@@ -1219,7 +1219,7 @@ function drawFlex(){
       const [el,ec]=FLEX_EST[e.estado]||[e.estado||"—","#9B9A96"];
       const tachado=e.cobrable===false;
       return `<tr${tachado?' style="opacity:.55"':""}>
-        <td><div style="font-weight:600;font-size:12px;line-height:1.25">${esc((e.prod||"").slice(0,52))}</div><div class="cap" style="font-size:10px">Venta ${esc((e.sold||"").slice(11))} · ${e.qty||1} u · ${cop(e.value||0)}${e.sku?` · ${esc(e.sku)}`:""}</div><div class="cap" style="font-size:9.5px;opacity:.75">Envío #${esc(e.ship)}${(e.orders||[]).length>1?` · pack de ${e.orders.length} órdenes`:""}</div></td>
+        <td><div style="font-weight:600;font-size:12px;line-height:1.25">${esc((e.prod||"").slice(0,52))}</div><div class="cap" style="font-size:10px">Venta ${esc((e.sold||"").slice(11))} · ${e.qty||1} u · ${cop(e.value||0)}${e.sku?` · ${esc(e.sku)}`:""}</div><div class="cap" style="font-size:9.5px;opacity:.75">Envío #${esc(e.ship)}${e.movido_de?` · <span style="color:var(--amber)">pasa de ${esc(flexDay(e.movido_de))} (no facturado por Unilogix en ese corte)</span>`:""}${(e.orders||[]).length>1?` · pack de ${e.orders.length} órdenes`:""}</div></td>
         <td><b>${esc(e.loc||"—")}</b><div class="cap" style="font-size:10px">${esc(e.barrio||"")}${e.barrio?" · ":""}${esc(e.ciudad||e.state||"")}</div><div class="cap" style="font-size:10px">${esc(e.addr||"")}</div></td>
         <td style="text-align:right;font-size:11px">${e.h&&e.l&&e.w?`${e.h}×${e.l}×${e.w} cm`:"—"}<div class="cap" style="font-size:9.5px">físico ${flexKg(e.kg)} · vol ${flexKg(e.vol)}</div></td>
         <td><span style="font-size:10px;font-weight:800;padding:1px 7px;border-radius:10px;background:rgba(226,86,15,.14);color:var(--acc)">${esc(e.rango||"—")}</span></td>

@@ -8755,6 +8755,22 @@ def _flex_sync():
     _FLEX_CACHE["ts"] = time.time()
 
 
+def _flex_totals(c):
+    envs = c.get("envios") or []
+    cobr = [e for e in envs if e.get("cobrable", True)]
+    c["n"] = len(cobr)
+    c["total"] = sum((e.get("tarifa") or 0) for e in cobr)
+    c["sin_tarifa"] = sum(1 for e in cobr if e.get("tarifa") is None)
+
+
+def _flex_overrides():
+    """{ship: 'YYYY-MM-DD'}: envíos que Unilogix factura en OTRO corte que el de la venta."""
+    try:
+        return json.loads(db.get_setting("flex_envio_corte", "") or "{}") or {}
+    except Exception:
+        return {}
+
+
 def _flex_summary():
     rows = db._sb_get("app_settings?key=like.flex_corte::*&select=key,value") or []
     cortes = []
@@ -8763,15 +8779,34 @@ def _flex_summary():
             c = json.loads(r.get("value") or "{}")
         except Exception:
             continue
-        envs = c.get("envios") or []
-        cobr = [e for e in envs if e.get("cobrable", True)]
-        c["n"] = len(cobr)
-        c["total"] = sum((e.get("tarifa") or 0) for e in cobr)
-        c["sin_tarifa"] = sum(1 for e in cobr if e.get("tarifa") is None)
-        if not envs and c.get("fecha", "")[:10] and \
+        cortes.append(c)
+    # Envíos que Unilogix no facturó en su corte: se pasan al corte indicado.
+    ov = _flex_overrides()
+    if ov:
+        by_f = {c.get("fecha"): c for c in cortes}
+        for c in list(cortes):
+            keep = []
+            for e in (c.get("envios") or []):
+                dst = ov.get(str(e.get("ship")))
+                if dst and dst != c.get("fecha"):
+                    e = dict(e, movido_de=c.get("fecha"))
+                    t = by_f.get(dst)
+                    if t is None:
+                        t = {"fecha": dst, "cerrado": False, "envios": []}
+                        by_f[dst] = t
+                        cortes.append(t)
+                    t.setdefault("envios", []).append(e)
+                else:
+                    keep.append(e)
+            c["envios"] = keep
+    out = []
+    for c in cortes:
+        _flex_totals(c)
+        if not (c.get("envios") or []) and c.get("fecha", "")[:10] and \
                 datetime.strptime(c["fecha"][:10], "%Y-%m-%d").weekday() >= 5:
             continue   # corte de sábado/domingo ya sin envíos (regla anterior)
-        cortes.append(c)
+        out.append(c)
+    cortes = out
     cortes.sort(key=lambda c: c.get("fecha", ""))
     try:
         pagos = json.loads(db.get_setting("flex_pagos", "") or "[]")
@@ -8835,6 +8870,23 @@ def flex_pago_add(data: FlexPagoIn, user: dict = Depends(_current_user)):
     pagos.append(p)
     db.set_setting("flex_pagos", json.dumps(pagos, ensure_ascii=False))
     return {"ok": True, "id": p["id"]}
+
+
+class FlexEnvioCorteIn(BaseModel):
+    ship: str
+    corte: Optional[str] = ""   # 'YYYY-MM-DD'; vacío = volver al corte original
+
+
+@app.post("/api/flex/envio-corte")
+def flex_envio_corte(data: FlexEnvioCorteIn, user: dict = Depends(_admin)):
+    """Mueve un envío a otro corte (p. ej. uno que Unilogix no facturó en su semana)."""
+    ov = _flex_overrides()
+    if data.corte:
+        ov[str(data.ship)] = data.corte[:10]
+    else:
+        ov.pop(str(data.ship), None)
+    db.set_setting("flex_envio_corte", json.dumps(ov, ensure_ascii=False))
+    return {"ok": True, "overrides": ov}
 
 
 @app.delete("/api/flex/pago/{pid}")
