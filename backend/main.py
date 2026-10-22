@@ -8832,15 +8832,37 @@ def _flex_summary():
 def flex_get(force: bool = False, user: dict = Depends(_current_user)):
     """Envíos Flex · Unilogix: cortes diarios, costo, pagos y saldo."""
     err = ""
-    if force or (time.time() - _FLEX_CACHE["ts"]) > _FLEX_TTL:
+    syncing = False
+    stale = (time.time() - _FLEX_CACHE["ts"]) > _FLEX_TTL
+    if force:
+        # «↻ Actualizar»: relee ML y responde con lo nuevo.
         if _FLEX_LOCK.acquire(blocking=False):
             try:
                 _flex_sync()
             except Exception as e:
                 err = str(e)[:200]
+                _FLEX_CACHE["err"] = err
             finally:
                 _FLEX_LOCK.release()
+        else:
+            syncing = True
+    elif stale:
+        # Carga normal: responde YA con lo guardado y relee ML en segundo plano
+        # (tras un reinicio de Render la relectura de 14 días tarda >1 min).
+        if _FLEX_LOCK.acquire(blocking=False):
+            def _bg():
+                try:
+                    _flex_sync()
+                    _FLEX_CACHE["err"] = ""
+                except Exception as e:
+                    _FLEX_CACHE["err"] = str(e)[:200]
+                finally:
+                    _FLEX_LOCK.release()
+            threading.Thread(target=_bg, daemon=True).start()
+        syncing = True
+    err = err or _FLEX_CACHE.get("err", "")
     out = _flex_summary()
+    out["syncing"] = syncing
     out["cache_age_min"] = int((time.time() - _FLEX_CACHE["ts"]) / 60) if _FLEX_CACHE["ts"] else None
     out["sync_error"] = err
     return out

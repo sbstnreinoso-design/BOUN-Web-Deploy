@@ -1162,6 +1162,8 @@ async function renderFlex(force){
     <div id="flexBody"></div>`;
   try{
     FLEX=await api("/flex"+(force?"?force=1":""));
+    clearTimeout(window.__flexRe);
+    if(FLEX.syncing) window.__flexRe=setTimeout(async()=>{ try{ if(!document.getElementById("flexKpis")) return; FLEX=await api("/flex"); drawFlex(); }catch(e){} },25000);
     if(!FLEX_SEL || !(FLEX.cortes||[]).some(c=>c.fecha===FLEX_SEL)) FLEX_SEL=(FLEX.cortes||[]).length?FLEX.cortes[FLEX.cortes.length-1].fecha:null;
     drawFlex();
   }catch(e){ document.getElementById("flexKpis").innerHTML=`<div class="red">${esc(e.message)}</div>`; }
@@ -1203,7 +1205,8 @@ function drawFlex(){
   const sinT=cortes.reduce((s,c)=>s+(c.sin_tarifa||0),0);
   if(sinT) notes+=`<div class="note" style="font-size:11.5px;color:var(--amber)">⚠️ <b>${sinT}</b> envío(s) van a una ciudad sin tarifa acordada (solo Bogotá, Soacha, Medellín, Cali y Chía). No suman al saldo hasta acordar el precio con Unilogix.</div>`;
   if(!cortes.length) notes+=`<div class="note" style="font-size:11.5px">Aún no hay envíos Flex desde ${esc(r.desde||"")}. Aparecerán solos cuando entren ventas Flex.</div>`;
-  if(!r.sync_error && r.cache_age_min!=null) notes+=`<div class="cap" style="font-size:10.5px;text-align:right;margin:-6px 0 4px">Actualizado hace ${r.cache_age_min||0} min</div>`;
+  if(r.syncing) notes+=`<div class="cap" style="font-size:10.5px;text-align:right;margin:-6px 0 4px"><span class="spinner" style="width:9px;height:9px;vertical-align:-1px"></span> Actualizando con MercadoLibre… se refresca solo</div>`;
+  else if(!r.sync_error && r.cache_age_min!=null) notes+=`<div class="cap" style="font-size:10.5px;text-align:right;margin:-6px 0 4px">Actualizado hace ${r.cache_age_min||0} min</div>`;
   document.getElementById("flexNote").innerHTML=notes;
 
   // Envíos por día: solo cada corte con su número de envíos y su valor, y subtotal semanal.
