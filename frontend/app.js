@@ -1261,7 +1261,7 @@ function flexPagoModal(){
   openModal(`<h3>Registrar pago a Unilogix</h3>
     <div class="sub">Lo que le transferiste a Unilogix. Se descuenta del saldo.</div>
     <label class="cap">Monto pagado (COP)</label>
-    <input id="fxMonto" type="number" class="field" placeholder="Ej. ${saldo||68800}" value="${saldo||""}" autofocus>
+    <input id="fxMonto" type="text" inputmode="numeric" class="field" placeholder="Ej. ${saldo||68800}" value="${saldo||""}" autofocus>
     <label class="cap" style="display:block;margin-top:10px">Fecha</label>
     <input id="fxFecha" type="date" class="field" value="${_isoDay(0)}">
     <label class="cap" style="display:block;margin-top:10px">Semana que cubre</label>
@@ -1276,7 +1276,10 @@ function flexPagoModal(){
 }
 
 async function flexPagoSave(){
-  const monto=parseFloat(document.getElementById("fxMonto").value||"0");
+  // En Colombia el punto es separador de miles: "265.476" = 265476 pesos (no 265,48).
+  let raw=String(document.getElementById("fxMonto").value||"0").replace(/[$\s]/g,"");
+  raw=/^\d{1,3}([.,]\d{3})+$/.test(raw)?raw.replace(/[.,]/g,""):raw.replace(",",".");
+  const monto=parseFloat(raw)||0;
   const err=document.getElementById("fxErr");
   if(!monto||monto<=0){ err.textContent="Ingresa un monto mayor a 0."; return; }
   try{
