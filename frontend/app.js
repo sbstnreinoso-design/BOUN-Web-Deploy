@@ -1136,16 +1136,28 @@ function flexWeeks(r){ const W={}; (r.cortes||[]).forEach(c=>{ const w=flexMonda
 function flexCutHoy(){ const x=new Date(Date.now()+6*36e5); while(x.getUTCDay()===6||x.getUTCDay()===0) x.setUTCDate(x.getUTCDate()+1); return x.toISOString().slice(0,10); }
 function flexKg(n){ return (+n||0).toLocaleString("es-CO",{maximumFractionDigits:3})+" kg"; }
 
+function flexPill(t,col){ return `<span style="display:inline-block;padding:2px 9px;border-radius:10px;font-size:10.5px;font-weight:800;white-space:nowrap;color:${col};background:color-mix(in srgb, ${col} 16%, transparent);border:1px solid color-mix(in srgb, ${col} 35%, transparent)">${t}</span>`; }
+function flexParseMonto(v){ let raw=String(v||"0").replace(/[$\s]/g,""); raw=/^\d{1,3}([.,]\d{3})+$/.test(raw)?raw.replace(/[.,]/g,""):raw.replace(",","."); return parseFloat(raw)||0; }
+
 async function renderFlex(force){
   const v=document.getElementById("view");
-  v.innerHTML=`<div class="row-between"><div>
-      <div class="page-title">🚚 Envíos Flex · Unilogix</div>
-      <div class="page-sub">Lo que se le debe a Unilogix por los envíos Mercado Flex de BOUN. Cada día, con el corte de la <b>1:00 p. m.</b> (hora de venta en MercadoLibre), se suma el costo de los envíos del día según su tarifa Same Day PM por ciudad y peso. El saldo va sumando y se le restan los pagos que les hagas.</div>
-    </div><div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start">
-      <button class="btn-acc" onclick="flexPagoModal()">＋ Registrar pago</button>
-      <button class="btn-ghost" onclick="renderFlex(true)">↻ Actualizar</button>
-    </div></div>
-    <div id="flexKpis" class="kpis"><div class="loading"><span class="spinner"></span> Leyendo los envíos Flex de MercadoLibre…</div></div>
+  v.innerHTML=`<div class="row-between" style="align-items:flex-start;gap:12px">
+      <div style="min-width:0">
+        <div class="page-title">🚚 Envíos Flex · Unilogix</div>
+        <div class="page-sub" style="max-width:640px">Cuánto se le debe a Unilogix por los envíos Flex de BOUN. Corte diario a la <b>1:00 p. m.</b>, factura semanal de lunes a domingo.</div>
+        <details style="margin-top:6px"><summary class="cap" style="cursor:pointer;font-size:11.5px">¿Cómo se calcula?</summary>
+          <div class="cap" style="font-size:11.5px;line-height:1.55;margin-top:6px;max-width:680px">
+            • Cada venta Flex de MercadoLibre suma su tarifa Same Day PM (ciudad + peso facturable).<br>
+            • Lo vendido después de la 1:00 p. m. va al corte del día siguiente; lo del viernes tarde, sábado y domingo, al corte del lunes.<br>
+            • A cada semana se le restan las retenciones que BOUN le practica a Unilogix: retefuente 1 % + reteICA 9,66 ‰ (sobre el total de la semana).<br>
+            • El saldo baja con cada pago que registres. Los datos se releen de MercadoLibre cada 10 min.
+          </div></details>
+      </div>
+      <div style="display:flex;gap:8px;flex-shrink:0;align-items:center">
+        <button class="btn-ghost" style="white-space:nowrap" onclick="renderFlex(true)" title="Releer MercadoLibre ahora">↻ Actualizar</button>
+        <button class="btn-acc" style="white-space:nowrap;padding:0 16px" onclick="flexPagoModal()">＋ Registrar pago</button>
+      </div></div>
+    <div id="flexKpis" class="kpis" style="margin-top:14px"><div class="loading"><span class="spinner"></span> Leyendo los envíos Flex de MercadoLibre…</div></div>
     <div id="flexNote"></div>
     <div id="flexBody"></div>`;
   try{
@@ -1157,55 +1169,58 @@ async function renderFlex(force){
 
 function drawFlex(){
   const r=FLEX; if(!r) return;
-  const k=r.kpis||{}, cortes=r.cortes||[], pagos=r.pagos||[];
+  const cortes=r.cortes||[], pagos=r.pagos||[];
   const hoy=cortes.length?cortes[cortes.length-1]:null;
-  const FC=flexCalc(r);
+  const FC=flexCalc(r), semHoy=flexMonday(flexCutHoy());
+  const actual=FC.ws.find(x=>x.w===semHoy);
+  const vencido=FC.ws.filter(x=>x.w<semHoy).reduce((a,x)=>a+Math.max(0,x.neto-x.pagado),0);
+  const enCurso=actual?Math.max(0,actual.neto-actual.pagado):0;
+
   document.getElementById("flexKpis").innerHTML=`
     <div style="display:flex;gap:12px;flex-wrap:wrap;width:100%">
-      <div class="kpi" style="flex:1.3;min-width:210px;border:1px solid var(--acc);background:linear-gradient(135deg,rgba(226,86,15,.13),transparent)">
-        <div class="cap">Saldo a pagar a Unilogix</div>
-        <div class="val acc" style="font-size:28px">${cop(FC.saldo)}</div>
-        <div class="cap">${cop(FC.costo)} en envíos − ${cop(FC.ret)} retenciones − ${cop(FC.pagado)} pagado</div>
+      <div class="kpi" style="flex:1.5;min-width:240px;border:1px solid var(--acc)">
+        <div class="cap" style="font-size:11px">Saldo a pagar a Unilogix</div>
+        <div class="val" style="font-size:30px;font-weight:800">${cop(FC.saldo)}</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:6px">
+          ${vencido>0?flexPill(`Semanas cerradas ${cop(vencido)}`,"#E06A6A"):flexPill("Semanas cerradas al día","var(--green)")}
+          ${flexPill(`Semana en curso ${cop(enCurso)}`,"var(--amber)")}
+        </div>
       </div>
-      <div class="kpi" style="flex:1;min-width:150px"><div class="cap">Último corte${hoy?` · ${flexDay(hoy.fecha)}`:""}</div><div class="val">${cop(hoy?hoy.total:0)}</div><div class="cap">${hoy?hoy.n:0} envío(s)${hoy&&!hoy.cerrado?" · abierto hasta la 1:00 p. m.":""}</div></div>
-      <div class="kpi" style="flex:1;min-width:140px"><div class="cap">Envíos Flex acumulados</div><div class="val">${k.envios||0}</div><div class="cap">${k.cortes||0} corte(s) desde ${esc((r.desde||"").slice(0,10))}</div></div>
-      <div class="kpi" style="flex:1;min-width:140px"><div class="cap">Costo promedio por día</div><div class="val amber">${cop(k.promedio_dia||0)}</div><div class="cap">Pagado: ${cop(k.pagado||0)} · ${pagos.length} pago(s)</div></div>
+      <div class="kpi" style="flex:1;min-width:170px">
+        <div class="cap" style="font-size:11px">Semana ${flexIsoWeek(semHoy)} · en curso</div>
+        <div class="val">${cop(actual?actual.neto:0)}</div>
+        <div class="cap" style="font-size:11px">${actual?actual.n:0} envío(s) · neto tras retenciones · cierra ${flexDay(flexWeekEnd(semHoy))}</div>
+      </div>
+      <div class="kpi" style="flex:1;min-width:170px">
+        <div class="cap" style="font-size:11px">Último corte${hoy?` · ${flexDay(hoy.fecha)}`:""}</div>
+        <div class="val">${cop(hoy?hoy.total:0)}</div>
+        <div class="cap" style="font-size:11px">${hoy?hoy.n:0} envío(s)${hoy&&!hoy.cerrado?" · abierto hasta la 1:00 p. m.":" · cerrado"}${hoy&&hoy.n<10?` · <span style="color:var(--amber)" title="La recolección sin costo exige mínimo 10 pedidos en Bogotá">&lt; 10 pedidos</span>`:""}</div>
+      </div>
     </div>`;
 
   let notes="";
-  if(r.sync_error) notes+=`<div class="note">⚠️ No se pudo leer MercadoLibre ahora (${esc(r.sync_error)}). Se muestran los últimos cortes guardados.</div>`;
-  else if(r.cache_age_min>0) notes+=`<div class="note">Datos de hace ${r.cache_age_min} min · se refrescan solos cada 10 min (o usa ↻ Actualizar).</div>`;
+  if(r.sync_error) notes+=`<div class="note" style="font-size:11.5px;color:#E06A6A">⚠️ No se pudo leer MercadoLibre ahora (${esc(r.sync_error)}). Se muestran los últimos cortes guardados.</div>`;
   const sinT=cortes.reduce((s,c)=>s+(c.sin_tarifa||0),0);
-  if(sinT) notes+=`<div class="note">⚠️ <b>${sinT}</b> envío(s) van a una ciudad sin tarifa en la propuesta (solo Bogotá, Soacha, Medellín, Cali y Chía). No suman al saldo hasta acordar el precio con Unilogix.</div>`;
-  if(hoy && hoy.n<10) notes+=`<div class="note">📦 El último corte tiene <b>${hoy.n}</b> envío(s). La recolección sin costo exige mínimo <b>10 pedidos</b> en Bogotá; la propuesta no dice cuánto cobran por debajo — confírmalo con Unilogix.</div>`;
-  if(!cortes.length) notes+=`<div class="note">Aún no hay envíos Flex desde ${esc(r.desde||"")}. Cuando entren ventas Flex de BOUN aparecerán solas aquí.</div>`;
+  if(sinT) notes+=`<div class="note" style="font-size:11.5px;color:var(--amber)">⚠️ <b>${sinT}</b> envío(s) van a una ciudad sin tarifa acordada (solo Bogotá, Soacha, Medellín, Cali y Chía). No suman al saldo hasta acordar el precio con Unilogix.</div>`;
+  if(!cortes.length) notes+=`<div class="note" style="font-size:11.5px">Aún no hay envíos Flex desde ${esc(r.desde||"")}. Aparecerán solos cuando entren ventas Flex.</div>`;
+  if(!r.sync_error && r.cache_age_min!=null) notes+=`<div class="cap" style="font-size:10.5px;text-align:right;margin:-6px 0 4px">Actualizado hace ${r.cache_age_min||0} min</div>`;
   document.getElementById("flexNote").innerHTML=notes;
 
-  // Libro diario: cortes (cargo) + pagos (abono), saldo corrido y subtotal semanal
-  const mov=[...cortes.map(c=>({t:"c",k:c.fecha+"0",f:c.fecha,c})),...pagos.map(p=>({t:"p",k:(p.fecha||"")+"1"+p.id,f:p.fecha,p}))].sort((a,b)=>a.k.localeCompare(b.k));
-  let run=0, wk=null, wc=0, wp=0; const filas=[];
-  const cierraSemana=()=>{ if(wk){ const rt=flexRet(wc); run-=rt; filas.push(`<tr><td style="white-space:nowrap" class="muted">${flexShort(flexWeekEnd(wk))}</td><td class="muted">Retenciones semana ${flexIsoWeek(wk)} · retefuente 1 % + reteICA 9,66 ‰ sobre ${cop(wc)}</td><td style="text-align:right;color:var(--green)">−${cop(rt)}</td><td style="text-align:right" class="muted">—</td><td style="text-align:right;font-weight:800">${cop(run)}</td></tr>`); } if(wk) filas.push(`<tr><td colspan="5" class="cap" style="background:rgba(155,154,150,.08);font-size:11px"><b>Semana ${flexIsoWeek(wk)}</b> · del ${flexDay(wk)} · envíos <b>${cop(wc)}</b> · pagos <b>${cop(wp)}</b></td></tr>`); };
-  mov.forEach(m=>{
-    const w=flexMonday(m.f); if(w!==wk){ cierraSemana(); wk=w; wc=0; wp=0; }
-    if(m.t==="c"){
-      run+=m.c.total; wc+=m.c.total; const on=m.c.fecha===FLEX_SEL;
-      filas.push(`<tr style="cursor:pointer;${on?"background:rgba(226,86,15,.12)":""}" onclick="FLEX_SEL='${esc(m.c.fecha)}';drawFlex()">
-        <td style="white-space:nowrap">${flexDay(m.c.fecha)}</td>
-        <td><b>Corte 1:00 p. m.</b> · ${m.c.n} envío(s)${m.c.cerrado?"":` <span class="cap" style="color:var(--amber)">· abierto</span>`}${m.c.sin_tarifa?` <span class="cap" style="color:#E06A6A">· ${m.c.sin_tarifa} sin tarifa</span>`:""}</td>
-        <td style="text-align:right;font-weight:700">${cop(m.c.total)}</td><td style="text-align:right" class="muted">—</td>
-        <td style="text-align:right;font-weight:800">${cop(run)}</td></tr>`);
-    }else{
-      const a=+m.p.monto||0; run-=a; wp+=a;
-      filas.push(`<tr><td style="white-space:nowrap">${flexDay(m.p.fecha)}</td>
-        <td><b style="color:var(--green)">Pago</b> ${esc(m.p.nota||"")} <button class="btn-ghost" style="padding:2px 8px;font-size:10px;margin-left:4px" onclick="event.stopPropagation();flexPagoDel('${esc(m.p.id)}')">✕</button></td>
-        <td style="text-align:right" class="muted">—</td><td style="text-align:right;font-weight:700;color:var(--green)">−${cop(a)}</td>
-        <td style="text-align:right;font-weight:800">${cop(run)}</td></tr>`);
-    }
+  // Envíos por día: solo cada corte con su número de envíos y su valor, y subtotal semanal.
+  let wk=null, wc=0, wn=0; const filas=[];
+  const cierraSemana=()=>{ if(wk) filas.push(`<tr><td colspan="3" class="cap" style="background:rgba(155,154,150,.08);font-size:11px"><b>Semana ${flexIsoWeek(wk)}</b> · ${flexShort(wk)} – ${flexShort(flexWeekEnd(wk))} · ${wn} envío(s) · <b>${cop(wc)}</b></td></tr>`); };
+  cortes.forEach(c=>{
+    const w=flexMonday(c.fecha); if(w!==wk){ cierraSemana(); wk=w; wc=0; wn=0; }
+    wc+=c.total; wn+=c.n; const on=c.fecha===FLEX_SEL;
+    filas.push(`<tr style="cursor:pointer;${on?"background:rgba(245,241,234,.07);box-shadow:inset 3px 0 0 var(--acc)":""}" onclick="FLEX_SEL='${esc(c.fecha)}';drawFlex();document.getElementById('flexDet')&&document.getElementById('flexDet').scrollIntoView({behavior:'smooth',block:'start'})">
+      <td style="white-space:nowrap">${flexDay(c.fecha)}${c.cerrado?"":` ${flexPill("abierto","var(--amber)")}`}</td>
+      <td style="text-align:right">${c.n}${c.sin_tarifa?` <span class="cap" style="color:#E06A6A">· ${c.sin_tarifa} sin tarifa</span>`:""}</td>
+      <td style="text-align:right;font-weight:700">${cop(c.total)}</td></tr>`);
   });
   cierraSemana();
-  const libro=`<div class="card" style="padding:16px;margin-top:6px">
-      <div class="row-between" style="margin-bottom:8px"><div style="font-weight:800;font-size:14px">Libro diario con Unilogix</div><div class="cap">Toca un corte para ver sus envíos</div></div>
-      ${mov.length?`<div style="overflow-x:auto;-webkit-overflow-scrolling:touch"><table class="sales" style="min-width:560px"><thead><tr><th>Fecha</th><th>Concepto</th><th style="text-align:right">Cargo / retención</th><th style="text-align:right">Pago</th><th style="text-align:right">Saldo</th></tr></thead><tbody>${filas.join("")}</tbody></table></div>`:`<div class="muted" style="font-size:12.5px">Sin movimientos todavía.</div>`}
+  const libro=`<div class="card" style="padding:16px;margin-top:16px">
+      <div class="row-between" style="margin-bottom:8px"><div style="font-weight:800;font-size:14px">Envíos por día</div><div class="cap" style="font-size:11.5px">Toca un día para ver sus envíos</div></div>
+      ${cortes.length?`<div style="overflow-x:auto;-webkit-overflow-scrolling:touch"><table class="sales" style="min-width:340px"><thead><tr><th>Día (corte 1:00 p. m.)</th><th style="text-align:right">Envíos</th><th style="text-align:right">Valor</th></tr></thead><tbody>${filas.join("")}</tbody></table></div>`:`<div class="muted" style="font-size:12.5px">Sin envíos todavía.</div>`}
     </div>`;
 
   // Detalle del corte elegido
@@ -1227,7 +1242,7 @@ function drawFlex(){
         <td style="text-align:right;font-weight:800">${tachado?`<s>${cop(e.tarifa||0)}</s><div class="cap" style="font-size:9.5px">no se cobra</div>`:(e.tarifa!=null?`${cop(e.tarifa)}<div class="cap" style="font-size:9.5px">neto ${cop(flexNetoEnvio(e.tarifa))}</div>`:`<span style="color:#E06A6A">Sin tarifa</span>`)}</td>
       </tr>`;}).join("");
     detalle=`<div class="card" style="padding:16px;margin-top:16px">
-      <div class="row-between" style="margin-bottom:10px"><div style="font-weight:800;font-size:14px">Envíos del corte · ${flexDay(c.fecha)} <span class="cap">(vendidos entre ${flexDay(new Date(new Date(c.fecha+"T12:00:00").getTime()-(new Date(c.fecha+"T12:00:00").getDay()===1?3:1)*864e5).toISOString().slice(0,10))} 1:00 p. m. y ${flexDay(c.fecha)} 1:00 p. m.)</span></div>
+      <div class="row-between" style="margin-bottom:10px"><div style="font-weight:800;font-size:14px">Envíos del ${flexDay(c.fecha)}<div class="cap" style="font-size:11px;font-weight:400;margin-top:2px">Vendidos entre ${flexDay(new Date(new Date(c.fecha+"T12:00:00").getTime()-(new Date(c.fecha+"T12:00:00").getDay()===1?3:1)*864e5).toISOString().slice(0,10))} 1:00 p. m. y ${flexDay(c.fecha)} 1:00 p. m.</div></div>
         <div style="font-weight:800;font-size:16px">${cop(c.total)}</div></div>
       ${locChips?`<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">${locChips}</div>`:""}
       ${envs.length?`<div style="overflow-x:auto;-webkit-overflow-scrolling:touch"><table class="sales" style="min-width:760px"><thead><tr><th>Venta</th><th>Localidad / dirección</th><th style="text-align:right">Medidas</th><th>Rango</th><th>Estado ML</th><th style="text-align:right">Tarifa</th></tr></thead><tbody>${rows}</tbody></table></div>`:`<div class="muted" style="font-size:12.5px">Este corte no tiene envíos.</div>`}
@@ -1239,55 +1254,87 @@ function drawFlex(){
   const t=r.tarifas||{ciudades:[],rangos:[]};
   const usados=new Set(); if(c) (c.envios||[]).forEach(e=>usados.add(e.rango+"|"+e.ciudad));
   const tarifa=`<div class="card" style="padding:16px;margin-top:16px">
-      <div class="row-between" style="margin-bottom:8px"><div style="font-weight:800;font-size:14px">Tarifa Same Day PM · Unilogix</div><div class="cap">Vigente a 31-dic-2026 · corte semanal, pago a 5 días</div></div>
+      <div class="row-between" style="margin-bottom:8px"><div style="font-weight:800;font-size:14px">Tarifa Same Day PM · Unilogix</div><div class="cap" style="font-size:11.5px">Vigente a 31-dic-2026 · corte semanal, pago a 5 días</div></div>
       <div style="overflow-x:auto"><table class="sales" style="min-width:520px"><thead><tr><th>Rango</th>${t.ciudades.map(x=>`<th style="text-align:right">${esc(x)}</th>`).join("")}</tr></thead><tbody>
-      ${t.rangos.map(g=>`<tr><td><b>${esc(g.rango)}</b><div class="cap" style="font-size:9.5px">hasta ${g.hasta} kg</div></td>${g.precios.map((p,i)=>{const on=usados.has(g.rango+"|"+t.ciudades[i]);return `<td style="text-align:right;${on?"background:var(--acc);color:#fff;font-weight:800;border-radius:6px":""}">${cop(p)}</td>`;}).join("")}</tr>`).join("")}
+      ${t.rangos.map(g=>`<tr><td><b>${esc(g.rango)}</b><div class="cap" style="font-size:9.5px">hasta ${g.hasta} kg</div></td>${g.precios.map((p,i)=>{const on=usados.has(g.rango+"|"+t.ciudades[i]);return `<td style="text-align:right;${on?"background:var(--acc);color:#0A0A0A;font-weight:800;border-radius:6px":""}">${cop(p)}</td>`;}).join("")}</tr>`).join("")}
       </tbody></table></div>
       <div class="cap" style="margin-top:8px;font-size:10.5px">Valor asegurado incluido $400.000 · recaudo contra entrega 2,2 % · recolección gratis desde 10 pedidos (Bogotá).</div>
     </div>`;
 
-  // Resumen por semana + pagos realizados
-  const sem=flexWeeks(r), semHoy=flexMonday(flexCutHoy());
-  const semFilas=sem.map(x=>{ const pend=x.neto-x.pagado, act=x.w===semHoy; const est=pend<=0&&x.costo>0?`<span style="color:var(--green);font-weight:800">Pagada</span>`:(act?`<span style="color:var(--amber);font-weight:800">En curso</span>`:`<span style="color:#E06A6A;font-weight:800">Por pagar</span>`);
-    return `<tr${act?' style="background:rgba(226,86,15,.10)"':""}><td><b>Semana ${flexIsoWeek(x.w)}</b><div class="cap" style="font-size:10px">${flexShort(x.w)} – ${flexShort(flexWeekEnd(x.w))}</div></td><td style="text-align:right">${x.n}</td><td style="text-align:right">${cop(x.costo)}</td><td style="text-align:right;color:#E08A8A">−${cop(x.ret)}</td><td style="text-align:right;font-weight:700">${cop(x.neto)}</td><td style="text-align:right;color:var(--green)">${x.pagado?"−"+cop(x.pagado):"—"}</td><td style="text-align:right;font-weight:800">${cop(pend)}</td><td>${est}</td></tr>`; }).join("");
-  const semBlock=`<div class="card" style="padding:16px;margin-top:16px">
-      <div class="row-between" style="margin-bottom:8px"><div style="font-weight:800;font-size:14px">Saldo pendiente por semana</div><div class="cap">Lunes a domingo · el pago se aplica a la semana que elijas</div></div>
-      ${sem.length?`<div style="overflow-x:auto"><table class="sales" style="min-width:680px"><thead><tr><th>Semana</th><th style="text-align:right">Envíos</th><th style="text-align:right">Costo</th><th style="text-align:right">Retenciones</th><th style="text-align:right">Neto a pagar</th><th style="text-align:right">Pagado</th><th style="text-align:right">Pendiente</th><th>Estado</th></tr></thead><tbody>${semFilas}</tbody></table></div>`:`<div class="muted" style="font-size:12.5px">Sin semanas todavía.</div>`}
+  // Semanas (lo que se debe) + pagos realizados
+  const semCards=[...FC.ws].reverse().map(x=>{ const pend=x.neto-x.pagado, act=x.w===semHoy;
+    const est=x.costo>0&&pend<=0?flexPill("Pagada","var(--green)"):(act?flexPill("En curso","var(--amber)"):flexPill("Por pagar","#E06A6A"));
+    const L=(a,b,st)=>`<div style="display:flex;justify-content:space-between;font-size:12.5px;padding:2px 0${st||""}"><span class="muted">${a}</span><span>${b}</span></div>`;
+    return `<div style="border:1px solid var(--border);border-radius:10px;padding:12px;margin-bottom:10px;${act?"background:rgba(224,162,60,.06)":""}">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><div><b>Semana ${flexIsoWeek(x.w)}</b><div class="cap" style="font-size:11px">${flexShort(x.w)} – ${flexShort(flexWeekEnd(x.w))} · ${x.n} envío(s)</div></div>${est}</div>
+      ${L("Valor envíos",cop(x.costo))}${L("Retenciones","−"+cop(x.ret))}${L("A pagar","<b>"+cop(x.neto)+"</b>")}${x.pagado?L("Pagado","−"+cop(x.pagado)):""}
+      <div style="display:flex;justify-content:space-between;align-items:center;border-top:1px solid var(--border);margin-top:6px;padding-top:8px"><span style="font-weight:700">Pendiente</span><span style="font-size:18px;font-weight:800;${pend>0&&!act?"color:#E06A6A":""}">${cop(Math.max(0,pend))}</span></div>
+      ${pend>0?`<button class="btn-acc" style="width:100%;margin-top:10px;height:38px" onclick="flexPagoModal('${x.w}')">Pagar semana ${flexIsoWeek(x.w)}</button>`:""}
+    </div>`; }).join("");
+  const pagCards=[...pagos].sort((a,b)=>(b.fecha||"").localeCompare(a.fecha||"")).map(p=>{ const w=p.semana||flexMonday(p.fecha);
+    return `<div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start;border-bottom:1px solid var(--border);padding:10px 0"><div style="min-width:0"><div style="font-weight:700">${cop(+p.monto||0)}</div><div class="cap" style="font-size:11px">${flexDay(p.fecha)} · Semana ${flexIsoWeek(w)}</div>${p.nota?`<div class="cap" style="font-size:11px">${esc(p.nota)}</div>`:""}</div><button class="btn-ghost" title="Eliminar pago" style="height:26px;padding:0 8px;font-size:11px;opacity:.6;flex-shrink:0" onclick="flexPagoDel('${esc(p.id)}')">✕</button></div>`; }).join("");
+  const semFilas=[...FC.ws].reverse().map(x=>{ const pend=x.neto-x.pagado, act=x.w===semHoy;
+    const est=x.costo>0&&pend<=0?flexPill("Pagada","var(--green)"):(act?flexPill("En curso","var(--amber)"):flexPill("Por pagar","#E06A6A"));
+    const btn=pend>0?`<button class="btn-ghost" style="height:28px;padding:0 10px;font-size:11.5px;white-space:nowrap;color:var(--text)" onclick="flexPagoModal('${x.w}')">Pagar</button>`:"";
+    return `<tr${act?' style="background:rgba(224,162,60,.07)"':""}>
+      <td><b>Semana ${flexIsoWeek(x.w)}</b><div class="cap" style="font-size:10.5px">${flexShort(x.w)} – ${flexShort(flexWeekEnd(x.w))} · ${x.n} envío(s)</div></td>
+      <td style="text-align:right">${cop(x.costo)}</td>
+      <td style="text-align:right" class="muted">−${cop(x.ret)}</td>
+      <td style="text-align:right;font-weight:700">${cop(x.neto)}</td>
+      <td style="text-align:right" class="muted">${x.pagado?cop(x.pagado):"—"}</td>
+      <td style="text-align:right;font-weight:800;${pend>0&&!act?"color:#E06A6A":""}">${cop(Math.max(0,pend))}</td>
+      <td>${est}</td><td style="text-align:right">${btn}</td></tr>`; }).join("");
+  const semBlock=`<div class="card" style="padding:16px">
+      <div class="row-between" style="margin-bottom:8px"><div style="font-weight:800;font-size:14px">Cuenta por semana</div><div class="cap" style="font-size:11.5px">Valor de envíos − retenciones = a pagar</div></div>
+      ${FC.ws.length?`<div class="fx-cards">${semCards}</div><div class="fx-table" style="overflow-x:auto;-webkit-overflow-scrolling:touch"><table class="sales" style="min-width:720px"><thead><tr><th>Semana</th><th style="text-align:right">Valor envíos</th><th style="text-align:right">Retenciones</th><th style="text-align:right">A pagar</th><th style="text-align:right">Pagado</th><th style="text-align:right">Pendiente</th><th>Estado</th><th></th></tr></thead><tbody>${semFilas}</tbody></table></div>`:`<div class="muted" style="font-size:12.5px">Sin semanas todavía.</div>`}
     </div>`;
   const pagFilas=[...pagos].sort((a,b)=>(b.fecha||"").localeCompare(a.fecha||"")).map(p=>{ const w=p.semana||flexMonday(p.fecha);
-    return `<tr><td style="white-space:nowrap">${flexDay(p.fecha)}</td><td style="text-align:right;font-weight:800;color:var(--green)">${cop(+p.monto||0)}</td><td><b>Semana ${flexIsoWeek(w)}</b> <span class="cap">${flexShort(w)} – ${flexShort(flexWeekEnd(w))}</span></td><td class="muted">${esc(p.nota||"")}</td><td style="text-align:right"><button class="btn-ghost" style="padding:2px 8px;font-size:10px" onclick="flexPagoDel('${esc(p.id)}')">✕</button></td></tr>`; }).join("");
+    return `<tr><td style="white-space:nowrap">${flexDay(p.fecha)}</td><td>Semana ${flexIsoWeek(w)} <span class="cap">${flexShort(w)} – ${flexShort(flexWeekEnd(w))}</span></td><td class="muted" style="font-size:12px">${esc(p.nota||"—")}</td><td style="text-align:right;font-weight:800">${cop(+p.monto||0)}</td><td style="text-align:right;width:34px"><button class="btn-ghost" title="Eliminar pago" style="height:26px;padding:0 8px;font-size:11px;opacity:.6" onclick="flexPagoDel('${esc(p.id)}')">✕</button></td></tr>`; }).join("");
   const pagBlock=`<div class="card" style="padding:16px;margin-top:16px">
-      <div class="row-between" style="margin-bottom:8px"><div style="font-weight:800;font-size:14px">Pagos realizados a Unilogix</div><div class="cap">${pagos.length} pago(s) · total ${cop(k.pagado||0)}</div></div>
-      ${pagos.length?`<div style="overflow-x:auto"><table class="sales" style="min-width:480px"><thead><tr><th>Fecha</th><th style="text-align:right">Valor</th><th>Semana</th><th>Nota</th><th></th></tr></thead><tbody>${pagFilas}</tbody></table></div>`:`<div class="muted" style="font-size:12.5px">Aún no hay pagos registrados. Usa «＋ Registrar pago».</div>`}
+      <div class="row-between" style="margin-bottom:8px"><div style="font-weight:800;font-size:14px">Pagos realizados</div><div class="cap" style="font-size:11.5px">${pagos.length} pago(s) · total ${cop(FC.pagado)}</div></div>
+      ${pagos.length?`<div class="fx-cards">${pagCards}</div><div class="fx-table" style="overflow-x:auto;-webkit-overflow-scrolling:touch"><table class="sales" style="min-width:520px"><thead><tr><th>Fecha</th><th>Semana</th><th>Nota</th><th style="text-align:right">Valor</th><th></th></tr></thead><tbody>${pagFilas}</tbody></table></div>`:`<div class="muted" style="font-size:12.5px">Aún no hay pagos. Usa «Pagar» en la semana o «＋ Registrar pago».</div>`}
     </div>`;
 
-  document.getElementById("flexBody").innerHTML=semBlock+pagBlock+libro+detalle+tarifa;
+  document.getElementById("flexBody").innerHTML=`<style>.fx-cards{display:none}@media(max-width:700px){.fx-table{display:none}.fx-cards{display:block}}</style>`+semBlock+pagBlock+libro+(detalle?`<div id="flexDet">${detalle}</div>`:"")+tarifa;
 }
 
-function flexPagoModal(){
-  const saldo=FLEX?Math.max(0,Math.round(flexCalc(FLEX).saldo)):0;
+function flexPagoModal(sem){
+  const ws=flexWeeks(FLEX||{}); if(!ws.length){ alert("Aún no hay semanas con envíos."); return; }
+  const ini=sem||(ws.find(x=>x.neto-x.pagado>0)||ws[ws.length-1]).w;
   openModal(`<h3>Registrar pago a Unilogix</h3>
-    <div class="sub">Lo que le transferiste a Unilogix. Se descuenta del saldo.</div>
-    <label class="cap">Monto pagado (COP)</label>
-    <input id="fxMonto" type="text" inputmode="numeric" class="field" placeholder="Ej. ${saldo||68800}" value="${saldo||""}" autofocus>
-    <label class="cap" style="display:block;margin-top:10px">Fecha</label>
+    <div class="sub">Registra lo que transferiste. Se descuenta de la semana que elijas.</div>
+    <label class="cap">Semana que pagas</label>
+    <select id="fxSem" class="field" onchange="flexPagoSync(true)">${ws.map(x=>`<option value="${x.w}"${x.w===ini?" selected":""}>Sem. ${flexIsoWeek(x.w)} · ${flexShort(x.w)} – ${flexShort(flexWeekEnd(x.w))}${x.neto-x.pagado>0?` · debe ${cop(x.neto-x.pagado)}`:" · pagada"}</option>`).join("")}</select>
+    <div id="fxRes" class="card" style="padding:10px 12px;margin-top:10px;font-size:12px;line-height:1.7"></div>
+    <label class="cap" style="display:block;margin-top:10px">Valor transferido (COP)</label>
+    <input id="fxMonto" type="text" inputmode="numeric" class="field" placeholder="Ej. 265.476" oninput="flexPagoSync(false)" autofocus>
+    <div id="fxHint" class="cap" style="font-size:11.5px;margin-top:4px;min-height:16px"></div>
+    <label class="cap" style="display:block;margin-top:8px">Fecha del pago</label>
     <input id="fxFecha" type="date" class="field" value="${_isoDay(0)}">
-    <label class="cap" style="display:block;margin-top:10px">Semana que cubre</label>
-    <select id="fxSem" class="field">${(()=>{ const ws=flexWeeks(FLEX||{}); const ini=(ws.find(x=>x.neto-x.pagado>0)||ws[0]||{}).w; return ws.map(x=>`<option value="${x.w}"${x.w===ini?" selected":""}>Semana ${flexIsoWeek(x.w)} · ${flexShort(x.w)} – ${flexShort(flexWeekEnd(x.w))} · pendiente ${cop(x.neto-x.pagado)}</option>`).join(""); })()}</select>
     <label class="cap" style="display:block;margin-top:10px">Nota (opcional)</label>
-    <input id="fxNota" type="text" class="field" placeholder="Transferencia Bancolombia · factura semana 13-oct">
+    <input id="fxNota" type="text" class="field" placeholder="N.º de factura, ej. UNL 1063 · transferencia Bancolombia">
     <div id="fxErr" class="red" style="font-size:12px;margin-top:8px"></div>
     <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
       <button class="btn-ghost" onclick="closeModal()">Cancelar</button>
-      <button class="btn-acc" onclick="flexPagoSave()">Guardar pago</button>
+      <button class="btn-acc" style="white-space:nowrap" onclick="flexPagoSave()">Guardar pago</button>
     </div>`);
+  flexPagoSync(true);
+}
+
+function flexPagoSync(fill){
+  const w=(document.getElementById("fxSem")||{}).value; const x=flexWeeks(FLEX||{}).find(y=>y.w===w); if(!x) return;
+  const pend=Math.max(0,x.neto-x.pagado);
+  document.getElementById("fxRes").innerHTML=`Valor de envíos <b style="float:right">${cop(x.costo)}</b><br>Retenciones (retefuente 1 % + reteICA 9,66 ‰) <b style="float:right" class="muted">−${cop(x.ret)}</b><br>A pagar <b style="float:right">${cop(x.neto)}</b>${x.pagado?`<br>Ya pagado <b style="float:right" class="muted">−${cop(x.pagado)}</b>`:""}<div style="border-top:1px solid var(--border);margin-top:4px;padding-top:4px">Pendiente <b style="float:right;font-size:14px">${cop(pend)}</b></div>`;
+  const inp=document.getElementById("fxMonto"); if(fill) inp.value=pend?pend.toLocaleString("es-CO"):"";
+  const m=flexParseMonto(inp.value), h=document.getElementById("fxHint");
+  if(!m) h.innerHTML=""; else if(Math.round(m)===Math.round(pend)) h.innerHTML=`<span style="color:var(--green)">✓ Salda la semana ${flexIsoWeek(w)}</span>`;
+  else if(m<pend) h.innerHTML=`<span style="color:var(--amber)">Pago parcial · quedarán ${cop(pend-m)} pendientes</span>`;
+  else h.innerHTML=`<span style="color:var(--amber)">Es ${cop(m-pend)} más que lo pendiente de esta semana</span>`;
 }
 
 async function flexPagoSave(){
   // En Colombia el punto es separador de miles: "265.476" = 265476 pesos (no 265,48).
-  let raw=String(document.getElementById("fxMonto").value||"0").replace(/[$\s]/g,"");
-  raw=/^\d{1,3}([.,]\d{3})+$/.test(raw)?raw.replace(/[.,]/g,""):raw.replace(",",".");
-  const monto=parseFloat(raw)||0;
+  const monto=flexParseMonto(document.getElementById("fxMonto").value);
   const err=document.getElementById("fxErr");
   if(!monto||monto<=0){ err.textContent="Ingresa un monto mayor a 0."; return; }
   try{
