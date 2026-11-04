@@ -259,6 +259,17 @@ def inv_update(pid: int, data: InvUpdateIn,
     # Si se cambió el dueño (marcar/desmarcar como de María José), limpiar sus
     # ventas en la liquidación: al DESMARCAR desaparece de la sección; al
     # RE-MARCAR se parte de cero y el sync la repuebla desde la nueva fecha.
+    # Cambio manual de dueño o de fecha de inicio → los tramos se reinician
+    # (el cupo vuelve a ser uno solo desde la fecha elegida a mano).
+    if ok and ("owner" in fields or "mj_anchor" in fields):
+        try:
+            _tr = _mj_tramos_get()
+            if str(pid) in _tr:
+                _tr.pop(str(pid), None)
+                _mj_tramos_set(_tr)
+        except Exception:
+            pass
+        _MJ_CACHE["ts"] = 0
     if ok and "owner" in fields:
         try:
             db._sb_delete("mj_ventas", "product_id=eq.%d" % pid)
@@ -5897,6 +5908,68 @@ def _mj_now():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+# ── Tramos de cupo de María José ────────────────────────────────────────────
+# Un producto con cupo (mj_qty) puede recibir mercancía de ella en VARIOS
+# embarques. Cada llegada es un TRAMO {qty, anchor}: sus unidades solo pueden
+# consumirse con ventas hechas DESDE la fecha de arribo de ese embarque. Antes
+# el cupo se sumaba al único mj_anchor (viejo) y las unidades nuevas se
+# "llenaban" con ventas de BOUN de meses atrás (3-nov-2026: 8 ventas KAT ASTRO
+# de jul/ago, +$8,87M falsos). Se guardan en app_settings "mj_tramos" como
+# {"<product_id>": [{"qty": n, "anchor": "YYYY-MM-DD"}, ...]}.
+_MJ_TRAMOS_KEY = "mj_tramos"
+# Corrección del 3-nov-2026 (embarque #2 "kat areneros 100" arribado ese día):
+# ASTRO = 4 u. desde 1-jul + 8 u. nuevas desde 3-nov; COSMOS = 2 u. desde 3-nov.
+_MJ_TRAMOS_SEED = {"36": [{"qty": 4, "anchor": "2026-07-01"},
+                          {"qty": 8, "anchor": "2026-11-03"}],
+                   "35": [{"qty": 2, "anchor": "2026-11-03"}]}
+
+
+def _mj_tramos_get() -> dict:
+    try:
+        raw = db.get_setting(_MJ_TRAMOS_KEY, "")
+    except Exception:
+        raw = ""
+    if not raw:
+        try:
+            db.set_setting(_MJ_TRAMOS_KEY, json.dumps(_MJ_TRAMOS_SEED))
+        except Exception:
+            pass
+        return json.loads(json.dumps(_MJ_TRAMOS_SEED))
+    try:
+        d = json.loads(raw)
+        return d if isinstance(d, dict) else {}
+    except Exception:
+        return {}
+
+
+def _mj_tramos_set(d: dict):
+    try:
+        db.set_setting(_MJ_TRAMOS_KEY, json.dumps(d))
+    except Exception:
+        pass
+
+
+def _mj_tramos_for(pid, qty, anchor, tramos: dict) -> list:
+    """Tramos válidos de un producto, cuadrados contra su cupo total."""
+    tr = []
+    for t in (tramos.get(str(pid)) or []):
+        try:
+            tq = float(t.get("qty") or 0)
+        except (TypeError, ValueError):
+            tq = 0.0
+        if tq > 0:
+            tr.append({"qty": tq, "anchor": (str(t.get("anchor") or "")[:10]
+                                             or None)})
+    if not tr:
+        return [{"qty": float(qty), "anchor": anchor}]
+    tr.sort(key=lambda t: t["anchor"] or "")
+    diff = float(qty) - sum(t["qty"] for t in tr)
+    if abs(diff) > 1e-9:                 # cupo editado a mano → el 1er tramo absorbe
+        tr[0]["qty"] = max(0.0, tr[0]["qty"] + diff)
+    return [t for t in tr if t["qty"] > 0] or [{"qty": float(qty),
+                                                "anchor": anchor}]
+
+
 def _mj_targets() -> dict:
     """Objetivos de María José: publicaciones e identificadores por canal.
 
@@ -6947,6 +7020,7 @@ def _mj_sync(window_days=None) -> dict:
     for r in rows:
         by_prod[r.get("product_id")].append(r)
     final_rows, consumed_map, clear_pids = [], {}, []
+    _tramos_all = _mj_tramos_get()
     _MONEY_K = ("precio_venta", "descuentos", "comision", "retencion",
                 "costo_envio", "costo_publicidad", "neto_mj")
     for pid, rs in by_prod.items():
@@ -6956,29 +7030,45 @@ def _mj_sync(window_days=None) -> dict:
             consumed_map[pid] = sum(float(x.get("unidades") or 0) for x in rs)
             final_rows.extend(rs)
             continue
-        anchor = m.get("anchor")
-        elig = [x for x in rs if (not anchor or x.get("fecha_venta", "") >= anchor)]
-        elig.sort(key=lambda x: (x.get("fecha_venta", ""), str(x.get("order_id"))))
-        rem, consumed = float(qty), 0.0
-        for x in elig:
-            if rem <= 0:
-                break
-            u = float(x.get("unidades") or 0)
-            if u <= 0:
+        # Tramos: cada llegada de mercancía de María solo consume ventas desde
+        # SU fecha de arribo. Se recorren en orden; cada venta (o fracción) se
+        # usa una sola vez.
+        tramos = _mj_tramos_for(pid, qty, m.get("anchor"), _tramos_all)
+        srt = sorted(rs, key=lambda x: (x.get("fecha_venta", ""),
+                                         str(x.get("order_id"))))
+        left = [float(x.get("unidades") or 0) for x in srt]
+        consumed = 0.0
+        for t in tramos:
+            anchor, rem = t["anchor"], float(t["qty"])
+            for i, x in enumerate(srt):
+                if rem <= 0:
+                    break
+                if anchor and x.get("fecha_venta", "") < anchor:
+                    continue
+                u_tot = float(x.get("unidades") or 0)
+                u = left[i]
+                if u <= 0 or u_tot <= 0:
+                    continue
+                take = min(u, rem)
+                left[i] -= take
+                rem -= take
+                consumed += take
+        for i, x in enumerate(srt):
+            u_tot = float(x.get("unidades") or 0)
+            if u_tot <= 0:
                 continue
-            if u <= rem:
+            got = u_tot - left[i]
+            if got <= 1e-9:
+                continue
+            if abs(got - u_tot) <= 1e-9:
                 final_rows.append(x)
-                consumed += u
-                rem -= u
-            else:                         # esta venta cruza el tope → repartir
-                frac = rem / u
+            else:                         # venta que cruza el tope → repartir
+                frac = got / u_tot
                 xx = dict(x)
-                xx["unidades"] = round(rem, 2)
+                xx["unidades"] = round(got, 2)
                 for kk in _MONEY_K:
                     xx[kk] = round(float(x.get(kk) or 0) * frac, 2)
                 final_rows.append(xx)
-                consumed += rem
-                rem = 0
         consumed_map[pid] = consumed
         if consumed >= float(qty):
             clear_pids.append(pid)
@@ -8226,7 +8316,8 @@ def embarques_arribar(eid: int, data: ArribarIn = ArribarIn(),
         raise HTTPException(409, "El embarque ya estaba marcado como arribado.")
     its = db._sb_get("embarque_items?embarque_id=eq.%d&select=*" % eid) or []
     aplicados = 0
-    hoy = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # Fecha de arribo en hora Colombia (UTC-5).
+    hoy = (datetime.now(timezone.utc) - timedelta(hours=5)).strftime("%Y-%m-%d")
     for it in its:
         pid = it.get("product_id")
         cant = float(it.get("cantidad") or 0)
@@ -8263,19 +8354,34 @@ def embarques_arribar(eid: int, data: ArribarIn = ArribarIn(),
             "qty_transit": transit_new,
         }
         # ── María José: parte de la línea que es de ella ──
+        # Las unidades que llegan SOLO cuentan ventas desde la fecha de arribo
+        # (hoy): se guardan como un tramo nuevo, nunca se mezclan con ventas
+        # anteriores de BOUN.
         mj = float(it.get("mj_cantidad") or 0)
         if mj > 0:
             if p.get("owner") == "MARIA_JOSE":
                 # Con cupo -> se le suman las unidades nuevas. Si esta en
                 # "todas las unidades" (mj_qty 0) se deja asi: convertirlo en
                 # cupo dejaba por fuera sus ventas anteriores al inicio.
-                if float(p.get("mj_qty") or 0) > 0:
-                    patch["mj_qty"] = float(p.get("mj_qty") or 0) + mj
+                old_q = float(p.get("mj_qty") or 0)
+                if old_q > 0:
+                    patch["mj_qty"] = old_q + mj
+                    _tr = _mj_tramos_get()
+                    lst = _tr.get(str(pid)) or [
+                        {"qty": old_q,
+                         "anchor": (str(p.get("mj_anchor"))[:10]
+                                    if p.get("mj_anchor") else None)}]
+                    lst.append({"qty": mj, "anchor": hoy})
+                    _tr[str(pid)] = lst
+                    _mj_tramos_set(_tr)
             else:
                 patch["owner"] = "MARIA_JOSE"
                 patch["mj_qty"] = mj
                 patch["mj_consumed"] = 0
-                patch["mj_anchor"] = _emb_dt(it.get("mj_anchor")) or hoy
+                patch["mj_anchor"] = hoy
+                _tr = _mj_tramos_get()
+                _tr[str(pid)] = [{"qty": mj, "anchor": hoy}]
+                _mj_tramos_set(_tr)
         db._sb_patch("inventory_products", "id=eq.%d" % int(pid), patch)
         try:
             db._sb_post("movimiento_stock", {
