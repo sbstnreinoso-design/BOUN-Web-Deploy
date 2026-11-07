@@ -564,6 +564,6 @@ async function dsProbarDropi() {
     const r = await api("/dropship/probar-dropi", { method: "POST" });
     box.innerHTML = r.ok
       ? `<div class="ds-alert blue" style="margin-top:8px"><span class="ic">✅</span><div>Conectado. <span class="ds-sku">${esc(r.sku)}</span> tiene <b>${dsN(r.stock)}</b> u. en Dropi${r.precio ? " · precio " + cop(r.precio) : ""}.</div></div>`
-      : `<div class="ds-alert red" style="margin-top:8px"><span class="ic">⚠️</span><div>${esc(r.error || "No se pudo conectar")}</div></div>`;
+      : `<div class="ds-alert red" style="margin-top:8px"><span class="ic">⚠️</span><div>${esc(r.error || "No se pudo conectar")}${(r.intentos||[]).length ? `<details style="margin-top:6px"><summary style="cursor:pointer;opacity:.8">Ver intentos (${r.intentos.length})</summary><pre style="white-space:pre-wrap;font-size:11px;opacity:.85;margin:6px 0 0">${esc(r.intentos.join("\n"))}</pre></details>` : ""}</div></div>`;
   } catch (e) { box.innerHTML = `<div class="ds-alert red"><span class="ic">⚠️</span><div>${esc(e.message)}</div></div>`; }
 }

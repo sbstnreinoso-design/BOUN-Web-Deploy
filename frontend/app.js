@@ -1,6 +1,6 @@
 // ── BOUN Web — frontend ──────────────────────────────────────────────────────
 let TOKEN = localStorage.getItem("boun_token") || "";
-let USER = JSON.parse(localStorage.getItem("boun_user") || "null");
+let USER = (()=>{ try{ const u=JSON.parse(localStorage.getItem("boun_user")||"null"); return (u&&typeof u==="object")?u:null; }catch(e){ localStorage.removeItem("boun_user"); return null; } })();
 
 const GCOLORS = {A:"#7FB3E0",B:"#E0A23C",C:"#C58CE6",D:"#5BC8B0",E:"#E68CA8",F:"#A8C46B"};
 const isAdmin = () => USER && USER.role === "admin";

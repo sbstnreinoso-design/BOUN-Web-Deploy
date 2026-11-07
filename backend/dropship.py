@@ -338,40 +338,80 @@ def _parse_dropi_product(data):
             "nombre": (obj.get("name") or "")[:120]}
 
 
-def dropi_fetch(dropi_id, token: str, base: str) -> dict:
-    """Lee un producto de Dropi con el token de integración. Prueba las rutas
-    conocidas de su API hasta que una responda con stock."""
+_DROPI_COMBO = {}   # combinación base/cabecera/ruta que ya funcionó
+
+
+def _dropi_combos(token: str, base: str):
+    """Combinaciones a probar. La doc oficial de Dropi (Integrations Core) usa
+    la cabecera `dropi-integracion-key` (con c) y GET /products/v2/{id} sobre
+    la base de integraciones."""
     base = (base or DEF_CFG["dropi_base"]).rstrip("/")
-    hdrs = {"dropi-integration-key": token,
-            "X-Authorization": "Bearer " + token,
-            "Authorization": "Bearer " + token,
-            "Accept": "application/json",
-            "User-Agent": "BOUN-Inventario/1.0"}
-    rutas = ["/integrations/products/v2/%s", "/integrations/products/%s",
-             "/api/products/v2/%s", "/api/products/%s"]
-    err = "sin respuesta"
-    for ruta in rutas:
-        url = base + (ruta % dropi_id)
+    bases = []
+    for b in (base + "/integrations", "https://api.dropi.co/integrations",
+              "https://api.dropi.co/api/integrations", base,
+              "https://api.dropi.co"):
+        if b not in bases:
+            bases.append(b)
+    heads = [("dropi-integracion-key", token),
+             ("dropi-integration-key", token),
+             ("Authorization", "Bearer " + token)]
+    rutas = ["/products/v2/%s", "/products/%s"]
+    out = []
+    for b in bases:
+        for h in heads:
+            for ruta in rutas:
+                out.append((b, h[0], h[1], ruta))
+    return out
+
+
+def dropi_fetch(dropi_id, token: str, base: str, debug: bool = False) -> dict:
+    """Lee un producto de Dropi con el token de integración. Usa la
+    combinación que ya funcionó; si no hay, prueba las conocidas."""
+    combos = _dropi_combos(token, base)
+    if _DROPI_COMBO.get("key") in [(c[0], c[1], c[3]) for c in combos]:
+        k = _DROPI_COMBO["key"]
+        combos = [c for c in combos if (c[0], c[1], c[3]) == k] + \
+                 [c for c in combos if (c[0], c[1], c[3]) != k]
+    err, log = "sin respuesta", []
+    for (b, hname, hval, ruta) in combos:
+        url = b + (ruta % dropi_id)
+        hdrs = {hname: hval, "Accept": "application/json",
+                "Content-Type": "application/json",
+                "User-Agent": "BOUN-Inventario/1.0"}
         try:
-            r = requests.get(url, headers=hdrs, timeout=15)
+            r = requests.get(url, headers=hdrs, timeout=12)
+            code = r.status_code
         except Exception as e:
+            code, r = "ERR", None
             err = "conexión: %s" % str(e)[:80]
+        log.append("%s %s → %s" % (hname, url.replace(str(dropi_id), "{id}"), code))
+        if r is None:
             continue
-        if r.status_code in (401, 403):
-            err = "Dropi rechazó el token (%s)" % r.status_code
+        if code in (401, 403):
+            err = "Dropi rechazó el token (%s)" % code
             continue
-        if r.status_code != 200:
-            err = "Dropi respondió %s" % r.status_code
+        if code != 200:
+            if err.startswith("sin respuesta"):
+                err = "Dropi respondió %s" % code
             continue
         try:
             parsed = _parse_dropi_product(r.json())
         except Exception:
             parsed = None
         if parsed:
-            parsed.update({"ok": True, "ruta": ruta})
+            _DROPI_COMBO["key"] = (b, hname, ruta)
+            parsed.update({"ok": True, "ruta": url.replace(str(dropi_id), "{id}"),
+                           "cabecera": hname})
+            if debug:
+                parsed["intentos"] = log
             return parsed
         err = "respuesta sin stock"
-    return {"ok": False, "error": err}
+        if debug:
+            log.append("   cuerpo: %s" % r.text[:200])
+    out = {"ok": False, "error": err}
+    if debug:
+        out["intentos"] = log
+    return out
 
 
 def sync_stock() -> dict:
@@ -399,6 +439,8 @@ def sync_stock() -> dict:
         else:
             errores += 1
             p["stock_error"] = r.get("error") or "error"
+            if leidos == 0 and "rechazó el token" in (r.get("error") or ""):
+                break   # token inválido: no insistir con los demás productos
     _save_productos(prods)
     _propagar_cambios(cambios)
     return {"ok": errores == 0, "leidos": leidos, "errores": errores,
@@ -1126,7 +1168,7 @@ def build_router(current_user, admin, ml_request, propagate) -> APIRouter:
         p = next((x for x in get_productos() if x.get("dropi_id")), None)
         if not p:
             return {"ok": False, "error": "Ningún producto tiene ID de Dropi."}
-        res = dropi_fetch(p["dropi_id"], token, get_cfg().get("dropi_base"))
+        res = dropi_fetch(p["dropi_id"], token, get_cfg().get("dropi_base"), debug=True)
         res["sku"] = p["sku"]
         return res
 
