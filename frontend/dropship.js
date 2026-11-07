@@ -359,45 +359,117 @@ async function dsStockSave(sku) {
 
 function dsItemsRows(items) {
   return (items && items.length ? items : [{ acct: "boun", item_id: "" }]).map(it => `
-    <div class="ds-trow" style="grid-template-columns:110px 1fr 28px">
+    <div class="ds-trow ds-itrow" style="grid-template-columns:118px 1fr 28px">
       <select class="field ds-it-acct"><option value="boun" ${it.acct !== "kat" ? "selected" : ""}>ML BOUN</option><option value="kat" ${it.acct === "kat" ? "selected" : ""}>ML KAT</option></select>
-      <input class="field ds-it-id" placeholder="MCO1234567890" value="${esc(it.item_id || "")}">
+      <input class="field ds-it-id" placeholder="Pega el link de la publicación o el código MCO…" value="${esc(it.item_id || "")}"
+        onpaste="setTimeout(()=>dsLeerML(this),30)" onchange="dsLeerML(this)">
       <button class="ds-link" onclick="this.parentNode.remove()" title="Quitar">✕</button>
+      <div class="ds-it-info" style="grid-column:1/-1"></div>
     </div>`).join("");
+}
+
+function dsSkuSugerido(nombre) {
+  const stop = new Set(["DE", "PARA", "CON", "Y", "EL", "LA", "LOS", "LAS", "EN", "POR", "UN", "UNA", "DEL", "AL"]);
+  const w = (nombre || "").normalize("NFD").replace(/[̀-ͯ]/g, "").toUpperCase()
+    .replace(/[^A-Z0-9 ]/g, " ").split(/\s+/).filter(x => x && !stop.has(x));
+  return w.length ? "DS-" + w.slice(0, 3).map((x, i) => i === 0 ? x.slice(0, 3) : x.slice(0, 7)).join("-") : "";
+}
+
+let DS_LINK_T = null;
+function dsLinkDebounce(el) { clearTimeout(DS_LINK_T); DS_LINK_T = setTimeout(() => dsLeerDropi(el), 350); }
+
+async function dsLeerDropi(el) {
+  const g = id => document.getElementById(id);
+  const v = (el.value || "").trim(), box = g("dsPDropiInfo");
+  if (!v) { box.innerHTML = ""; return; }
+  box.innerHTML = `<div class="ds-meta" style="margin-top:6px"><span class="spinner" style="width:10px;height:10px"></span> Leyendo el producto en Dropi…</div>`;
+  try {
+    const r = await api("/dropship/leer-dropi", { method: "POST", body: JSON.stringify({ link: v }) });
+    g("dsPDropi").value = r.dropi_id;
+    if (r.ya_existe && r.ya_existe !== (g("dsPDropi").dataset.self || "")) {
+      box.innerHTML = `<div class="ds-alert red" style="margin-top:8px"><span class="ic">⚠️</span><div>Este producto de Dropi ya está creado como <span class="ds-sku">${esc(r.ya_existe)}</span>.</div></div>`;
+      return;
+    }
+    if (!r.leido) {
+      box.innerHTML = `<div class="ds-alert" style="margin-top:8px"><span class="ic">ℹ️</span><div>ID <b>${esc(r.dropi_id)}</b> detectado, pero no se pudo leer de Dropi (${esc(r.error || "")}). Completa los datos a mano.</div></div>`;
+      return;
+    }
+    if (r.nombre && !g("dsPNom").value.trim()) g("dsPNom").value = r.nombre;
+    if (r.proveedor) g("dsPProv").value = r.proveedor;
+    if (r.precio && !g("dsPCosto").value) g("dsPCosto").value = r.precio;
+    const sk = g("dsPSku"); if (sk && !sk.value.trim()) sk.value = dsSkuSugerido(r.nombre);
+    box.innerHTML = `<div class="ds-alert blue" style="margin-top:8px"><span class="ic">✅</span><div>
+      <b>${esc(r.nombre || "Producto " + r.dropi_id)}</b><br>
+      <span class="ds-meta">ID ${esc(r.dropi_id)} · Proveedor: <b>${esc(r.proveedor || "—")}</b> · Stock: <b style="color:var(--green)">${dsN(r.stock)}</b> u. · Precio Dropi: <b>${r.precio ? cop(r.precio) : "—"}</b>${r.sugerido ? " · Sugerido " + cop(r.sugerido) : ""}</span></div></div>`;
+  } catch (e) { box.innerHTML = `<div class="ds-alert red" style="margin-top:8px"><span class="ic">⚠️</span><div>${esc(e.message)}</div></div>`; }
+}
+
+async function dsLeerML(el) {
+  const row = el.closest(".ds-itrow"), info = row.querySelector(".ds-it-info"), v = (el.value || "").trim();
+  if (!v) { info.innerHTML = ""; return; }
+  info.innerHTML = `<div class="ds-meta" style="margin:2px 0 6px"><span class="spinner" style="width:10px;height:10px"></span> Leyendo la publicación…</div>`;
+  try {
+    const r = await api("/dropship/leer-ml", { method: "POST", body: JSON.stringify({ link: v, acct: row.querySelector(".ds-it-acct").value }) });
+    el.value = r.item_id;
+    if (!r.leido) { info.innerHTML = `<div class="ds-meta" style="margin:2px 0 6px;color:#E0A23C">${esc(r.error || "No se pudo leer")}</div>`; return; }
+    if (r.acct) row.querySelector(".ds-it-acct").value = r.acct;
+    const warn = r.ajena ? `<span style="color:#F0567A"> · ⚠️ No es de BOUN ni de KAT</span>` : "";
+    const dup = r.ya_en ? `<span style="color:#E0A23C"> · ya está en ${esc(r.ya_en)}</span>` : "";
+    const sku = r.seller_sku ? ` · SKU en ML: <b>${esc(r.seller_sku)}</b>` : ` · <span style="color:#E0A23C">sin SKU en ML</span>`;
+    info.innerHTML = `<div style="display:flex;gap:10px;align-items:center;margin:2px 0 8px">
+      ${r.foto ? `<img src="${esc(r.foto)}" style="width:38px;height:38px;object-fit:cover;border-radius:8px;flex:none">` : ""}
+      <div class="ds-meta" style="line-height:1.35"><b style="color:var(--text,#F2ECE0)">${esc(r.titulo || r.item_id)}</b><br>
+      ${r.acct ? (r.acct === "kat" ? "ML KAT" : "ML BOUN") : "Cuenta desconocida"} · ${r.precio ? cop(r.precio) : ""} · ${esc(r.estado || "")}${sku}${warn}${dup}</div></div>`;
+    const nom = document.getElementById("dsPNom"); if (nom && !nom.value.trim() && r.titulo) nom.value = r.titulo;
+    const sk = document.getElementById("dsPSku"); if (sk && r.seller_sku && /^DS-/i.test(r.seller_sku)) sk.value = r.seller_sku.toUpperCase();
+  } catch (e) { info.innerHTML = `<div class="ds-meta" style="margin:2px 0 6px;color:#F0567A">${esc(e.message)}</div>`; }
 }
 
 function dsProductoModal(sku) {
   const p = sku ? (DS.productos || []).find(x => x.sku === sku) : null;
   const isNew = !p;
   openModal(`<h3>${isNew ? "Nuevo producto dropshipping" : "Editar producto"}</h3>
-    <div class="sub">${isNew ? "Se crea en el inventario central con su SKU (DS-…) y queda conectado al motor de stock y al Mapeo." : `<span class="ds-sku">${esc(p.sku)}</span>`}</div>
+    <div class="sub">${isNew ? "Pega el link de Dropi que envía el proveedor y el de la publicación: el resto se llena solo." : `<span class="ds-sku">${esc(p.sku)}</span>`}</div>
     <div class="ds-form">
-      ${isNew ? `<div><label>SKU</label><input id="dsPSku" class="field" placeholder="DS-ALM-PIERNAS" style="text-transform:uppercase"><div class="hint">Empieza por DS-. Es el mismo SKU que se pone en las publicaciones.</div></div>` : ""}
+      <div class="full"><label>① Link del producto en Dropi <span class="ds-meta" style="font-weight:400">(el que envía el proveedor)</span></label>
+        <input id="dsPLink" class="field" placeholder="https://app.dropi.co/dashboard/product-details/1866621/…" value="${esc(p ? (p.link_dropi || "") : "")}"
+          onpaste="setTimeout(()=>dsLeerDropi(this),30)" oninput="dsLinkDebounce(this)">
+        <input id="dsPDropi" type="hidden" value="${esc(p && p.dropi_id ? p.dropi_id : "")}" data-self="${esc(p ? p.sku : "")}">
+        <div id="dsPDropiInfo"></div></div>
+      <div class="full"><label>② Publicaciones donde se vende <span class="ds-meta" style="font-weight:400">(pega el link; la cuenta se detecta sola)</span></label><div id="dsPItems">${dsItemsRows(p ? p.ml_items : [])}</div>
+        <button class="ds-btn sm ghost" style="margin-top:2px" onclick="document.getElementById('dsPItems').insertAdjacentHTML('beforeend',dsItemsRows([]))">＋ Otra publicación</button></div>
+      ${isNew ? `<div><label>SKU</label><input id="dsPSku" class="field" placeholder="Se sugiere solo" style="text-transform:uppercase"><div class="hint">Empieza por DS-. Ponlo igual en la publicación de ML.</div></div>` : ""}
       <div class="${isNew ? "" : "full"}"><label>Nombre</label><input id="dsPNom" class="field" value="${esc(p ? p.nombre : "")}"></div>
-      <div><label>Costo por unidad (lo que cobra el proveedor)</label><input id="dsPCosto" class="field" type="number" min="0" value="${p ? p.costo : ""}"></div>
-      <div><label>ID del producto en Dropi</label><input id="dsPDropi" class="field" placeholder="1866621" value="${esc(p && p.dropi_id ? p.dropi_id : "")}"><div class="hint">El número del link: …/product-details/<b>1866621</b>/…</div></div>
-      <div><label>Proveedor en Dropi</label><input id="dsPProv" class="field" placeholder="Wopi Bodega" value="${esc(p ? p.proveedor_dropi || "" : "")}"></div>
+      <div><label>Costo por unidad <span class="ds-meta" style="font-weight:400">(lo que te cobra el proveedor)</span></label><input id="dsPCosto" class="field" type="number" min="0" value="${p ? p.costo : ""}"><div class="hint">Se llena con el precio de Dropi; cámbialo si el proveedor te cobra otro.</div></div>
+      <div><label>Proveedor en Dropi</label><input id="dsPProv" class="field" placeholder="Se llena solo desde Dropi" value="${esc(p ? p.proveedor_dropi || "" : "")}"></div>
       <div><label>Colchón propio (%)</label><input id="dsPCol" class="field" type="number" min="0" max="90" placeholder="${dsN(DS.cfg.colchon_pct)} (general)" value="${p && p.colchon_pct != null ? p.colchon_pct : ""}"><div class="hint">Vacío = usa el general.</div></div>
       ${!isNew ? `<div><label>Reclamos por calidad</label><input id="dsPRec" class="field" type="number" min="0" value="${p.reclamos_calidad || 0}"></div>
       <div><label>Estado</label><select id="dsPEst" class="field" ${p.estado === "migrado" ? "disabled" : ""}><option value="activo" ${p.estado === "activo" ? "selected" : ""}>Activo (se publica)</option><option value="pausado" ${p.estado === "pausado" ? "selected" : ""}>Pausado (publica 0)</option>${p.estado === "migrado" ? '<option selected>En Bodega Bogotá</option>' : ""}</select></div>` : ""}
-      <div class="full"><label>Publicaciones donde se vende</label><div id="dsPItems">${dsItemsRows(p ? p.ml_items : [])}</div>
-        <button class="ds-btn sm ghost" style="margin-top:2px" onclick="document.getElementById('dsPItems').insertAdjacentHTML('beforeend',dsItemsRows([]))">＋ Otra publicación</button></div>
       <div class="full"><label>Notas</label><textarea id="dsPNotas" class="field">${esc(p ? p.notas || "" : "")}</textarea></div>
     </div>
     <div class="ds-mrow">
       ${!isNew ? `<button class="ds-btn ghost" style="margin-right:auto;color:#F0567A" onclick="dsBorrar('${esc(p.sku)}')">Quitar de dropshipping</button>` : ""}
       <button class="ds-btn ghost" onclick="closeModal()">Cancelar</button>
       <button class="ds-btn pri" onclick="dsProductoSave(${isNew ? "null" : `'${esc(p.sku)}'`})">${isNew ? "Crear producto" : "Guardar"}</button></div>`, true);
+  setTimeout(() => { const l = document.getElementById("dsPLink"); if (l && isNew) l.focus(); }, 60);
+}
+
+function dsMco(v) {
+  const t = (v || "").trim().toUpperCase();
+  const m = t.match(/(?:ITEM_ID(?:%3A|:|=)|WID=)MCO-?(\d{6,})/) || t.match(/MCO-?(\d{6,})/) || t.match(/^(\d{6,})$/);
+  return m ? "MCO" + m[1] : "";
 }
 
 async function dsProductoSave(sku) {
   const g = id => document.getElementById(id);
   const items = [...document.querySelectorAll("#dsPItems .ds-trow")].map(r => ({
-    acct: r.querySelector(".ds-it-acct").value, item_id: r.querySelector(".ds-it-id").value.trim()
+    acct: r.querySelector(".ds-it-acct").value,
+    item_id: dsMco(r.querySelector(".ds-it-id").value)
   })).filter(x => x.item_id);
   const body = {
     nombre: g("dsPNom").value.trim(), costo: parseFloat(g("dsPCosto").value || "0") || 0,
     dropi_id: g("dsPDropi").value.trim() || null, proveedor_dropi: g("dsPProv").value.trim(),
+    link_dropi: (g("dsPLink").value.trim().startsWith("http") ? g("dsPLink").value.trim() : ""),
     ml_items: items, notas: g("dsPNotas").value,
   };
   const col = g("dsPCol").value.trim();

@@ -335,7 +335,56 @@ def _parse_dropi_product(data):
         return None
     precio = _find_key(obj, ["sale_price", "suggested_supplier_price", "price"])
     return {"stock": stock, "precio": _int(precio, 0) or None,
-            "nombre": (obj.get("name") or "")[:120]}
+            "nombre": (obj.get("name") or "")[:120],
+            "proveedor": _dropi_proveedor(obj),
+            "sugerido": _int(obj.get("suggested_price"), 0) or None,
+            "sku_dropi": str(obj.get("sku") or "")[:60]}
+
+
+def _dropi_proveedor(obj: dict) -> str:
+    """Nombre del proveedor (bodega) que publica el producto en Dropi."""
+    for k in ("user", "supplier", "provider", "owner"):
+        u = obj.get(k)
+        if isinstance(u, dict):
+            for kk in ("store_name", "name", "business_name", "full_name"):
+                v = u.get(kk)
+                if v and isinstance(v, str):
+                    nm = v.strip()
+                    sur = (u.get("surname") or "").strip() if kk == "name" else ""
+                    return (nm + (" " + sur if sur else ""))[:80]
+    wh = obj.get("warehouse_product") or []
+    if isinstance(wh, list):
+        for w in wh:
+            ww = (w or {}).get("warehouse") if isinstance(w, dict) else None
+            if isinstance(ww, dict) and ww.get("name"):
+                return str(ww["name"])[:80]
+    for k in ("supplier_name", "store_name", "provider_name"):
+        if obj.get(k):
+            return str(obj[k])[:80]
+    return ""
+
+
+def dropi_id_from(texto: str) -> str:
+    """Saca el ID del producto de un link de Dropi (…/product-details/1866621/…)
+    o acepta el número suelto."""
+    t = (texto or "").strip()
+    m = re.search(r"product-details/(\d+)", t) or re.search(r"[?&](?:id|product_id)=(\d+)", t) \
+        or re.search(r"/products?/(\d+)", t) or re.fullmatch(r"\s*(\d{3,})\s*", t)
+    return m.group(1) if m else ""
+
+
+def ml_item_from(texto: str) -> str:
+    """Saca el ID de publicación (MCO…) de un link de MercadoLibre."""
+    t = (texto or "").strip().upper()
+    # Link de catálogo (/p/MCO…): la publicación real viene en item_id / wid.
+    m = re.search(r"(?:ITEM_ID(?:%3A|:|=)|WID=)MCO-?(\d{6,})", t)
+    if m:
+        return "MCO" + m.group(1)
+    m = re.search(r"MCO-?(\d{6,})", t)
+    if m:
+        return "MCO" + m.group(1)
+    m = re.fullmatch(r"\s*(\d{6,})\s*", t)
+    return ("MCO" + m.group(1)) if m else ""
 
 
 _DROPI_COMBO = {}   # combinación base/cabecera/ruta que ya funcionó
@@ -479,6 +528,8 @@ def sync_stock() -> dict:
             p["stock_error"] = ""
             if r.get("precio"):
                 p["precio_dropi"] = r["precio"]
+            if r.get("proveedor"):
+                p["proveedor_dropi"] = r["proveedor"]   # el proveedor real según Dropi
             if publicable(p, cfg) != antes:
                 cambios.append(p["sku"])
         else:
@@ -1031,6 +1082,57 @@ def build_router(current_user, admin, ml_request, propagate) -> APIRouter:
         threading.Thread(target=run_sync, kwargs={"stock": stock, "ventas": ventas},
                          daemon=True).start()
         return {"ok": True, "started": True}
+
+    @r.post("/api/dropship/leer-dropi")
+    def ds_leer_dropi(data: dict, user: dict = Depends(admin)):
+        pid = dropi_id_from(str(data.get("link") or ""))
+        if not pid:
+            raise HTTPException(400, "No encontré el ID en ese link. Debe verse como …/product-details/1866621/…")
+        token = db.get_setting(K_TOKEN, "")
+        dup = next((p["sku"] for p in get_productos() if str(p.get("dropi_id") or "") == pid), None)
+        out = {"ok": True, "dropi_id": pid, "ya_existe": dup,
+               "link": "https://app.dropi.co/dashboard/product-details/%s/x" % pid}
+        if not token:
+            out.update({"leido": False, "error": "Falta el token de Dropi"})
+            return out
+        res = dropi_fetch(pid, token, get_cfg().get("dropi_base"))
+        if not res.get("ok"):
+            out.update({"leido": False, "error": res.get("error")})
+            return out
+        out.update({"leido": True, "nombre": res.get("nombre"), "stock": res.get("stock"),
+                    "precio": res.get("precio"), "sugerido": res.get("sugerido"),
+                    "proveedor": res.get("proveedor"), "sku_dropi": res.get("sku_dropi")})
+        return out
+
+    @r.post("/api/dropship/leer-ml")
+    def ds_leer_ml(data: dict, user: dict = Depends(admin)):
+        iid = ml_item_from(str(data.get("link") or ""))
+        if not iid:
+            raise HTTPException(400, "No encontré el código MCO en ese link.")
+        acc_pref = data.get("acct")
+        orden = [acc_pref] if acc_pref in ("boun", "kat") else []
+        orden += [a for a in ("boun", "kat") if a not in orden]
+        me = {}
+        for acct in orden:
+            try:
+                me[acct] = (_ml("/users/me", acct) or {}).get("id")
+            except Exception:
+                me[acct] = None
+        it = _ml("/items/%s" % iid, orden[0]) or {}
+        if not it.get("id"):
+            return {"ok": True, "item_id": iid, "leido": False,
+                    "error": "MercadoLibre no devolvió la publicación %s" % iid}
+        acct = next((a for a, uid in me.items() if uid and str(uid) == str(it.get("seller_id"))), None)
+        ssku = ""
+        for a in it.get("attributes") or []:
+            if a.get("id") == "SELLER_SKU":
+                ssku = a.get("value_name") or ""
+        dup = next((p["sku"] for p in get_productos()
+                    for x in (p.get("ml_items") or []) if x.get("item_id") == iid), None)
+        return {"ok": True, "leido": True, "item_id": iid, "acct": acct,
+                "ajena": acct is None, "titulo": it.get("title"), "precio": it.get("price"),
+                "estado": it.get("status"), "seller_sku": ssku, "ya_en": dup,
+                "foto": (it.get("thumbnail") or "").replace("http://", "https://")}
 
     @r.post("/api/dropship/productos")
     def ds_crear(data: ProductoIn, user: dict = Depends(admin)):
