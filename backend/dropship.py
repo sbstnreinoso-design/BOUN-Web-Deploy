@@ -1213,7 +1213,10 @@ def build_router(current_user, admin, ml_request, propagate) -> APIRouter:
         if d.get("borrar_token"):
             db.set_setting(K_TOKEN, "")
         elif d.get("dropi_token"):
-            db.set_setting(K_TOKEN, d["dropi_token"].strip())
+            tk = _clean_token(d["dropi_token"])
+            if len(tk) < 100 or "jwt" in token_info(tk):
+                raise HTTPException(400, "Ese no parece el token de Dropi (tiene %d caracteres). En Dropi → Mis Integraciones usa el botón «Copiar» y pégalo aquí." % len(tk))
+            db.set_setting(K_TOKEN, tk)
         _DISP_CACHE["ts"] = 0.0
         return {"ok": True}
 

@@ -508,7 +508,7 @@ function dsConfigModal(foco) {
     <div class="ds-form">
       <div class="full" style="font-size:11px;font-weight:800;color:var(--muted);text-transform:uppercase;letter-spacing:.3px">Conexión con Dropi</div>
       <div class="full"><label>Token de integración ${DS.has_token ? '<span class="ds-pill g" style="margin-left:6px">guardado ✓</span>' : ""}</label>
-        <input id="dsCTok" class="field" type="password" autocomplete="off" placeholder="${DS.has_token ? "•••••••• (escribe uno nuevo para reemplazarlo)" : "Pega aquí el token de Dropi → Mis Integraciones"}">
+        <textarea id="dsCTok" class="field" rows="3" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" name="ds-dropi-int-key" data-lpignore="true" data-1p-ignore style="font-family:ui-monospace,Menlo,monospace;font-size:11px;resize:vertical;-webkit-text-security:disc" placeholder="${DS.has_token ? "Ya hay un token guardado · pega uno nuevo para reemplazarlo" : "Pega aquí el token de Dropi → Mis Integraciones → Copiar"}" oninput="document.getElementById('dsCTokN').textContent=this.value.trim()?this.value.trim().length+' caracteres':''"></textarea><div id="dsCTokN" class="ds-meta" style="margin-top:2px"></div>
         <div class="hint">Se guarda en el servidor y nunca se vuelve a mostrar. ${DS.has_token ? '<a href="#" onclick="dsBorrarToken();return false" style="color:#F0567A">Borrar token</a>' : ""}</div>
         <div id="dsCTest"></div></div>
       <div><label>Leer Dropi cada (min)</label><input id="dsCSync" class="field" type="number" min="5" value="${c.sync_min || 15}"></div>
