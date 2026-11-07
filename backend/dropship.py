@@ -341,30 +341,37 @@ def _parse_dropi_product(data):
 _DROPI_COMBO = {}   # combinación base/cabecera/ruta que ya funcionó
 
 
+def _jwt_claims(token: str) -> dict:
+    import base64, json as _j
+    try:
+        p = token.split(".")[1]
+        p += "=" * (-len(p) % 4)
+        c = _j.loads(base64.urlsafe_b64decode(p))
+        return c if isinstance(c, dict) else {}
+    except Exception:
+        return {}
+
+
 def _dropi_combos(token: str, base: str):
-    """Combinaciones a probar. La doc oficial de Dropi (Integrations Core) usa
-    la cabecera `dropi-integracion-key` (con c) y GET /products/v2/{id} sobre
-    la base de integraciones."""
-    base = (base or DEF_CFG["dropi_base"]).rstrip("/")
-    bases = []
-    for b in (base + "/integrations", "https://api.dropi.co/integrations",
-              "https://api.dropi.co/api/integrations", base,
-              "https://api.dropi.co"):
-        if b not in bases:
-            bases.append(b)
-    for b in ("https://api.dropi.co/api",):
-        if b not in bases:
-            bases.append(b)
-    heads = [("dropi-integracion-key", token),
-             ("dropi-integration-key", token),
-             ("Authorization", "Bearer " + token),
-             ("x-authorization", "Bearer " + token)]
-    rutas = ["/products/v2/%s", "/products/%s"]
+    """Dropi solo acepta el token de integración en api.dropi.co/integrations
+    con la cabecera `dropi-integration-key` y — en tokens tipo WooCommerce —
+    con cabeceras estilo WordPress (User-Agent con la URL de la tienda del
+    token + Referer/Origin), como las manda el plugin Dropify. Se prueban
+    pocas combinaciones para no disparar el límite de peticiones de Dropi."""
+    c = _jwt_claims(token)
+    tienda = str(c.get("integration_url") or c.get("url") or
+                 "https://boun-web-deploy.onrender.com").strip() or "https://boun-web-deploy.onrender.com"
+    if not tienda.startswith("http"):
+        tienda = "https://" + tienda
+    wp = {"User-Agent": "WordPress/6.6; %s" % tienda, "Referer": tienda,
+          "Origin": tienda.rstrip("/")}
+    plana = {"User-Agent": "BOUN-Inventario/1.0"}
+    b = "https://api.dropi.co/integrations"
     out = []
-    for b in bases:
-        for h in heads:
-            for ruta in rutas:
-                out.append((b, h[0], h[1], ruta))
+    for extra, tag in ((wp, "wordpress"), (plana, "plana")):
+        for hname in ("dropi-integration-key", "dropi-integracion-key"):
+            for ruta in ("/products/%s", "/products/v2/%s"):
+                out.append((b, hname, token, ruta, extra, tag))
     return out
 
 
@@ -384,7 +391,8 @@ def token_info(t: str) -> dict:
         p = t.split(".")[1]
         p += "=" * (-len(p) % 4)
         c = _j.loads(base64.urlsafe_b64decode(p))
-        info.update({k: c.get(k) for k in ("aud", "sub", "iss", "exp") if k in c})
+        info.update({k: c.get(k) for k in ("aud", "sub", "iss", "exp", "integration_url", "ip_url") if k in c})
+        info["claims"] = sorted(c.keys())
     except Exception:
         info["jwt"] = "no decodifica (¿copiado incompleto?)"
     return info
@@ -395,76 +403,56 @@ def dropi_fetch(dropi_id, token: str, base: str, debug: bool = False) -> dict:
     combinación que ya funcionó; si no hay, prueba las conocidas."""
     token = _clean_token(token)
     combos = _dropi_combos(token, base)
-    if _DROPI_COMBO.get("key") in [(c[0], c[1], c[3]) for c in combos]:
-        k = _DROPI_COMBO["key"]
-        combos = [c for c in combos if (c[0], c[1], c[3]) == k] + \
-                 [c for c in combos if (c[0], c[1], c[3]) != k]
+    k = _DROPI_COMBO.get("key")
+    if k:
+        combos = [c for c in combos if (c[1], c[3], c[5]) == k] + \
+                 [c for c in combos if (c[1], c[3], c[5]) != k]
     err, log = "sin respuesta", []
-    for (b, hname, hval, ruta) in combos:
+    for (b, hname, hval, ruta, extra, tag) in combos:
         url = b + (ruta % dropi_id)
         hdrs = {hname: hval, "Accept": "application/json",
-                "Content-Type": "application/json",
-                "User-Agent": "BOUN-Inventario/1.0"}
+                "Content-Type": "application/json;charset=UTF-8"}
+        hdrs.update(extra)
         try:
             r = requests.get(url, headers=hdrs, timeout=12)
             code = r.status_code
         except Exception as e:
             code, r = "ERR", None
             err = "conexión: %s" % str(e)[:80]
-        log.append("%s %s → %s" % (hname, url.replace(str(dropi_id), "{id}"), code))
+        msg = ""
+        if r is not None:
+            try:
+                j = r.json()
+                msg = str(j.get("message") or j.get("status") or "")[:120] if isinstance(j, dict) else ""
+            except Exception:
+                msg = r.text[:120]
+        log.append("%s · %s %s → %s %s" % (tag, hname, url.replace(str(dropi_id), "{id}"), code, msg))
         if r is None:
             continue
-        if code in (401, 403):
-            err = "Dropi rechazó el token (%s)" % code
+        if code == 429 or "exceeded the allowed" in msg.lower():
+            err = "Dropi limitó las peticiones (espera unos minutos)"
+            break
+        if code in (401, 403) or "access denied" in msg.lower():
+            err = "Dropi rechazó el token (%s%s)" % (code, (": " + msg) if msg else "")
             continue
         if code != 200:
             if err.startswith("sin respuesta"):
-                err = "Dropi respondió %s" % code
+                err = "Dropi respondió %s %s" % (code, msg)
             continue
         try:
             parsed = _parse_dropi_product(r.json())
         except Exception:
             parsed = None
         if parsed:
-            _DROPI_COMBO["key"] = (b, hname, ruta)
+            _DROPI_COMBO["key"] = (hname, ruta, tag)
             parsed.update({"ok": True, "ruta": url.replace(str(dropi_id), "{id}"),
-                           "cabecera": hname})
+                           "cabecera": "%s (%s)" % (hname, tag)})
             if debug:
                 parsed["intentos"] = log
             return parsed
         err = "respuesta sin stock"
         if debug:
             log.append("   cuerpo: %s" % r.text[:200])
-    # Último intento: listado oficial POST /products/index filtrado por id
-    for b in ("https://api.dropi.co/integrations", "https://api.dropi.co/api"):
-        for hname in ("dropi-integracion-key", "dropi-integration-key"):
-            try:
-                r = requests.post(b + "/products/index", timeout=15,
-                                  headers={hname: token, "Content-Type": "application/json",
-                                           "Accept": "application/json"},
-                                  json={"pageSize": 50, "startData": 0, "no_count": True,
-                                        "keywords": str(dropi_id), "order_by": "id",
-                                        "order_type": "asc"})
-                code = r.status_code
-            except Exception:
-                code, r = "ERR", None
-            log.append("%s POST %s/products/index → %s" % (hname, b, code))
-            if r is not None and code == 200:
-                try:
-                    data = r.json()
-                    objs = data.get("objects") if isinstance(data, dict) else data
-                    if isinstance(objs, list):
-                        hit = [o for o in objs if str(o.get("id")) == str(dropi_id)] or objs[:1]
-                        parsed = _parse_dropi_product({"objects": hit}) if hit else None
-                        if parsed:
-                            parsed.update({"ok": True, "ruta": b + "/products/index", "cabecera": hname})
-                            if debug:
-                                parsed["intentos"] = log
-                            return parsed
-                except Exception:
-                    pass
-                if debug:
-                    log.append("   cuerpo: %s" % r.text[:200])
     out = {"ok": False, "error": err}
     if debug:
         out["intentos"] = log
