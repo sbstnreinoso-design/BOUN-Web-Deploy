@@ -589,6 +589,12 @@ def _venta_from(acct, order, oi, sku, prods, tarifas, ventas_prev):
         estado = "cancelada"
     else:
         estado = _EST_ENVIO.get(ship_status, ship_status or "por despachar")
+        sub = (shipment.get("substatus") or "").lower()
+        if ship_status in ("ready_to_ship", "handling") and sub in (
+                "dropped_off", "in_hub", "picked_up", "in_transit", "on_route",
+                "out_for_delivery", "soon_deliver", "authorized_by_carrier",
+                "in_packing_list", "packed", "in_warehouse", "received_by_carrier"):
+            estado = "en camino"     # ya lo entregaron a la agencia / transportadora
     p = _find(prods, sku) or {}
     costo_u = prev.get("costo_u")
     if costo_u is None:
@@ -611,7 +617,7 @@ def _venta_from(acct, order, oi, sku, prods, tarifas, ventas_prev):
         "envio": envio, "logistic": lt, "zona": zona, "barrio": barrio,
         "localidad": muni,
         "ciudad": city, "depto": state,
-        "tarifa_flex": tarifa, "estado": estado,
+        "tarifa_flex": tarifa, "estado": estado, "envio_status": "%s/%s" % (ship_status, (shipment.get("substatus") or "")),
         "comprador": ((order.get("buyer") or {}).get("nickname") or "")[:40],
         "costo_u": costo_u,
         # campos manuales que la sincronización NUNCA pisa
