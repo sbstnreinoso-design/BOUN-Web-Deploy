@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from typing import Optional, List
 
 import database as db
+import dropship
 
 app = FastAPI(title="BOUN Análisis ML")
 
@@ -2828,6 +2829,15 @@ def _q_(v):
     return _u.quote(str(v), safe="")
 
 
+def _ds_disp(codigo: str):
+    """Disponible de un código DROPSHIPPING (stock del proveedor − colchón), o
+    None si el código usa las bodegas propias. Nunca rompe el motor."""
+    try:
+        return dropship.disp_for(codigo)
+    except Exception:
+        return None
+
+
 def _pending_cola(codigo: str) -> int:
     rows = db._sb_get("cola_bodega?codigo_boun=eq.%s&estado=eq.pendiente&"
                       "select=cantidad" % _q_(codigo)) or []
@@ -3268,6 +3278,23 @@ def _process_sale(canal: str, order_id: str, items: list,
         if not prows:
             resultados.append({"codigo": codigo, "skip": True,
                                "motivo": "no_en_inventario_central"})
+            continue
+        # DROPSHIPPING: el producto está en la bodega del proveedor (no en las
+        # de BOUN). No se toca Bogotá/Yopal/Flex Medellín: se registra el
+        # movimiento, se baja el espejo del stock del proveedor y se propaga el
+        # nuevo disponible (stock proveedor − colchón).
+        if _ds_disp(codigo) is not None:
+            db._sb_post("movimiento_stock", {
+                "codigo_boun": codigo, "delta": -cantidad,
+                "motivo": "venta_%s_dropship" % canal, "canal": canal,
+                "order_id": str(order_id)})
+            disp = dropship.on_sale(codigo, cantidad) or 0
+            plan, aplicado = _propagar(codigo, disp, order_id)
+            resultados.append({"codigo": codigo, "cantidad": cantidad,
+                               "es_full": bool(es_full), "es_flex": es_flex,
+                               "bodega": "dropship",
+                               "disponible_tras_venta": disp,
+                               "plan": plan, "aplicado": aplicado})
             continue
         # Descuento de bodega + registro (helper reutilizable, también para combos)
         asignado, bog, yop = _descontar_una(canal, order_id, prows[0], cantidad,
@@ -4467,6 +4494,8 @@ def sync_apply_preview(key: str = "", codigo: str = "", vendidos: int = 0,
                                 headers=_EXPORT_CORS)
         if _combo_components(codigo):
             disp = max(0, _combo_disponible(codigo) - int(vendidos or 0))
+        elif _ds_disp(codigo) is not None:
+            disp = max(0, _ds_disp(codigo) - int(vendidos or 0))
         else:
             bog = int(prows[0].get("qty_bogota") or 0)
             yop = int(prows[0].get("qty_yopal") or 0)
@@ -7575,6 +7604,9 @@ def _scan_reconcile(channels: set, dry: bool, tag: str = "scan"):
         if _combo_components(codigo):
             # Combo: disponible = cuántos se pueden armar de los componentes.
             disp = _combo_disponible(codigo)
+        elif _ds_disp(codigo) is not None:
+            # Dropshipping: stock del proveedor − colchón (no hay bodega BOUN).
+            disp = _ds_disp(codigo)
         else:
             bog = int(p.get("qty_bogota") or 0)
             yop = int(p.get("qty_yopal") or 0)
@@ -7788,6 +7820,8 @@ def sync_plan(key: str = "", codigo: str = "", vendidos: int = 0):
         bog = int(p.get("qty_bogota") or 0)
         yop = int(p.get("qty_yopal") or 0)
         disponible = max(0, bog + yop - int(vendidos or 0))
+        if _ds_disp(codigo) is not None:
+            disponible = max(0, _ds_disp(codigo) - int(vendidos or 0))
 
         # ── MercadoLibre: publicaciones activas no-Full del código ──
         links = db._sb_get(
@@ -8837,6 +8871,12 @@ def _flex_sync():
                                          (snd.get("state") or {}).get("name", "")]))
             if sblob.strip() and "bogot" not in sblob:
                 continue
+            # Dropshipping: esos envíos Flex los entrega el proveedor (Derocha
+            # Express), no Unilogix → se liquidan en la sección Dropshipping.
+            if all(dropship.is_ds_item((oi.get("item") or {}).get("id") or "",
+                                       (oi.get("item") or {}).get("seller_sku") or "")
+                   for oi in (od.get("order_items") or [])) and od.get("order_items"):
+                continue
             by_ship[sid] = _flex_envio_from(od, sh)
         offset += 50
         if offset >= d.get("paging", {}).get("total", 0) or not res:
@@ -9041,11 +9081,27 @@ def flex_debug_envio(sid: str = "", user: dict = Depends(_admin)):
             "interpretado": _flex_envio_from({"id": "", "order_items": []}, sh)}
 
 
+# ── DROPSHIPPING (módulo dropship.py) ───────────────────────────────────────
+# Productos en la bodega de un proveedor externo (Derocha / catálogo Dropi).
+# El motor de stock consulta `_ds_disp`; aquí se exponen sus endpoints.
+
+def _ds_propagate(codigo: str, disp: int):
+    """Reparte el nuevo disponible de un código dropshipping entre sus
+    publicaciones (solo escribe en los canales de la lista blanca del motor).
+    Sin tope de salto: una lectura de Dropi puede mover el stock mucho."""
+    plan = _compute_plan(codigo, int(disp))
+    return _apply_plan(codigo, plan, order_id="dropship-sync", ignore_delta=True)
+
+
+app.include_router(dropship.build_router(_current_user, _admin, _ml_request,
+                                         _ds_propagate))
+
+
 # ── Frontend estático ────────────────────────────────────────────────────────
 
 # Render solo redespliega cuando cambia algo dentro de backend/ (rootDir). Al subir
 # cambios SOLO del frontend, actualiza esta marca para que el deploy se dispare.
-_FRONT_BUILD = "2026-10-22b cache-busting móvil"
+_FRONT_BUILD = "2026-11-07 sección Dropshipping"
 _FRONT = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
 
 

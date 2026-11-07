@@ -61,6 +61,7 @@ const NAV=[
   ["ventas","↗  Ventas"],
   ["maria_jose","💸  María José"],
   ["flex","🚚  Envíos Flex"],
+  ["dropship","📦  Dropshipping"],
   ["inventory","▦  Inventario"],
   ["embarques","🚢  Mercancía en camino"],
   ["cola","📦  Pendientes de bodega"],
@@ -82,6 +83,7 @@ function showApp(){
   refreshMapeoBadge();
   refreshDenunciasBadge();
   refreshEmbarquesBadge();
+  if(typeof refreshDropshipBadge==="function") refreshDropshipBadge();
   scanGlobalPoll();
 }
 // ── Indicador flotante global de escaneo (badge fijo, cualquier sección) ─────
@@ -171,6 +173,7 @@ function go(id){
   else if(id==="ventas") renderSales();
   else if(id==="maria_jose") renderMariaJose();
   else if(id==="flex") renderFlex();
+  else if(id==="dropship") renderDropship();
   else if(id==="inventory") renderInventory();
   else if(id==="embarques") renderEmbarques();
   else if(id==="cola") renderCola();
