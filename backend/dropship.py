@@ -352,9 +352,13 @@ def _dropi_combos(token: str, base: str):
               "https://api.dropi.co"):
         if b not in bases:
             bases.append(b)
+    for b in ("https://api.dropi.co/api",):
+        if b not in bases:
+            bases.append(b)
     heads = [("dropi-integracion-key", token),
              ("dropi-integration-key", token),
-             ("Authorization", "Bearer " + token)]
+             ("Authorization", "Bearer " + token),
+             ("x-authorization", "Bearer " + token)]
     rutas = ["/products/v2/%s", "/products/%s"]
     out = []
     for b in bases:
@@ -364,9 +368,32 @@ def _dropi_combos(token: str, base: str):
     return out
 
 
+def _clean_token(t: str) -> str:
+    t = (t or "").strip().strip('"').strip("'").strip()
+    if t.lower().startswith("bearer "):
+        t = t[7:].strip()
+    return "".join(t.split())   # sin saltos de línea ni espacios internos
+
+
+def token_info(t: str) -> dict:
+    """Diagnóstico NO secreto del token: largo, forma JWT y claims públicos."""
+    import base64, json as _j
+    t = _clean_token(t)
+    info = {"largo": len(t), "partes": len(t.split("."))}
+    try:
+        p = t.split(".")[1]
+        p += "=" * (-len(p) % 4)
+        c = _j.loads(base64.urlsafe_b64decode(p))
+        info.update({k: c.get(k) for k in ("aud", "sub", "iss", "exp") if k in c})
+    except Exception:
+        info["jwt"] = "no decodifica (¿copiado incompleto?)"
+    return info
+
+
 def dropi_fetch(dropi_id, token: str, base: str, debug: bool = False) -> dict:
     """Lee un producto de Dropi con el token de integración. Usa la
     combinación que ya funcionó; si no hay, prueba las conocidas."""
+    token = _clean_token(token)
     combos = _dropi_combos(token, base)
     if _DROPI_COMBO.get("key") in [(c[0], c[1], c[3]) for c in combos]:
         k = _DROPI_COMBO["key"]
@@ -408,6 +435,36 @@ def dropi_fetch(dropi_id, token: str, base: str, debug: bool = False) -> dict:
         err = "respuesta sin stock"
         if debug:
             log.append("   cuerpo: %s" % r.text[:200])
+    # Último intento: listado oficial POST /products/index filtrado por id
+    for b in ("https://api.dropi.co/integrations", "https://api.dropi.co/api"):
+        for hname in ("dropi-integracion-key", "dropi-integration-key"):
+            try:
+                r = requests.post(b + "/products/index", timeout=15,
+                                  headers={hname: token, "Content-Type": "application/json",
+                                           "Accept": "application/json"},
+                                  json={"pageSize": 50, "startData": 0, "no_count": True,
+                                        "keywords": str(dropi_id), "order_by": "id",
+                                        "order_type": "asc"})
+                code = r.status_code
+            except Exception:
+                code, r = "ERR", None
+            log.append("%s POST %s/products/index → %s" % (hname, b, code))
+            if r is not None and code == 200:
+                try:
+                    data = r.json()
+                    objs = data.get("objects") if isinstance(data, dict) else data
+                    if isinstance(objs, list):
+                        hit = [o for o in objs if str(o.get("id")) == str(dropi_id)] or objs[:1]
+                        parsed = _parse_dropi_product({"objects": hit}) if hit else None
+                        if parsed:
+                            parsed.update({"ok": True, "ruta": b + "/products/index", "cabecera": hname})
+                            if debug:
+                                parsed["intentos"] = log
+                            return parsed
+                except Exception:
+                    pass
+                if debug:
+                    log.append("   cuerpo: %s" % r.text[:200])
     out = {"ok": False, "error": err}
     if debug:
         out["intentos"] = log
@@ -1170,6 +1227,7 @@ def build_router(current_user, admin, ml_request, propagate) -> APIRouter:
             return {"ok": False, "error": "Ningún producto tiene ID de Dropi."}
         res = dropi_fetch(p["dropi_id"], token, get_cfg().get("dropi_base"), debug=True)
         res["sku"] = p["sku"]
+        res["token_info"] = token_info(token)
         return res
 
     threading.Thread(target=_loop, daemon=True).start()
