@@ -337,31 +337,59 @@ def _parse_dropi_product(data):
     return {"stock": stock, "precio": _int(precio, 0) or None,
             "nombre": (obj.get("name") or "")[:120],
             "proveedor": _dropi_proveedor(obj),
+            "pistas": _dropi_pistas(obj) if not _dropi_proveedor(obj) else [],
             "sugerido": _int(obj.get("suggested_price"), 0) or None,
             "sku_dropi": str(obj.get("sku") or "")[:60]}
 
 
 def _dropi_proveedor(obj: dict) -> str:
-    """Nombre del proveedor (bodega) que publica el producto en Dropi."""
-    for k in ("user", "supplier", "provider", "owner"):
-        u = obj.get(k)
-        if isinstance(u, dict):
-            for kk in ("store_name", "name", "business_name", "full_name"):
-                v = u.get(kk)
-                if v and isinstance(v, str):
-                    nm = v.strip()
-                    sur = (u.get("surname") or "").strip() if kk == "name" else ""
-                    return (nm + (" " + sur if sur else ""))[:80]
-    wh = obj.get("warehouse_product") or []
-    if isinstance(wh, list):
-        for w in wh:
-            ww = (w or {}).get("warehouse") if isinstance(w, dict) else None
-            if isinstance(ww, dict) and ww.get("name"):
-                return str(ww["name"])[:80]
-    for k in ("supplier_name", "store_name", "provider_name"):
-        if obj.get(k):
-            return str(obj[k])[:80]
-    return ""
+    """Nombre del proveedor (bodega) que publica el producto en Dropi. Busca
+    en cualquier nivel un dict de usuario/proveedor/bodega con nombre."""
+    pref = ("store_name", "business_name", "name", "full_name")
+    def walk(o, path, depth):
+        if depth > 4:
+            return ""
+        if isinstance(o, dict):
+            low = path.lower()
+            if any(t in low for t in ("user", "supplier", "provider", "owner", "store", "warehouse")):
+                for kk in pref:
+                    v = o.get(kk)
+                    if isinstance(v, str) and v.strip():
+                        sur = o.get("surname") if kk == "name" else ""
+                        return (v.strip() + (" " + sur.strip() if isinstance(sur, str) and sur.strip() else ""))[:80]
+            for k in ("supplier_name", "store_name", "provider_name", "user_name"):
+                v = o.get(k)
+                if isinstance(v, str) and v.strip() and path:
+                    return v.strip()[:80]
+            for k, v in o.items():
+                if isinstance(v, (dict, list)):
+                    r = walk(v, path + "." + str(k), depth + 1)
+                    if r:
+                        return r
+        elif isinstance(o, list):
+            for v in o[:5]:
+                r = walk(v, path, depth + 1)
+                if r:
+                    return r
+        return ""
+    return walk(obj, "", 0)
+
+
+def _dropi_pistas(obj, path="", depth=0, out=None):
+    """Rutas de llaves con 'name' (diagnóstico para ubicar el proveedor)."""
+    out = out if out is not None else []
+    if depth > 3 or len(out) > 25:
+        return out
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            p = (path + "." + str(k)).strip(".")
+            if isinstance(v, (dict, list)):
+                _dropi_pistas(v, p, depth + 1, out)
+            elif "name" in str(k).lower() and isinstance(v, str):
+                out.append("%s=%s" % (p, v[:40]))
+    elif isinstance(obj, list) and obj:
+        _dropi_pistas(obj[0], path + "[0]", depth + 1, out)
+    return out
 
 
 def dropi_id_from(texto: str) -> str:
@@ -1101,7 +1129,8 @@ def build_router(current_user, admin, ml_request, propagate) -> APIRouter:
             return out
         out.update({"leido": True, "nombre": res.get("nombre"), "stock": res.get("stock"),
                     "precio": res.get("precio"), "sugerido": res.get("sugerido"),
-                    "proveedor": res.get("proveedor"), "sku_dropi": res.get("sku_dropi")})
+                    "proveedor": res.get("proveedor"), "sku_dropi": res.get("sku_dropi"),
+                    "pistas": res.get("pistas") or []})
         return out
 
     @r.post("/api/dropship/leer-ml")
