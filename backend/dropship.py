@@ -447,7 +447,7 @@ def _dropi_combos(token: str, base: str):
     out = []
     for extra, tag in ((wp, "wordpress"), (plana, "plana")):
         for hname in ("dropi-integration-key", "dropi-integracion-key"):
-            for ruta in ("/products/%s", "/products/v2/%s"):
+            for ruta in ("/products/v2/%s", "/products/%s"):
                 out.append((b, hname, token, ruta, extra, tag))
     return out
 
@@ -565,6 +565,9 @@ def sync_stock() -> dict:
             p["stock_error"] = r.get("error") or "error"
             if leidos == 0 and "rechazó el token" in (r.get("error") or ""):
                 break   # token inválido: no insistir con los demás productos
+            if "limitó" in (r.get("error") or ""):
+                break   # Dropi pidió esperar: se reintenta en el próximo ciclo
+        time.sleep(1.5)   # espaciado para no disparar el límite de Dropi
     _save_productos(prods)
     _propagar_cambios(cambios)
     return {"ok": errores == 0, "leidos": leidos, "errores": errores,
