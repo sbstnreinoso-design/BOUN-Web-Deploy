@@ -9101,7 +9101,7 @@ app.include_router(dropship.build_router(_current_user, _admin, _ml_request,
 
 # Render solo redespliega cuando cambia algo dentro de backend/ (rootDir). Al subir
 # cambios SOLO del frontend, actualiza esta marca para que el deploy se dispare.
-_FRONT_BUILD = "2026-11-07i sync Dropi espaciado"
+_FRONT_BUILD = "2026-11-07j proveedor comercial Dropi"
 _FRONT = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
 
 

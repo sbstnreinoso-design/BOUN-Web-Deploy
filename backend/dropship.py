@@ -337,42 +337,45 @@ def _parse_dropi_product(data):
     return {"stock": stock, "precio": _int(precio, 0) or None,
             "nombre": (obj.get("name") or "")[:120],
             "proveedor": _dropi_proveedor(obj),
-            "pistas": _dropi_pistas(obj) if not _dropi_proveedor(obj) else [],
+            "pistas": _dropi_pistas(obj),
             "sugerido": _int(obj.get("suggested_price"), 0) or None,
             "sku_dropi": str(obj.get("sku") or "")[:60]}
 
 
 def _dropi_proveedor(obj: dict) -> str:
-    """Nombre del proveedor (bodega) que publica el producto en Dropi. Busca
-    en cualquier nivel un dict de usuario/proveedor/bodega con nombre."""
-    pref = ("store_name", "business_name", "name", "full_name")
+    """Nombre comercial del proveedor en Dropi (el que se ve en el catálogo).
+    Prioridad: store_name / business_name en cualquier nivel de user/supplier/
+    store → nombre de la tienda → nombre de la persona. No usa la bodega."""
+    hallados = {}
     def walk(o, path, depth):
         if depth > 4:
-            return ""
+            return
         if isinstance(o, dict):
             low = path.lower()
-            if any(t in low for t in ("user", "supplier", "provider", "owner", "store", "warehouse")):
-                for kk in pref:
+            if any(t in low for t in ("user", "supplier", "provider", "owner", "store", "shop")):
+                for kk in ("store_name", "business_name", "commercial_name", "shop_name", "name", "full_name"):
                     v = o.get(kk)
                     if isinstance(v, str) and v.strip():
-                        sur = o.get("surname") if kk == "name" else ""
-                        return (v.strip() + (" " + sur.strip() if isinstance(sur, str) and sur.strip() else ""))[:80]
-            for k in ("supplier_name", "store_name", "provider_name", "user_name"):
+                        key = kk if kk != "name" else ("store.name" if ("store" in low or "shop" in low) else "name")
+                        if key == "name" and isinstance(o.get("surname"), str) and o["surname"].strip():
+                            v = v.strip() + " " + o["surname"].strip()
+                        hallados.setdefault(key, v.strip()[:80])
+            for k in ("store_name", "supplier_name", "provider_name"):
                 v = o.get(k)
                 if isinstance(v, str) and v.strip() and path:
-                    return v.strip()[:80]
+                    hallados.setdefault(k, v.strip()[:80])
             for k, v in o.items():
                 if isinstance(v, (dict, list)):
-                    r = walk(v, path + "." + str(k), depth + 1)
-                    if r:
-                        return r
+                    walk(v, path + "." + str(k), depth + 1)
         elif isinstance(o, list):
             for v in o[:5]:
-                r = walk(v, path, depth + 1)
-                if r:
-                    return r
-        return ""
-    return walk(obj, "", 0)
+                walk(v, path, depth + 1)
+    walk(obj, "", 0)
+    for k in ("store_name", "business_name", "commercial_name", "shop_name", "store.name",
+              "supplier_name", "provider_name", "name", "full_name"):
+        if hallados.get(k):
+            return hallados[k]
+    return ""
 
 
 def _dropi_pistas(obj, path="", depth=0, out=None):
@@ -567,7 +570,7 @@ def sync_stock() -> dict:
                 break   # token inválido: no insistir con los demás productos
             if "limitó" in (r.get("error") or ""):
                 break   # Dropi pidió esperar: se reintenta en el próximo ciclo
-        time.sleep(1.5)   # espaciado para no disparar el límite de Dropi
+        time.sleep(4)   # espaciado para no disparar el límite de Dropi
     _save_productos(prods)
     _propagar_cambios(cambios)
     return {"ok": errores == 0, "leidos": leidos, "errores": errores,
