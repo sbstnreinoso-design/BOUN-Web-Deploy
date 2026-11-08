@@ -375,6 +375,15 @@ def _dropi_proveedor(obj: dict) -> str:
               "supplier_name", "provider_name", "name", "full_name"):
         if hallados.get(k):
             return hallados[k]
+    # La API de integraciones solo trae la bodega (warehouses[].name): es lo
+    # más cercano al proveedor que expone; se puede corregir a mano.
+    for k in ("warehouses", "warehouse_product"):
+        for w in (obj.get(k) or [])[:3] if isinstance(obj.get(k), list) else []:
+            if not isinstance(w, dict):
+                continue
+            nm = w.get("name") or ((w.get("warehouse") or {}).get("name") if isinstance(w.get("warehouse"), dict) else "")
+            if isinstance(nm, str) and nm.strip():
+                return nm.strip()[:80]
     return ""
 
 
@@ -546,9 +555,11 @@ def sync_stock() -> dict:
     cfg = get_cfg()
     prods = get_productos()
     leidos, errores, cambios = 0, 0, []
-    for p in prods:
-        if p.get("estado") == "migrado" or not p.get("dropi_id"):
-            continue
+    # Dropi limita ~10 consultas seguidas: por ciclo se leen como máximo 8,
+    # empezando por las que llevan más tiempo sin leerse (rotación).
+    cola = sorted([p for p in prods if p.get("estado") != "migrado" and p.get("dropi_id")],
+                  key=lambda x: (x.get("stock_fuente") == "dropi", x.get("stock_ts") or ""))[:8]
+    for p in cola:
         antes = publicable(p, cfg)
         r = dropi_fetch(p["dropi_id"], token, cfg.get("dropi_base"))
         if r.get("ok"):
@@ -559,8 +570,8 @@ def sync_stock() -> dict:
             p["stock_error"] = ""
             if r.get("precio"):
                 p["precio_dropi"] = r["precio"]
-            if r.get("proveedor"):
-                p["proveedor_dropi"] = r["proveedor"]   # el proveedor real según Dropi
+            if r.get("proveedor") and not (p.get("proveedor_dropi") or "").strip():
+                p["proveedor_dropi"] = r["proveedor"]   # solo si estaba vacío (no pisa lo editado)
             if publicable(p, cfg) != antes:
                 cambios.append(p["sku"])
         else:
@@ -570,7 +581,7 @@ def sync_stock() -> dict:
                 break   # token inválido: no insistir con los demás productos
             if "limitó" in (r.get("error") or ""):
                 break   # Dropi pidió esperar: se reintenta en el próximo ciclo
-        time.sleep(4)   # espaciado para no disparar el límite de Dropi
+        time.sleep(6)   # espaciado para no disparar el límite de Dropi
     _save_productos(prods)
     _propagar_cambios(cambios)
     return {"ok": errores == 0, "leidos": leidos, "errores": errores,
