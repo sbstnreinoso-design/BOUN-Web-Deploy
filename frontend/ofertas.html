@@ -648,7 +648,9 @@ var act=items.filter(function(i){return i.estado==='activa';}),blo=items.filter(
    if(!Object.keys(map).length) return;
    document.querySelectorAll('#grid2 .op').forEach(function(row){
      var id=row.dataset.mlid||((row.innerText.match(/\d{9,}/)||[])[0]||'').replace(/\D/g,'');
-     var info=map[id]; if(!info) return;
+     /* 13-nov: leer el precio del DIA de la tarjeta (byDay); el mapa global mezclaba ofertas viejas. */
+     var card=row.closest('#grid2 > *'); var dd=card&&card.querySelector('.d'); var fk=dd?String(dd.textContent).toLowerCase().trim():'';
+     var info=(fk&&byDay[fk]&&byDay[fk][id])||null; if(!info){ var anyDay=fk&&byDay[fk]; info=anyDay?null:map[id]; } if(!info) return;
      var opp=row.querySelector('.opp'); if(!opp) return;
      var b=opp.querySelector('b'); var sm=opp.querySelector('small');
      if(info.precio!=null){ if(b){ b.textContent='$ '+Number(info.precio).toLocaleString('es-CO'); } if(sm){ sm.innerHTML=(info.pct?info.pct+'% ':'')+'real ML'+(info.estado==='activa'?' ✅':''); sm.style.color='#FFD166'; } }
