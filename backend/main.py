@@ -8826,8 +8826,8 @@ def _flex_desde():
         return datetime.strptime(_FLEX_DESDE_DEF, "%Y-%m-%dT%H:%M:%S").replace(tzinfo=_FLEX_TZ)
 
 
-def _flex_sync():
-    """Relee de ML los envíos Flex de los últimos 14 días de cortes y los guarda."""
+def _flex_sync(dias=14):
+    """Relee de ML los envíos Flex de los últimos `dias` días de cortes y los guarda."""
     from ml_scraper import _ml_session_auth, ML_API
     s, uid = _ml_session_auth()
     if not s:
@@ -8836,8 +8836,12 @@ def _flex_sync():
     today_cut = _flex_cut_of(now)
     # Ventana de 14 días (antes 2): si nadie abría la sección varios días, los cortes
     # intermedios quedaban sin guardar (p. ej. el corte del 16-oct, 8 envíos / $73.000).
-    first_cut = (datetime.fromisoformat(today_cut) - timedelta(days=14)).date()
-    since = datetime.combine(first_cut - timedelta(days=1), datetime.min.time(),
+    first_cut = (datetime.fromisoformat(today_cut) - timedelta(days=int(dias))).date()
+    # Se lee desde 4 días antes del primer corte: un corte de LUNES recibe lo
+    # vendido desde el viernes 1:00 p. m. Antes se leía solo desde el día previo
+    # y el corte del lunes perdía las ventas del fin de semana al recalcularse
+    # (13-nov: 18 envíos facturados por Unilogix que no salían en la web).
+    since = datetime.combine(first_cut - timedelta(days=4), datetime.min.time(),
                              tzinfo=_FLEX_TZ).replace(hour=_FLEX_CUT_HOUR)
     since = max(since, _flex_desde())
     fmt = "%Y-%m-%dT%H:%M:%S.000-05:00"
@@ -9119,6 +9123,7 @@ def _flex_summary():
                     v_prop += (e.get("tarifa") or 0)
                 e["propio"] = True
                 e["propio_nota"] = (p or {}).get("nota", "")
+                e["motivo"] = (p or {}).get("motivo", "propio")
                 e["cobrable"] = False
     out = []
     for c in cortes:
@@ -9152,7 +9157,7 @@ def _flex_summary():
 
 
 @app.get("/api/flex")
-def flex_get(force: bool = False, user: dict = Depends(_current_user)):
+def flex_get(force: bool = False, dias: int = 14, user: dict = Depends(_current_user)):
     """Envíos Flex · Unilogix: cortes diarios, costo, pagos y saldo."""
     err = ""
     syncing = False
@@ -9161,7 +9166,7 @@ def flex_get(force: bool = False, user: dict = Depends(_current_user)):
         # «↻ Actualizar»: relee ML y responde con lo nuevo.
         if _FLEX_LOCK.acquire(blocking=False):
             try:
-                _flex_sync()
+                _flex_sync(max(14, min(int(dias or 14), 90)))
             except Exception as e:
                 err = str(e)[:200]
                 _FLEX_CACHE["err"] = err
@@ -9296,6 +9301,7 @@ class FlexPropioIn(BaseModel):
     ships: List[str]
     propio: bool = True
     nota: Optional[str] = ""
+    motivo: Optional[str] = "propio"   # "propio" | "no_facturado"
 
 
 @app.post("/api/flex/propio")
@@ -9308,6 +9314,7 @@ def flex_propio(data: FlexPropioIn, user: dict = Depends(_current_user)):
             continue
         if data.propio:
             prop[sid] = {"nota": (data.nota or "").strip()[:200],
+                         "motivo": "no_facturado" if data.motivo == "no_facturado" else "propio",
                          "fecha": datetime.now(_FLEX_TZ).strftime("%Y-%m-%d %H:%M"),
                          "por": user.get("username", "")}
         else:
@@ -9349,7 +9356,7 @@ app.include_router(dropship.build_router(_current_user, _admin, _ml_request,
 
 # Render solo redespliega cuando cambia algo dentro de backend/ (rootDir). Al subir
 # cambios SOLO del frontend, actualiza esta marca para que el deploy se dispare.
-_FRONT_BUILD = "2026-11-13a Flex fuera de ML + mensajero propio"
+_FRONT_BUILD = "2026-11-13b Flex lunes con fin de semana + no facturado"
 _FRONT = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
 
 
