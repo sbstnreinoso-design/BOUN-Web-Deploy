@@ -215,6 +215,7 @@
     <label>Transportadora</label>
     <select id="mTransp">
       <option value="Interrapidísimo">Interrapidísimo</option>
+      <option value="Unilogix">Unilogix (Flex Bogotá)</option>
       <option value="Servientrega">Servientrega</option>
       <option value="Coordinadora">Coordinadora</option>
       <option value="Envía">Envía</option>
@@ -338,6 +339,7 @@ async function leerBarcode(bitmap){
 function parseGuiaTexto(texto){
   const T = (texto||"").toUpperCase();
   const CARRIERS = [
+    [/UNILOGIX/, "Unilogix"],
     [/INTER\s*RAPID/, "Interrapidísimo"],
     [/SERVIENTREGA/, "Servientrega"],
     [/COORDINADORA/, "Coordinadora"],

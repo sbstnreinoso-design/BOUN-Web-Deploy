@@ -1151,6 +1151,8 @@ async function renderFlex(force){
         <details style="margin-top:6px"><summary class="cap" style="cursor:pointer;font-size:11.5px">¿Cómo se calcula?</summary>
           <div class="cap" style="font-size:11.5px;line-height:1.55;margin-top:6px;max-width:680px">
             • Cada venta Flex de MercadoLibre suma su tarifa Same Day PM (ciudad + peso facturable).<br>
+            • También suman los envíos Unilogix por fuera de MercadoLibre: pedidos de la web en Bogotá con guía Unilogix (o «Envío Prioritario» aún sin guía) y los que cargues a mano (spot, WhatsApp…).<br>
+            • Los envíos que entregó el mensajero de BOUN se marcan como <b>🛵 Mensajero propio</b> y no se cobran (Unilogix los cancela en su portal).<br>
             • Lo vendido después de la 1:00 p. m. va al corte del día siguiente; lo del viernes tarde, sábado y domingo, al corte del lunes.<br>
             • A cada semana se le restan las retenciones que BOUN le practica a Unilogix: retefuente 1 % + reteICA 9,66 ‰ (sobre el total de la semana).<br>
             • El saldo baja con cada pago que registres. Los datos se releen de MercadoLibre cada 10 min.
@@ -1158,6 +1160,7 @@ async function renderFlex(force){
       </div>
       <div style="display:flex;gap:8px;flex-shrink:0;align-items:center">
         <button class="btn-ghost" style="white-space:nowrap" onclick="renderFlex(true)" title="Releer MercadoLibre ahora">↻ Actualizar</button>
+        <button class="btn-ghost" style="white-space:nowrap" onclick="flexExtraModal()" title="Envío Unilogix que no es de MercadoLibre">＋ Envío fuera de ML</button>
         <button class="btn-acc" style="white-space:nowrap;padding:0 16px" onclick="flexPagoModal()">＋ Registrar pago</button>
       </div></div>
     <div id="flexKpis" class="kpis" style="margin-top:14px"><div class="loading"><span class="spinner"></span> Leyendo los envíos Flex de MercadoLibre…</div></div>
@@ -1204,6 +1207,7 @@ function drawFlex(){
     </div>`;
 
   let notes="";
+  if(r.web_error) notes+=`<div class="note" style="font-size:11.5px;color:var(--amber)">⚠️ No se pudieron leer los pedidos de la web (${esc(r.web_error)}). Se muestran los últimos guardados.</div>`;
   if(r.sync_error) notes+=`<div class="note" style="font-size:11.5px;color:#E06A6A">⚠️ No se pudo leer MercadoLibre ahora (${esc(r.sync_error)}). Se muestran los últimos cortes guardados.</div>`;
   const sinT=cortes.reduce((s,c)=>s+(c.sin_tarifa||0),0);
   if(sinT) notes+=`<div class="note" style="font-size:11.5px;color:var(--amber)">⚠️ <b>${sinT}</b> envío(s) van a una ciudad sin tarifa acordada (solo Bogotá, Soacha, Medellín, Cali y Chía). No suman al saldo hasta acordar el precio con Unilogix.</div>`;
@@ -1240,18 +1244,19 @@ function drawFlex(){
       const [el,ec]=FLEX_EST[e.estado]||[e.estado||"—","#9B9A96"];
       const tachado=e.cobrable===false;
       return `<tr${tachado?' style="opacity:.55"':""}>
-        <td><div style="font-weight:600;font-size:12px;line-height:1.25">${esc((e.prod||"").slice(0,52))}</div><div class="cap" style="font-size:10px">Venta ${esc((e.sold||"").slice(11))} · ${e.qty||1} u · ${cop(e.value||0)}${e.sku?` · ${esc(e.sku)}`:""}</div><div class="cap" style="font-size:9.5px;opacity:.75">Envío #${esc(e.ship)}${e.movido_de?` · <span style="color:var(--amber)">pasa de ${esc(flexDay(e.movido_de))} (no facturado por Unilogix en ese corte)</span>`:""}${(e.orders||[]).length>1?` · pack de ${e.orders.length} órdenes`:""}</div></td>
+        <td><div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-bottom:2px">${flexOrigen(e)}${e.propio?flexPill("🛵 Mensajero propio","#9B9A96"):""}${e.pendiente_guia?flexPill("sin guía aún","var(--amber)"):""}</div><div style="font-weight:600;font-size:12px;line-height:1.25">${esc((e.prod||"").slice(0,52))}</div><div class="cap" style="font-size:10px">${e.origen==="manual"?esc(e.cliente||""):`Venta ${esc((e.sold||"").slice(e.origen==="web"?5:11))} · ${e.qty||1} u · ${cop(e.value||0)}`}${e.sku?` · ${esc(e.sku)}`:""}</div><div class="cap" style="font-size:9.5px;opacity:.75">${flexRef(e)}${e.propio_nota?` · ${esc(e.propio_nota)}`:""}${e.nota?` · ${esc(e.nota)}`:""}${e.movido_de?` · <span style="color:var(--amber)">pasa de ${esc(flexDay(e.movido_de))} (no facturado por Unilogix en ese corte)</span>`:""}${(e.orders||[]).length>1?` · pack de ${e.orders.length} órdenes`:""}</div></td>
         <td><b>${esc(e.loc||"—")}</b><div class="cap" style="font-size:10px">${esc(e.barrio||"")}${e.barrio?" · ":""}${esc(e.ciudad||e.state||"")}</div><div class="cap" style="font-size:10px">${esc(e.addr||"")}</div></td>
         <td style="text-align:right;font-size:11px">${e.h&&e.l&&e.w?`${e.h}×${e.l}×${e.w} cm`:"—"}<div class="cap" style="font-size:9.5px">físico ${flexKg(e.kg)} · vol ${flexKg(e.vol)}</div></td>
         <td><span style="font-size:10px;font-weight:800;padding:1px 7px;border-radius:10px;background:rgba(226,86,15,.14);color:var(--acc)">${esc(e.rango||"—")}</span></td>
         <td><span style="color:${ec};font-weight:700;font-size:11px">● ${esc(el)}</span></td>
-        <td style="text-align:right;font-weight:800">${tachado?`<s>${cop(e.tarifa||0)}</s><div class="cap" style="font-size:9.5px">no se cobra</div>`:(e.tarifa!=null?`${cop(e.tarifa)}<div class="cap" style="font-size:9.5px">neto ${cop(flexNetoEnvio(e.tarifa))}</div>`:`<span style="color:#E06A6A">Sin tarifa</span>`)}</td>
+        <td style="text-align:right;font-weight:800">${tachado?`<s>${cop(e.tarifa||0)}</s><div class="cap" style="font-size:9.5px">${e.propio?"mensajero propio":"no se cobra"}</div>`:(e.tarifa!=null?`${cop(e.tarifa)}<div class="cap" style="font-size:9.5px">neto ${cop(flexNetoEnvio(e.tarifa))}</div>`:`<span style="color:#E06A6A">Sin tarifa</span>`)}</td>
+        <td style="text-align:right;white-space:nowrap">${flexAcciones(e)}</td>
       </tr>`;}).join("");
     detalle=`<div class="card" style="padding:16px;margin-top:16px">
       <div class="row-between" style="margin-bottom:10px"><div style="font-weight:800;font-size:14px">Envíos del ${flexDay(c.fecha)}<div class="cap" style="font-size:11px;font-weight:400;margin-top:2px">Vendidos entre ${flexDay(new Date(new Date(c.fecha+"T12:00:00").getTime()-(new Date(c.fecha+"T12:00:00").getDay()===1?3:1)*864e5).toISOString().slice(0,10))} 1:00 p. m. y ${flexDay(c.fecha)} 1:00 p. m.</div></div>
         <div style="font-weight:800;font-size:16px">${cop(c.total)}</div></div>
       ${locChips?`<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">${locChips}</div>`:""}
-      ${envs.length?`<div style="overflow-x:auto;-webkit-overflow-scrolling:touch"><table class="sales" style="min-width:760px"><thead><tr><th>Venta</th><th>Localidad / dirección</th><th style="text-align:right">Medidas</th><th>Rango</th><th>Estado ML</th><th style="text-align:right">Tarifa</th></tr></thead><tbody>${rows}</tbody></table></div>`:`<div class="muted" style="font-size:12.5px">Este corte no tiene envíos.</div>`}
+      ${envs.length?`<div style="overflow-x:auto;-webkit-overflow-scrolling:touch"><table class="sales" style="min-width:860px"><thead><tr><th>Venta</th><th>Localidad / dirección</th><th style="text-align:right">Medidas</th><th>Rango</th><th>Estado</th><th style="text-align:right">Tarifa</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`:`<div class="muted" style="font-size:12.5px">Este corte no tiene envíos.</div>`}
       <div class="cap" style="margin-top:8px;font-size:10.5px">Leído de MercadoLibre: ${esc(c.leido||"—")}. Peso facturable = el mayor entre físico y volumétrico (A×L×A ÷ 5.000).</div>
     </div>`;
   }
@@ -1301,8 +1306,85 @@ function drawFlex(){
       ${pagos.length?`<div class="fx-cards">${pagCards}</div><div class="fx-table" style="overflow-x:auto;-webkit-overflow-scrolling:touch"><table class="sales" style="min-width:520px"><thead><tr><th>Fecha</th><th>Semana</th><th>Nota</th><th style="text-align:right">Valor</th><th></th></tr></thead><tbody>${pagFilas}</tbody></table></div>`:`<div class="muted" style="font-size:12.5px">Aún no hay pagos. Usa «Pagar» en la semana o «＋ Registrar pago».</div>`}
     </div>`;
 
-  document.getElementById("flexBody").innerHTML=`<style>.fx-cards{display:none}@media(max-width:700px){.fx-table{display:none}.fx-cards{display:block}}</style>`+semBlock+pagBlock+libro+(detalle?`<div id="flexDet">${detalle}</div>`:"")+tarifa;
+  document.getElementById("flexBody").innerHTML=`<style>.fx-cards{display:none}@media(max-width:700px){.fx-table{display:none}.fx-cards{display:block}}</style>`+semBlock+pagBlock+flexFueraBlock(cortes)+libro+(detalle?`<div id="flexDet">${detalle}</div>`:"")+tarifa;
 }
+
+function flexOrigen(e){
+  if(e.origen==="web") return flexPill("🌐 Web BOUN","#3FCB82");
+  if(e.origen==="manual") return flexPill("✍️ Fuera de ML","#7FB3E0");
+  return flexPill("MercadoLibre","#E0A23C"); }
+function flexRef(e){
+  if(e.origen==="web") return `Pedido ${esc((e.orders||[]).join(", "))}${e.guia?` · guía Unilogix ${esc(e.guia)}`:""}${e.despacho?` · despachado ${esc(e.despacho.slice(5))}`:""}${e.prioritario?" · Envío Prioritario":""}`;
+  if(e.origen==="manual") return `${e.guia?`Guía Unilogix ${esc(e.guia)}`:"Sin guía"}${e.created_by?` · cargado por ${esc(e.created_by)}`:""}`;
+  return `Envío #${esc(e.ship)}`; }
+function flexAcciones(e){
+  const b=(t,fn,tit)=>`<button class="btn-ghost" title="${tit}" style="height:26px;padding:0 8px;font-size:11px;margin-left:4px" onclick="${fn}">${t}</button>`;
+  let h=e.propio?b("↩ Unilogix",`flexPropio('${esc(e.ship)}',false)`,"Volver a contarlo como envío de Unilogix")
+                :b("🛵 Propio",`flexPropio('${esc(e.ship)}',true)`,"Lo entregó el mensajero de BOUN: no se cobra");
+  if(e.origen==="manual") h+=b("✕",`flexExtraDel('${esc(e.id)}')`,"Eliminar este envío");
+  return h; }
+function flexFueraBlock(cortes){
+  const fuera=[], prop=[];
+  cortes.forEach(c=>(c.envios||[]).forEach(e=>{ if(e.propio) prop.push([c,e]); else if(e.origen==="web"||e.origen==="manual") fuera.push([c,e]); }));
+  const tF=fuera.reduce((a,[c,e])=>a+(e.cobrable!==false?(e.tarifa||0):0),0), tP=prop.reduce((a,[c,e])=>a+(e.tarifa||0),0);
+  const fila=([c,e])=>`<tr${e.propio?' style="opacity:.6"':""}>
+      <td style="white-space:nowrap">${flexDay(c.fecha)}</td>
+      <td>${flexOrigen(e)}${e.pendiente_guia?` ${flexPill("sin guía aún","var(--amber)")}`:""}</td>
+      <td><div style="font-weight:600;font-size:12px">${esc(e.cliente||(e.prod||"").slice(0,40))}</div><div class="cap" style="font-size:10px">${flexRef(e)}</div></td>
+      <td class="cap" style="font-size:11px">${esc(e.ciudad||"")} · ${esc(e.rango||"")}</td>
+      <td style="text-align:right;font-weight:800">${e.propio?`<s>${cop(e.tarifa||0)}</s>`:cop(e.tarifa||0)}</td>
+      <td style="text-align:right;white-space:nowrap">${flexAcciones(e)}</td></tr>`;
+  const tabla=(rows)=>`<div style="overflow-x:auto;-webkit-overflow-scrolling:touch"><table class="sales" style="min-width:640px"><thead><tr><th>Corte</th><th>Origen</th><th>Cliente / referencia</th><th>Ciudad · rango</th><th style="text-align:right">Tarifa</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>`;
+  const ord=(a,b)=>b[0].fecha.localeCompare(a[0].fecha);
+  return `<div class="card" style="padding:16px;margin-top:16px">
+      <div class="row-between" style="margin-bottom:8px;gap:10px;flex-wrap:wrap"><div><div style="font-weight:800;font-size:14px">Bogotá · envíos fuera de MercadoLibre</div><div class="cap" style="font-size:11.5px">Pedidos de la web con guía Unilogix + envíos cargados a mano. Ya suman a cada semana.</div></div>
+        <div style="display:flex;gap:8px;align-items:center"><div style="text-align:right"><div style="font-weight:800;font-size:16px">${cop(tF)}</div><div class="cap" style="font-size:11px">${fuera.length} envío(s)</div></div><button class="btn-ghost" style="white-space:nowrap" onclick="flexExtraModal()">＋ Agregar</button></div></div>
+      ${fuera.length?tabla([...fuera].sort(ord).map(fila).join("")):`<div class="muted" style="font-size:12.5px">Sin envíos fuera de MercadoLibre.</div>`}
+      <div class="row-between" style="margin:18px 0 8px;gap:10px;flex-wrap:wrap"><div><div style="font-weight:800;font-size:14px">🛵 Mensajero propio</div><div class="cap" style="font-size:11.5px">Envíos que entregó el mensajero de BOUN. Unilogix los cancela en su portal: no se cobran.</div></div>
+        <div style="text-align:right"><div style="font-weight:800;font-size:16px;color:var(--green)">−${cop(tP)}</div><div class="cap" style="font-size:11px">${prop.length} envío(s) descontados</div></div></div>
+      ${prop.length?tabla([...prop].sort(ord).map(fila).join("")):`<div class="muted" style="font-size:12.5px">Ninguno. Márcalos con «🛵 Propio» en el detalle de cada día.</div>`}
+    </div>`; }
+function flexTarifaDe(ciudad,rango){ const t=(FLEX||{}).tarifas||{ciudades:[],rangos:[]}; const i=t.ciudades.indexOf(ciudad); const g=t.rangos.find(x=>x.rango===rango); return (g&&i>=0)?g.precios[i]:0; }
+function flexExtraModal(){
+  const t=(FLEX||{}).tarifas||{ciudades:["Bogotá"],rangos:[{rango:"Liviano"}]};
+  openModal(`<h3>Envío Unilogix fuera de MercadoLibre</h3>
+    <div class="sub">Para envíos que recogió Unilogix y no salen solos: spot, ventas por WhatsApp, reposiciones… Los pedidos de la web con guía Unilogix ya entran solos.</div>
+    <label class="cap">Día que Unilogix lo recogió (corte)</label>
+    <input id="fxeF" type="date" class="field" value="${_isoDay(0)}">
+    <div style="display:flex;gap:8px;margin-top:8px"><div style="flex:1"><label class="cap">Ciudad</label><select id="fxeC" class="field" onchange="flexExtraT()">${t.ciudades.map(c=>`<option${c==="Bogotá"?" selected":""}>${esc(c)}</option>`).join("")}</select></div>
+      <div style="flex:1"><label class="cap">Rango de peso</label><select id="fxeR" class="field" onchange="flexExtraT()">${t.rangos.map(g=>`<option>${esc(g.rango)}</option>`).join("")}</select></div></div>
+    <label class="cap" style="display:block;margin-top:8px">Tarifa (COP)</label>
+    <input id="fxeT" type="text" inputmode="numeric" class="field">
+    <label class="cap" style="display:block;margin-top:8px">Guía Unilogix (opcional)</label>
+    <input id="fxeG" type="text" class="field" placeholder="Ej. 3628267">
+    <label class="cap" style="display:block;margin-top:8px">Cliente</label>
+    <input id="fxeN" type="text" class="field" placeholder="Nombre de quien recibe">
+    <label class="cap" style="display:block;margin-top:8px">Qué se envió (opcional)</label>
+    <input id="fxeD" type="text" class="field" placeholder="Ej. 2 BOUN Sleep · venta WhatsApp">
+    <label class="cap" style="display:block;margin-top:8px">Dirección (opcional)</label>
+    <input id="fxeA" type="text" class="field">
+    <div id="fxeErr" class="red" style="font-size:12px;margin-top:8px"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:16px">
+      <button class="btn-ghost" onclick="closeModal()">Cancelar</button>
+      <button class="btn-acc" onclick="flexExtraSave()">Agregar envío</button>
+    </div>`);
+  flexExtraT(); }
+function flexExtraT(){ const v=flexTarifaDe(document.getElementById("fxeC").value,document.getElementById("fxeR").value); document.getElementById("fxeT").value=v?v.toLocaleString("es-CO"):""; }
+async function flexExtraSave(){
+  const g=id=>document.getElementById(id).value, err=document.getElementById("fxeErr");
+  if(!g("fxeF")){ err.textContent="Elige la fecha."; return; }
+  try{
+    await api("/flex/extra",{method:"POST",body:JSON.stringify({fecha:g("fxeF"),ciudad:g("fxeC"),rango:g("fxeR"),
+      tarifa:flexParseMonto(g("fxeT"))||null,guia:g("fxeG"),cliente:g("fxeN"),descripcion:g("fxeD"),direccion:g("fxeA")})});
+    FLEX_SEL=g("fxeF"); closeModal(); renderFlex();
+  }catch(e){ err.textContent=e.message; } }
+async function flexExtraDel(id){
+  if(!confirm("¿Eliminar este envío? El saldo se recalcula.")) return;
+  try{ await api("/flex/extra/"+encodeURIComponent(id),{method:"DELETE"}); renderFlex(); }catch(e){ alert(e.message); } }
+async function flexPropio(ship,on){
+  let nota="";
+  if(on){ nota=prompt("¿Lo entregó el mensajero de BOUN? Nota opcional (ej. «Unilogix lo canceló en su portal»):",""); if(nota===null) return; }
+  try{ await api("/flex/propio",{method:"POST",body:JSON.stringify({ships:[ship],propio:!!on,nota})}); renderFlex(); }catch(e){ alert(e.message); } }
 
 function flexPagoModal(sem){
   const ws=flexWeeks(FLEX||{}); if(!ws.length){ alert("Aún no hay semanas con envíos."); return; }

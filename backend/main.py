@@ -5465,6 +5465,8 @@ _TRACKING_URLS = {
     "tcc": "https://tcc.com.co/rastrear-envio/?guia={n}",
     "deprisa": "https://www.deprisa.com/Tracking/?track={n}",
     "99minutos": "https://tracking.99minutos.com/search/{n}",
+    # Unilogix (Flex Bogotá, mismo día): buscador, el cliente escribe la guía.
+    "unilogix": "https://unilogix.com.co/rastrear-envio/",
 }
 
 
@@ -8666,6 +8668,12 @@ def relampago_set(clave: str, datos: dict, user: dict = Depends(_current_user)):
 #     flex_corte::YYYY-MM-DD → JSON del corte (lista de envíos)
 #     flex_pagos             → JSON con los pagos hechos a Unilogix
 #     flex_desde             → inicio del servicio (default 13-oct-2026 1 p. m.)
+#     flex_web               → pedidos de la web BOUN (Shopify) en Bogotá/Soacha/Chía
+#                              con guía Unilogix (o «Envío Prioritario» aún sin guía)
+#     flex_extra             → envíos Unilogix por fuera de ML cargados a mano (spot,
+#                              WhatsApp, etc.)
+#     flex_propio            → {ship: {...}} envíos Flex que entregó el mensajero de
+#                              BOUN (Unilogix los cancela en su portal) → no se cobran
 #   Solo cuenta envíos que salen de la bodega de Bogotá (sender_address).
 #   Los últimos 3 cortes se recalculan en cada sync; los anteriores quedan
 #   congelados tal como se guardaron.
@@ -8898,6 +8906,12 @@ def _flex_sync():
                      "cerrado": k < today_cut,
                      "envios": envs}, ensure_ascii=False))
         day += timedelta(days=1)
+    # Pedidos de la web en Bogotá (no rompe la sync de ML si Shopify falla).
+    try:
+        _flex_web_sync()
+        _FLEX_CACHE["web_err"] = ""
+    except Exception as e:
+        _FLEX_CACHE["web_err"] = str(e)[:200]
     _FLEX_CACHE["ts"] = time.time()
 
 
@@ -8917,6 +8931,136 @@ def _flex_overrides():
         return {}
 
 
+_FLEX_WEB_CITIES = ("Bogotá", "Soacha", "Chía")
+
+
+def _flex_json(key, default):
+    try:
+        v = json.loads(db.get_setting(key, "") or "null")
+    except Exception:
+        return default
+    return default if v is None or not isinstance(v, type(default)) else v
+
+
+def _flex_propios():
+    """{ship: {nota, fecha, por}}: envíos que entregó el mensajero de BOUN.
+    Unilogix los cancela en su portal y no los factura → no se cobran."""
+    return _flex_json("flex_propio", {})
+
+
+def _flex_unilogix_guia(fulfillments):
+    """Guía Unilogix del pedido Shopify ('' si lo llevó otra transportadora)."""
+    import re as _re
+    for f in fulfillments or []:
+        comp = _flex_norm(f.get("tracking_company") or "")
+        nums = list(f.get("tracking_numbers") or [])
+        if f.get("tracking_number") and f.get("tracking_number") not in nums:
+            nums.append(f.get("tracking_number"))
+        for n in nums:
+            n = str(n or "").strip()
+            if not n:
+                continue
+            if "unilogix" in comp:
+                return n
+            # Guías Unilogix: 7 dígitos (37xxxxx). Interrapidísimo usa 12.
+            if _re.fullmatch(r"\d{7}", n) and "interrap" not in comp:
+                return n
+    return ""
+
+
+def _flex_web_sync():
+    """Pedidos de la web BOUN (Shopify) en Bogotá/Soacha/Chía que entrega Unilogix.
+    Entra el pedido con guía Unilogix; un «Envío Prioritario en Bogotá» aún sin guía
+    entra como pendiente. Con guía de otra transportadora o rótulo a mano
+    (mensajero propio) NO entra. Corte = día del despacho (cuando Unilogix lo
+    recoge), porque así sale en su portal y en su factura."""
+    shop = _SHOPIFY_SHOPS["shopify_boun"]
+    tok = db.get_setting("shopify_token::%s" % shop, "")
+    if not tok:
+        raise RuntimeError("Shopify BOUN sin token")
+    desde = _flex_desde()
+    now = datetime.now(_FLEX_TZ)
+    fields = ("id,name,created_at,cancelled_at,total_price,shipping_address,"
+              "shipping_lines,fulfillments,line_items")
+    orders = _shopify_orders_full(shop, tok, (desde - timedelta(days=1)).isoformat(),
+                                  now.isoformat(), fields)
+    out = {}
+    for o in orders:
+        sa = o.get("shipping_address") or {}
+        ciudad = _flex_city(sa.get("province", ""), sa.get("city", ""), "")
+        if ciudad not in _FLEX_WEB_CITIES:
+            continue
+        fuls = o.get("fulfillments") or []
+        guia = _flex_unilogix_guia(fuls)
+        prio = any("prioritario" in _flex_norm(sl.get("title"))
+                   for sl in (o.get("shipping_lines") or []))
+        con_otra_guia = (not guia) and any(
+            f.get("tracking_number") or f.get("tracking_numbers") for f in fuls)
+        if not guia and (not prio or con_otra_guia or o.get("cancelled_at")):
+            continue
+        try:
+            cdt = datetime.fromisoformat(o["created_at"]).astimezone(_FLEX_TZ)
+        except Exception:
+            continue
+        if cdt < desde - timedelta(hours=12):
+            continue
+        fdt = None
+        for f in fuls:
+            try:
+                fdt = datetime.fromisoformat(f.get("created_at")).astimezone(_FLEX_TZ)
+                break
+            except Exception:
+                pass
+        cut = fdt.date().isoformat() if (guia and fdt) else _flex_cut_of(cdt)
+        items = o.get("line_items") or []
+        kg = sum(float(it.get("grams") or 0) * int(it.get("quantity") or 1)
+                 for it in items) / 1000.0
+        rango, tarifa = _flex_price(ciudad, kg)
+        name = str(o.get("name") or "")
+        out[name] = {
+            "ship": "web-%s" % name.lstrip("#"), "origen": "web", "guia": guia,
+            "orders": [name], "order_id": str(o.get("id") or ""), "pack": "",
+            "sold": cdt.strftime("%Y-%m-%d %H:%M"), "cut": cut,
+            "despacho": fdt.strftime("%Y-%m-%d %H:%M") if fdt else "",
+            "prod": " + ".join((it.get("title") or "")[:60] for it in items) or "—",
+            "sku": ", ".join(filter(None, (it.get("sku") or "" for it in items))),
+            "qty": sum(int(it.get("quantity") or 0) for it in items),
+            "value": float(o.get("total_price") or 0),
+            "estado": "delivered" if guia else "ready_to_ship", "subestado": "",
+            "ciudad": ciudad, "loc": ciudad, "barrio": "",
+            "state": sa.get("province", ""), "addr": sa.get("address1") or "",
+            "cliente": sa.get("name") or "", "prioritario": prio,
+            "pendiente_guia": not guia,
+            "h": 0, "l": 0, "w": 0, "kg": round(kg, 3), "vol": 0, "bill": round(kg, 3),
+            "rango": rango, "tarifa": tarifa, "cobrable": True,
+        }
+    db.set_setting("flex_web", json.dumps(out, ensure_ascii=False))
+    return out
+
+
+def _flex_extra_rows():
+    """Envíos Unilogix fuera de MercadoLibre: web (auto) + cargados a mano."""
+    rows = list(_flex_json("flex_web", {}).values())
+    for m in _flex_json("flex_extra", []):
+        f = (m.get("fecha") or "")[:10]
+        if not f:
+            continue
+        rows.append({
+            "ship": "man-%s" % m.get("id"), "id": m.get("id"), "origen": "manual",
+            "guia": m.get("guia") or "", "orders": [], "pack": "",
+            "sold": f + " 12:00", "cut": f,
+            "prod": m.get("descripcion") or "Envío fuera de MercadoLibre",
+            "sku": "", "qty": 1, "value": 0, "estado": "delivered", "subestado": "",
+            "ciudad": m.get("ciudad") or "Bogotá", "loc": m.get("ciudad") or "Bogotá",
+            "barrio": "", "state": "", "addr": m.get("direccion") or "",
+            "cliente": m.get("cliente") or "", "nota": m.get("nota") or "",
+            "h": 0, "l": 0, "w": 0, "kg": 0, "vol": 0, "bill": 0,
+            "rango": m.get("rango") or "Liviano", "tarifa": m.get("tarifa"),
+            "cobrable": True, "created_by": m.get("created_by", ""),
+        })
+    return rows
+
+
 def _flex_summary():
     rows = db._sb_get("app_settings?key=like.flex_corte::*&select=key,value") or []
     cortes = []
@@ -8926,6 +9070,24 @@ def _flex_summary():
         except Exception:
             continue
         cortes.append(c)
+    # Envíos Unilogix por fuera de MercadoLibre (web BOUN + cargados a mano).
+    try:
+        extra = _flex_extra_rows()
+    except Exception:
+        extra = []
+    if extra:
+        by_f = {c.get("fecha"): c for c in cortes}
+        hoy_cut = _flex_cut_of(datetime.now(_FLEX_TZ))
+        for e in extra:
+            k = e.get("cut")
+            if not k:
+                continue
+            t = by_f.get(k)
+            if t is None:
+                t = {"fecha": k, "cerrado": k < hoy_cut, "envios": []}
+                by_f[k] = t
+                cortes.append(t)
+            t.setdefault("envios", []).append(dict(e))
     # Envíos que Unilogix no facturó en su corte: se pasan al corte indicado.
     ov = _flex_overrides()
     if ov:
@@ -8945,6 +9107,19 @@ def _flex_summary():
                 else:
                     keep.append(e)
             c["envios"] = keep
+    prop = _flex_propios()
+    n_prop = 0
+    v_prop = 0
+    for c in cortes:
+        for e in (c.get("envios") or []):
+            p = prop.get(str(e.get("ship")))
+            if p is not None:
+                if e.get("cobrable", True):
+                    n_prop += 1
+                    v_prop += (e.get("tarifa") or 0)
+                e["propio"] = True
+                e["propio_nota"] = (p or {}).get("nota", "")
+                e["cobrable"] = False
     out = []
     for c in cortes:
         _flex_totals(c)
@@ -8971,6 +9146,8 @@ def _flex_summary():
                                for n, lo, hi, p in _FLEX_TIERS]},
         "desde": _flex_desde().strftime("%Y-%m-%d %H:%M"),
         "corte_hora": _FLEX_CUT_HOUR,
+        "propios": {"n": n_prop, "valor": v_prop},
+        "web_error": _FLEX_CACHE.get("web_err", ""),
     }
 
 
@@ -9068,6 +9245,77 @@ def flex_pago_del(pid: str, user: dict = Depends(_current_user)):
     return {"ok": len(keep) != len(pagos)}
 
 
+class FlexExtraIn(BaseModel):
+    fecha: str                       # corte YYYY-MM-DD (día que Unilogix lo recogió)
+    guia: Optional[str] = ""
+    cliente: Optional[str] = ""
+    descripcion: Optional[str] = ""
+    ciudad: Optional[str] = "Bogotá"
+    rango: Optional[str] = "Liviano"
+    direccion: Optional[str] = ""
+    tarifa: Optional[float] = None   # vacío = la de la tabla (ciudad + rango)
+    nota: Optional[str] = ""
+
+
+@app.post("/api/flex/extra")
+def flex_extra_add(data: FlexExtraIn, user: dict = Depends(_current_user)):
+    """Agrega un envío Unilogix por fuera de MercadoLibre (spot, WhatsApp…)."""
+    f = (data.fecha or "")[:10]
+    try:
+        datetime.strptime(f, "%Y-%m-%d")
+    except Exception:
+        raise HTTPException(400, "Fecha inválida (YYYY-MM-DD).")
+    ciudad = data.ciudad if data.ciudad in _FLEX_CITIES else "Bogotá"
+    rango = data.rango or "Liviano"
+    tarifa = data.tarifa
+    if tarifa is None or tarifa <= 0:
+        ci = _FLEX_CITIES.index(ciudad)
+        tarifa = next((pr[ci] for n, lo, hi, pr in _FLEX_TIERS if n == rango), None)
+    lst = _flex_json("flex_extra", [])
+    m = {"id": secrets.token_hex(5), "fecha": f, "guia": (data.guia or "").strip()[:40],
+         "cliente": (data.cliente or "").strip()[:80],
+         "descripcion": (data.descripcion or "").strip()[:120],
+         "ciudad": ciudad, "rango": rango, "direccion": (data.direccion or "").strip()[:160],
+         "tarifa": tarifa, "nota": (data.nota or "").strip()[:200],
+         "created_by": user.get("username", ""),
+         "created_at": datetime.now(_FLEX_TZ).strftime("%Y-%m-%d %H:%M")}
+    lst.append(m)
+    db.set_setting("flex_extra", json.dumps(lst, ensure_ascii=False))
+    return {"ok": True, "id": m["id"], "tarifa": tarifa}
+
+
+@app.delete("/api/flex/extra/{eid}")
+def flex_extra_del(eid: str, user: dict = Depends(_current_user)):
+    lst = _flex_json("flex_extra", [])
+    keep = [m for m in lst if m.get("id") != eid]
+    db.set_setting("flex_extra", json.dumps(keep, ensure_ascii=False))
+    return {"ok": len(keep) != len(lst)}
+
+
+class FlexPropioIn(BaseModel):
+    ships: List[str]
+    propio: bool = True
+    nota: Optional[str] = ""
+
+
+@app.post("/api/flex/propio")
+def flex_propio(data: FlexPropioIn, user: dict = Depends(_current_user)):
+    """Marca/desmarca envíos entregados por el mensajero de BOUN (no se cobran)."""
+    prop = _flex_propios()
+    for sid in data.ships or []:
+        sid = str(sid).strip()
+        if not sid:
+            continue
+        if data.propio:
+            prop[sid] = {"nota": (data.nota or "").strip()[:200],
+                         "fecha": datetime.now(_FLEX_TZ).strftime("%Y-%m-%d %H:%M"),
+                         "por": user.get("username", "")}
+        else:
+            prop.pop(sid, None)
+    db.set_setting("flex_propio", json.dumps(prop, ensure_ascii=False))
+    return {"ok": True, "n": len(prop)}
+
+
 @app.get("/api/flex/debug-envio")
 def flex_debug_envio(sid: str = "", user: dict = Depends(_admin)):
     """Diagnóstico (solo admin): envío ML crudo + cómo lo interpreta la sección."""
@@ -9101,7 +9349,7 @@ app.include_router(dropship.build_router(_current_user, _admin, _ml_request,
 
 # Render solo redespliega cuando cambia algo dentro de backend/ (rootDir). Al subir
 # cambios SOLO del frontend, actualiza esta marca para que el deploy se dispare.
-_FRONT_BUILD = "2026-11-07k Dropi rotacion 8 por ciclo"
+_FRONT_BUILD = "2026-11-13a Flex fuera de ML + mensajero propio"
 _FRONT = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend")
 
 
